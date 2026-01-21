@@ -173,12 +173,22 @@ class OpenAIClient:
         openai_messages = self._convert_messages_to_openai_format(system_prompt, messages)
 
         # Build request kwargs
+        # Note: GPT-5+ models use max_completion_tokens instead of max_tokens
+        # and gpt-5-nano only supports default temperature (1)
+        is_gpt5_plus = self._model.startswith("gpt-5") or self._model.startswith("o3")
+        is_nano = "nano" in self._model
         kwargs: dict[str, Any] = {
             "model": self._model,
-            "max_tokens": self._max_tokens,
-            "temperature": self._temperature,
             "messages": openai_messages,
         }
+        # Only set temperature if model supports it
+        if not is_nano:
+            kwargs["temperature"] = self._temperature
+        # GPT-5+ uses max_completion_tokens
+        if is_gpt5_plus:
+            kwargs["max_completion_tokens"] = self._max_tokens
+        else:
+            kwargs["max_tokens"] = self._max_tokens
 
         # Add tools if provided
         if tools:
