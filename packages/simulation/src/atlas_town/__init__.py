@@ -15,7 +15,15 @@ from atlas_town.agents import (
 )
 from atlas_town.clients import ClaudeClient, GeminiClient, OpenAIClient
 from atlas_town.config import configure_logging, get_settings
-from atlas_town.orchestrator import Orchestrator, SimulationPhase
+from atlas_town.events import (
+    EventPublisher,
+    EventType,
+    SimulationEvent,
+    get_publisher,
+    start_publisher,
+    stop_publisher,
+)
+from atlas_town.orchestrator import Orchestrator, OrganizationContext
 from atlas_town.scheduler import DayPhase, Scheduler, SimulatedTime
 from atlas_town.tools import AtlasAPIClient, ToolExecutor
 
@@ -38,10 +46,17 @@ __all__ = [
     "GeminiClient",
     # Orchestrator & Scheduler
     "Orchestrator",
-    "SimulationPhase",
+    "OrganizationContext",
     "Scheduler",
     "DayPhase",
     "SimulatedTime",
+    # Events
+    "EventPublisher",
+    "EventType",
+    "SimulationEvent",
+    "get_publisher",
+    "start_publisher",
+    "stop_publisher",
     # Tools
     "AtlasAPIClient",
     "ToolExecutor",

@@ -1,81 +1,125 @@
-"""Orchestrator - coordinates agents and simulation lifecycle."""
+"""Orchestrator - coordinates agents and simulation lifecycle.
+
+The orchestrator is the main coordinator for the Atlas Town simulation.
+It manages:
+- Multiple organizations and their owner agents
+- The accountant agent (Sarah) who visits each business
+- Customer and vendor agents for generating transactions
+- Event publishing for real-time frontend updates
+- Daily simulation cycles with phase transitions
+"""
 
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from enum import Enum
 from typing import Any
 from uuid import UUID
 
 import structlog
 
-from atlas_town.agents import AccountantAgent, AgentState
-from atlas_town.clients.claude import ClaudeClient
+from atlas_town.agents import (
+    AccountantAgent,
+    AgentState,
+    CustomerAgent,
+    OwnerAgent,
+    VendorAgent,
+    create_all_owners,
+    create_customers_for_industry,
+    create_vendors_for_industry,
+)
+from atlas_town.clients import ClaudeClient, GeminiClient, OpenAIClient
 from atlas_town.config import get_settings
+from atlas_town.events import (
+    EventPublisher,
+    agent_moving,
+    agent_speaking,
+    agent_thinking,
+    day_completed,
+    day_started,
+    error_event,
+    get_publisher,
+    org_visited,
+    phase_completed,
+    phase_started,
+    simulation_started,
+    simulation_stopped,
+    tool_called,
+    tool_completed,
+    tool_failed,
+    transaction_created,
+)
+from atlas_town.scheduler import DayPhase, Scheduler
 from atlas_town.tools import AtlasAPIClient, ToolExecutor
 
 logger = structlog.get_logger(__name__)
 
 
-class SimulationPhase(str, Enum):
-    """Phases of the daily simulation cycle."""
-
-    MORNING = "morning"      # Owners review, plan day
-    DAYTIME = "daytime"      # Business operations, transactions
-    EVENING = "evening"      # Sarah reconciles, reports
-    NIGHT = "night"          # System maintenance, day transition
-
-
 @dataclass
-class Organization:
-    """Represents a business in Atlas Town."""
+class OrganizationContext:
+    """Context for a single organization in the simulation."""
 
     id: UUID
     name: str
     industry: str
-    owner_name: str
-
-
-@dataclass
-class SimulationState:
-    """Current state of the simulation."""
-
-    day: int = 1
-    phase: SimulationPhase = SimulationPhase.MORNING
-    current_org_index: int = 0
-    is_running: bool = False
-    is_paused: bool = False
-    started_at: datetime | None = None
-    events: list[dict[str, Any]] = field(default_factory=list)
+    owner_key: str  # Key in OWNER_PERSONAS (craig, tony, maya, chen, marcus)
+    owner: OwnerAgent | None = None
+    customers: list[CustomerAgent] = field(default_factory=list)
+    vendors: list[VendorAgent] = field(default_factory=list)
 
 
 class Orchestrator:
     """Main coordinator for the Atlas Town simulation.
 
     The orchestrator:
-    1. Manages the Atlas API connection
-    2. Coordinates agent activities
+    1. Manages the Atlas API connection and tool execution
+    2. Creates and coordinates all agent types
     3. Tracks simulation state (day, phase, events)
-    4. Publishes events for the frontend
+    4. Publishes events via WebSocket for the frontend
+    5. Runs the daily simulation cycle
 
     Usage:
         async with Orchestrator() as orch:
-            await orch.run_single_task("Create an invoice for customer X")
+            # Run a single day
+            await orch.run_daily_cycle()
+
+            # Or run continuously
+            await orch.run_simulation(max_days=30)
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        event_publisher: EventPublisher | None = None,
+        start_websocket: bool = True,
+    ):
         settings = get_settings()
 
         # API client and tools
         self._api_client: AtlasAPIClient | None = None
         self._tool_executor: ToolExecutor | None = None
 
+        # LLM clients (created on demand)
+        self._claude_client: ClaudeClient | None = None
+        self._openai_client: OpenAIClient | None = None
+        self._gemini_client: GeminiClient | None = None
+
         # Agents
         self._accountant: AccountantAgent | None = None
+        self._owners: dict[str, OwnerAgent] = {}
+
+        # Organizations
+        self._organizations: dict[UUID, OrganizationContext] = {}
+        self._org_by_owner: dict[str, UUID] = {}  # owner_key -> org_id
+
+        # Scheduler
+        self._scheduler = Scheduler(speed_multiplier=settings.simulation_speed)
+
+        # Event publishing
+        self._event_publisher = event_publisher or get_publisher()
+        self._start_websocket = start_websocket
 
         # State
-        self._state = SimulationState()
-        self._organizations: list[Organization] = []
+        self._is_initialized = False
+        self._current_org_id: UUID | None = None
 
         # Logging
         self._logger = logger.bind(component="orchestrator")
@@ -90,8 +134,15 @@ class Orchestrator:
         await self.shutdown()
 
     async def initialize(self) -> None:
-        """Initialize API client, tools, and agents."""
+        """Initialize API client, tools, agents, and event publisher."""
+        if self._is_initialized:
+            return
+
         self._logger.info("initializing_orchestrator")
+
+        # Start WebSocket server
+        if self._start_websocket and not self._event_publisher.is_running:
+            await self._event_publisher.start()
 
         # Create and authenticate API client
         self._api_client = AtlasAPIClient()
@@ -100,105 +151,214 @@ class Orchestrator:
         # Create tool executor
         self._tool_executor = ToolExecutor(self._api_client)
 
-        # Load organizations
-        await self._load_organizations()
+        # Load organizations and create agents
+        await self._setup_organizations()
+        self._create_agents()
 
-        # Create agents
-        self._accountant = AccountantAgent()
-        self._accountant.set_tool_executor(self._tool_executor)
+        # Register scheduler phase handlers
+        self._register_phase_handlers()
 
-        # Set initial organization context if available
-        if self._organizations:
-            org = self._organizations[0]
-            self._accountant.set_organization(org.id)
-            await self._api_client.switch_organization(org.id)
+        self._is_initialized = True
 
         self._logger.info(
             "orchestrator_initialized",
             org_count=len(self._organizations),
+            owner_count=len(self._owners),
         )
 
     async def shutdown(self) -> None:
         """Cleanup and shutdown."""
         self._logger.info("shutting_down_orchestrator")
-        self._state.is_running = False
+
+        self._scheduler.stop()
 
         if self._api_client:
             await self._api_client.close()
 
-    async def _load_organizations(self) -> None:
-        """Load available organizations from the API client."""
+        if self._start_websocket and self._event_publisher.is_running:
+            await self._event_publisher.stop()
+
+        self._is_initialized = False
+
+    async def _setup_organizations(self) -> None:
+        """Load organizations from API and map to owner personas."""
         if not self._api_client:
             return
 
-        # Get organizations from the login response
+        # Owner persona mapping by business name keywords
+        owner_mapping = {
+            "landscaping": "craig",
+            "craig": "craig",
+            "pizza": "tony",
+            "pizzeria": "tony",
+            "tony": "tony",
+            "nexus": "maya",
+            "tech": "maya",
+            "consulting": "maya",
+            "dental": "chen",
+            "dentist": "chen",
+            "main street": "chen",
+            "realty": "marcus",
+            "harbor": "marcus",
+            "real estate": "marcus",
+        }
+
         for org_data in self._api_client.organizations:
-            org = Organization(
-                id=UUID(org_data["id"]),
-                name=org_data.get("name", "Unknown"),
-                industry=org_data.get("industry", "general"),
-                owner_name=org_data.get("owner_name", "Owner"),
+            org_id = UUID(org_data["id"])
+            name = org_data.get("name", "Unknown")
+            industry = org_data.get("industry", "general")
+
+            # Determine owner based on name/industry
+            owner_key = "craig"  # Default
+            name_lower = name.lower()
+            industry_lower = industry.lower()
+
+            for keyword, key in owner_mapping.items():
+                if keyword in name_lower or keyword in industry_lower:
+                    owner_key = key
+                    break
+
+            ctx = OrganizationContext(
+                id=org_id,
+                name=name,
+                industry=industry,
+                owner_key=owner_key,
             )
-            self._organizations.append(org)
+            self._organizations[org_id] = ctx
+            self._org_by_owner[owner_key] = org_id
 
         self._logger.info("organizations_loaded", count=len(self._organizations))
 
-    @property
-    def state(self) -> SimulationState:
-        """Get current simulation state."""
-        return self._state
+    def _create_agents(self) -> None:
+        """Create all agent instances."""
+        # Create accountant (Sarah)
+        self._accountant = AccountantAgent()
+        if self._tool_executor:
+            self._accountant.set_tool_executor(self._tool_executor)
+
+        # Create owners for each organization
+        self._owners = create_all_owners(self._org_by_owner)
+
+        # Assign owners to organizations and create customers/vendors
+        for org_id, ctx in self._organizations.items():
+            # Assign owner
+            if ctx.owner_key in self._owners:
+                ctx.owner = self._owners[ctx.owner_key]
+
+            # Create industry-specific customers and vendors
+            ctx.customers = create_customers_for_industry(ctx.industry)
+            ctx.vendors = create_vendors_for_industry(ctx.industry)
+
+        self._logger.info(
+            "agents_created",
+            accountant=self._accountant.name if self._accountant else None,
+            owners=list(self._owners.keys()),
+        )
+
+    def _register_phase_handlers(self) -> None:
+        """Register handlers for each simulation phase."""
+        self._scheduler.register_phase_handler(
+            DayPhase.EARLY_MORNING, self._handle_early_morning
+        )
+        self._scheduler.register_phase_handler(
+            DayPhase.MORNING, self._handle_morning
+        )
+        self._scheduler.register_phase_handler(
+            DayPhase.LUNCH, self._handle_lunch
+        )
+        self._scheduler.register_phase_handler(
+            DayPhase.AFTERNOON, self._handle_afternoon
+        )
+        self._scheduler.register_phase_handler(
+            DayPhase.EVENING, self._handle_evening
+        )
+        self._scheduler.register_phase_handler(
+            DayPhase.NIGHT, self._handle_night
+        )
+
+    # === Properties ===
 
     @property
-    def organizations(self) -> list[Organization]:
-        """Get list of organizations."""
-        return self._organizations.copy()
+    def scheduler(self) -> Scheduler:
+        """Get the scheduler."""
+        return self._scheduler
 
     @property
     def accountant(self) -> AccountantAgent | None:
         """Get the accountant agent."""
         return self._accountant
 
-    def _emit_event(self, event_type: str, data: dict[str, Any]) -> None:
-        """Emit an event for the frontend."""
-        event = {
-            "type": event_type,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "data": data,
-        }
-        self._state.events.append(event)
-        self._logger.debug("event_emitted", event_type=event_type)
+    @property
+    def owners(self) -> dict[str, OwnerAgent]:
+        """Get all owner agents."""
+        return self._owners.copy()
+
+    @property
+    def organizations(self) -> list[OrganizationContext]:
+        """Get all organizations."""
+        return list(self._organizations.values())
+
+    @property
+    def current_org(self) -> OrganizationContext | None:
+        """Get the current organization context."""
+        if self._current_org_id:
+            return self._organizations.get(self._current_org_id)
+        return None
+
+    # === Organization Management ===
 
     async def switch_organization(self, org_id: UUID) -> None:
         """Switch to a different organization context."""
+        if org_id not in self._organizations:
+            raise ValueError(f"Unknown organization: {org_id}")
+
         if not self._api_client:
             raise RuntimeError("Orchestrator not initialized")
 
-        await self._api_client.switch_organization(org_id)
+        ctx = self._organizations[org_id]
+        previous_org = self.current_org
 
+        # Switch API context
+        await self._api_client.switch_organization(org_id)
+        self._current_org_id = org_id
+
+        # Update accountant context
         if self._accountant:
             self._accountant.set_organization(org_id)
 
-        # Find the org index
-        for i, org in enumerate(self._organizations):
-            if org.id == org_id:
-                self._state.current_org_index = i
-                break
+        # Publish movement event (Sarah walks to new building)
+        if self._accountant and previous_org:
+            self._event_publisher.publish(
+                agent_moving(
+                    agent_id=self._accountant.id,
+                    agent_name=self._accountant.name,
+                    from_location=previous_org.name,
+                    to_location=ctx.name,
+                    reason="Visiting for accounting duties",
+                )
+            )
 
-        self._emit_event("organization_switched", {
-            "org_id": str(org_id),
-            "org_name": self._organizations[self._state.current_org_index].name,
-        })
+        # Publish visit event
+        if self._accountant:
+            self._event_publisher.publish(
+                org_visited(
+                    agent_id=self._accountant.id,
+                    agent_name=self._accountant.name,
+                    org_id=org_id,
+                    org_name=ctx.name,
+                )
+            )
 
-        self._logger.info("organization_switched", org_id=str(org_id))
+        self._logger.info("organization_switched", org_id=str(org_id), name=ctx.name)
 
-    async def run_single_task(self, task: str) -> str:
+    # === Task Execution ===
+
+    async def run_single_task(self, task: str, org_id: UUID | None = None) -> str:
         """Run a single task using the accountant agent.
 
-        This is the simplest way to interact with the simulation.
-        The accountant will process the task and return a response.
-
         Args:
-            task: The task description (e.g., "Create an invoice for...")
+            task: The task description.
+            org_id: Optional org to switch to before running.
 
         Returns:
             The agent's final response.
@@ -206,91 +366,124 @@ class Orchestrator:
         if not self._accountant:
             raise RuntimeError("Orchestrator not initialized")
 
-        self._emit_event("task_started", {"task": task[:100]})
+        if org_id:
+            await self.switch_organization(org_id)
+
+        # Publish thinking event
+        self._event_publisher.publish(
+            agent_thinking(
+                agent_id=self._accountant.id,
+                agent_name=self._accountant.name,
+                prompt=task,
+                org_id=self._current_org_id,
+            )
+        )
 
         self._logger.info("running_task", task=task[:100])
 
         response = await self._accountant.run_task(task)
 
-        self._emit_event("task_completed", {
-            "task": task[:100],
-            "response": response[:200] if response else "",
-        })
+        # Publish speaking event with response
+        self._event_publisher.publish(
+            agent_speaking(
+                agent_id=self._accountant.id,
+                agent_name=self._accountant.name,
+                message=response,
+                org_id=self._current_org_id,
+            )
+        )
 
         return response
 
-    async def run_daily_cycle(self) -> None:
-        """Run a complete daily simulation cycle.
+    # === Phase Handlers ===
 
-        This cycles through all phases:
-        1. Morning: Review and planning
-        2. Daytime: Business operations
-        3. Evening: Reconciliation and reports
-        4. Night: Day transition
-        """
-        self._state.is_running = True
-        self._state.started_at = datetime.now(timezone.utc)
+    async def _handle_early_morning(self, time: Any, phase: DayPhase) -> list[Any]:
+        """Early morning: Prep and planning."""
+        results = []
+        day = self._scheduler.current_time.day
 
-        self._logger.info("daily_cycle_started", day=self._state.day)
-        self._emit_event("day_started", {"day": self._state.day})
+        self._event_publisher.publish(
+            phase_started(day, phase.value, "Business prep and planning")
+        )
 
-        try:
-            # Morning phase
-            await self._run_morning_phase()
+        # Sarah reviews her schedule
+        if self._accountant:
+            self._event_publisher.publish(
+                agent_speaking(
+                    agent_id=self._accountant.id,
+                    agent_name=self._accountant.name,
+                    message="Good morning! Let me review today's schedule and priorities.",
+                    org_id=None,
+                )
+            )
 
-            # Daytime phase
-            await self._run_daytime_phase()
+        self._event_publisher.publish(phase_completed(day, phase.value, results))
+        return results
 
-            # Evening phase
-            await self._run_evening_phase()
+    async def _handle_morning(self, time: Any, phase: DayPhase) -> list[Any]:
+        """Morning: Sarah reviews each organization."""
+        results = []
+        day = self._scheduler.current_time.day
 
-            # Night phase (transition)
-            await self._run_night_phase()
+        self._event_publisher.publish(
+            phase_started(day, phase.value, "Morning business activity")
+        )
 
-        except Exception as e:
-            self._logger.exception("daily_cycle_error", error=str(e))
-            self._emit_event("error", {"message": str(e)})
-            raise
+        for org_id, ctx in self._organizations.items():
+            await self.switch_organization(org_id)
 
-        finally:
-            self._state.is_running = False
-
-        self._logger.info("daily_cycle_completed", day=self._state.day)
-        self._emit_event("day_completed", {"day": self._state.day})
-
-    async def _run_morning_phase(self) -> None:
-        """Morning phase: Review previous day, plan current day."""
-        self._state.phase = SimulationPhase.MORNING
-        self._emit_event("phase_changed", {"phase": "morning"})
-        self._logger.info("morning_phase_started")
-
-        # Sarah reviews each organization
-        for org in self._organizations:
-            await self.switch_organization(org.id)
-
-            # Check AR aging
-            task = f"""Good morning! Please review the financial status for {org.name}.
+            task = f"""Good morning! Please review the financial status for {ctx.name}.
             Check the AR aging report and identify any overdue invoices.
             Provide a brief summary of the accounts receivable situation."""
 
-            await self.run_single_task(task)
+            try:
+                response = await self.run_single_task(task)
+                results.append({"org": ctx.name, "response": response[:200]})
+            except Exception as e:
+                self._logger.error("morning_task_error", org=ctx.name, error=str(e))
+                self._event_publisher.publish(
+                    error_event(f"Error reviewing {ctx.name}", {"error": str(e)})
+                )
 
-        self._logger.info("morning_phase_completed")
+        self._event_publisher.publish(phase_completed(day, phase.value, results))
+        return results
 
-    async def _run_daytime_phase(self) -> None:
-        """Daytime phase: Process transactions and business operations."""
-        self._state.phase = SimulationPhase.DAYTIME
-        self._emit_event("phase_changed", {"phase": "daytime"})
-        self._logger.info("daytime_phase_started")
+    async def _handle_lunch(self, time: Any, phase: DayPhase) -> list[Any]:
+        """Lunch: Mid-day lull, light activity."""
+        results = []
+        day = self._scheduler.current_time.day
 
-        # In a full simulation, this is where customer/vendor agents
-        # would generate transactions. For now, we just process
-        # any pending items.
+        self._event_publisher.publish(
+            phase_started(day, phase.value, "Mid-day break")
+        )
 
-        for org in self._organizations:
-            await self.switch_organization(org.id)
+        # Light activity during lunch
+        if self._accountant:
+            self._event_publisher.publish(
+                agent_speaking(
+                    agent_id=self._accountant.id,
+                    agent_name=self._accountant.name,
+                    message="Taking a quick break. Will continue with the afternoon tasks shortly.",
+                    org_id=None,
+                )
+            )
 
-            task = f"""Process any pending transactions for {org.name}.
+        self._event_publisher.publish(phase_completed(day, phase.value, results))
+        return results
+
+    async def _handle_afternoon(self, time: Any, phase: DayPhase) -> list[Any]:
+        """Afternoon: Peak business, process transactions."""
+        results = []
+        day = self._scheduler.current_time.day
+
+        self._event_publisher.publish(
+            phase_started(day, phase.value, "Peak afternoon activity")
+        )
+
+        for org_id, ctx in self._organizations.items():
+            await self.switch_organization(org_id)
+
+            task = f"""Process any pending transactions for {ctx.name}.
             Check for:
             1. Any bills that need to be approved
             2. Any payments that need to be applied
@@ -298,83 +491,203 @@ class Orchestrator:
 
             Take appropriate actions for each item found."""
 
-            await self.run_single_task(task)
+            try:
+                response = await self.run_single_task(task)
+                results.append({"org": ctx.name, "response": response[:200]})
+            except Exception as e:
+                self._logger.error("afternoon_task_error", org=ctx.name, error=str(e))
+                self._event_publisher.publish(
+                    error_event(f"Error processing {ctx.name}", {"error": str(e)})
+                )
 
-        self._logger.info("daytime_phase_completed")
+        self._event_publisher.publish(phase_completed(day, phase.value, results))
+        return results
 
-    async def _run_evening_phase(self) -> None:
-        """Evening phase: Reconciliation and reporting."""
-        self._state.phase = SimulationPhase.EVENING
-        self._emit_event("phase_changed", {"phase": "evening"})
-        self._logger.info("evening_phase_started")
+    async def _handle_evening(self, time: Any, phase: DayPhase) -> list[Any]:
+        """Evening: Reconciliation and reports."""
+        results = []
+        day = self._scheduler.current_time.day
 
-        for org in self._organizations:
-            await self.switch_organization(org.id)
+        self._event_publisher.publish(
+            phase_started(day, phase.value, "Wind down and accounting")
+        )
 
-            task = f"""End of day for {org.name}. Please:
+        for org_id, ctx in self._organizations.items():
+            await self.switch_organization(org_id)
+
+            task = f"""End of day for {ctx.name}. Please:
             1. Run a trial balance to ensure books are balanced
             2. Provide a quick summary of today's activity
             3. Note any issues that need attention tomorrow"""
 
-            await self.run_single_task(task)
+            try:
+                response = await self.run_single_task(task)
+                results.append({"org": ctx.name, "response": response[:200]})
+            except Exception as e:
+                self._logger.error("evening_task_error", org=ctx.name, error=str(e))
+                self._event_publisher.publish(
+                    error_event(f"Error closing {ctx.name}", {"error": str(e)})
+                )
 
-        self._logger.info("evening_phase_completed")
+        self._event_publisher.publish(phase_completed(day, phase.value, results))
+        return results
 
-    async def _run_night_phase(self) -> None:
-        """Night phase: Day transition and cleanup."""
-        self._state.phase = SimulationPhase.NIGHT
-        self._emit_event("phase_changed", {"phase": "night"})
-        self._logger.info("night_phase_started")
+    async def _handle_night(self, time: Any, phase: DayPhase) -> list[Any]:
+        """Night: Day transition and cleanup."""
+        results = []
+        day = self._scheduler.current_time.day
 
-        # Increment day counter
-        self._state.day += 1
+        self._event_publisher.publish(
+            phase_started(day, phase.value, "End of day processing")
+        )
 
-        # Clear agent histories for the new day
+        # Clear agent histories
         if self._accountant:
             self._accountant.clear_history()
 
-        self._logger.info("night_phase_completed", next_day=self._state.day)
+        for owner in self._owners.values():
+            owner.clear_history()
+
+        self._event_publisher.publish(phase_completed(day, phase.value, results))
+        return results
+
+    # === Simulation Control ===
+
+    async def run_daily_cycle(self) -> dict[DayPhase, list[Any]]:
+        """Run a complete daily simulation cycle."""
+        if not self._is_initialized:
+            raise RuntimeError("Orchestrator not initialized")
+
+        day = self._scheduler.current_time.day
+
+        self._event_publisher.publish(day_started(day))
+        self._logger.info("daily_cycle_started", day=day)
+
+        try:
+            results = await self._scheduler.run_day()
+
+            self._event_publisher.publish(
+                day_completed(day, {"phase_count": len(results)})
+            )
+            self._logger.info("daily_cycle_completed", day=day)
+
+            return results
+
+        except Exception as e:
+            self._logger.exception("daily_cycle_error", error=str(e))
+            self._event_publisher.publish(
+                error_event("Daily cycle failed", {"error": str(e)})
+            )
+            raise
+
+    async def run_simulation(
+        self,
+        max_days: int | None = None,
+        speed: float | None = None,
+    ) -> None:
+        """Run the simulation continuously.
+
+        Args:
+            max_days: Optional maximum number of days to simulate.
+            speed: Optional speed multiplier override.
+        """
+        if not self._is_initialized:
+            raise RuntimeError("Orchestrator not initialized")
+
+        if speed:
+            self._scheduler.speed = speed
+
+        self._event_publisher.publish(
+            simulation_started(self._scheduler.speed, max_days)
+        )
+
+        self._logger.info(
+            "simulation_starting",
+            max_days=max_days,
+            speed=self._scheduler.speed,
+        )
+
+        try:
+            await self._scheduler.run_continuous(max_days)
+
+        finally:
+            days_run = self._scheduler.current_time.day - 1
+            self._event_publisher.publish(
+                simulation_stopped(days_run, "completed")
+            )
+            self._logger.info("simulation_ended", days_run=days_run)
+
+    def pause(self) -> None:
+        """Pause the simulation."""
+        self._scheduler.pause()
+        self._logger.info("simulation_paused")
+
+    def resume(self) -> None:
+        """Resume the simulation."""
+        self._scheduler.resume()
+        self._logger.info("simulation_resumed")
+
+    def stop(self) -> None:
+        """Stop the simulation."""
+        self._scheduler.stop()
+        self._event_publisher.publish(
+            simulation_stopped(self._scheduler.current_time.day - 1, "stopped")
+        )
+        self._logger.info("simulation_stopped")
+
+    def get_status(self) -> dict[str, Any]:
+        """Get current orchestrator status."""
+        return {
+            "is_initialized": self._is_initialized,
+            "scheduler": self._scheduler.get_status(),
+            "publisher": self._event_publisher.get_status(),
+            "organizations": [
+                {
+                    "id": str(ctx.id),
+                    "name": ctx.name,
+                    "industry": ctx.industry,
+                    "owner": ctx.owner.name if ctx.owner else None,
+                    "customer_count": len(ctx.customers),
+                    "vendor_count": len(ctx.vendors),
+                }
+                for ctx in self._organizations.values()
+            ],
+            "current_org": str(self._current_org_id) if self._current_org_id else None,
+        }
 
 
 async def main() -> None:
     """Main entry point for running the simulation."""
     import sys
 
-    # Configure logging
-    structlog.configure(
-        processors=[
-            structlog.stdlib.filter_by_level,
-            structlog.stdlib.add_logger_name,
-            structlog.stdlib.add_log_level,
-            structlog.stdlib.PositionalArgumentsFormatter(),
-            structlog.processors.TimeStamper(fmt="iso"),
-            structlog.processors.StackInfoRenderer(),
-            structlog.processors.format_exc_info,
-            structlog.processors.UnicodeDecoder(),
-            structlog.dev.ConsoleRenderer(),
-        ],
-        wrapper_class=structlog.stdlib.BoundLogger,
-        context_class=dict,
-        logger_factory=structlog.stdlib.LoggerFactory(),
-        cache_logger_on_first_use=True,
-    )
+    from atlas_town.config import configure_logging
+
+    configure_logging()
 
     logger.info("starting_atlas_town_simulation")
 
     try:
         async with Orchestrator() as orchestrator:
-            # For testing, run a single task
+            # Parse command line arguments
             if len(sys.argv) > 1:
-                task = " ".join(sys.argv[1:])
+                if sys.argv[1] == "--run":
+                    # Run continuous simulation
+                    max_days = int(sys.argv[2]) if len(sys.argv) > 2 else 7
+                    await orchestrator.run_simulation(max_days=max_days)
+                else:
+                    # Run a single task
+                    task = " ".join(sys.argv[1:])
+                    response = await orchestrator.run_single_task(task)
+                    print(f"\n{'='*60}")
+                    print("Sarah's Response:")
+                    print("=" * 60)
+                    print(response)
             else:
-                task = "Please list all customers and provide a summary of their balances."
+                # Default: run one day
+                await orchestrator.run_daily_cycle()
 
-            response = await orchestrator.run_single_task(task)
-            print(f"\n{'='*60}")
-            print("Sarah's Response:")
-            print('='*60)
-            print(response)
-
+    except KeyboardInterrupt:
+        logger.info("simulation_interrupted")
     except Exception as e:
         logger.exception("simulation_error", error=str(e))
         sys.exit(1)

@@ -1,0 +1,66 @@
+"""Event system for real-time WebSocket publishing."""
+
+from atlas_town.events.publisher import (
+    ClientConnection,
+    EventPublisher,
+    get_publisher,
+    start_publisher,
+    stop_publisher,
+)
+from atlas_town.events.types import (
+    AgentEvent,
+    EventType,
+    MovementEvent,
+    PhaseEvent,
+    SimulationEvent,
+    ToolEvent,
+    TransactionEvent,
+    agent_moving,
+    agent_speaking,
+    agent_thinking,
+    day_completed,
+    day_started,
+    error_event,
+    org_visited,
+    phase_completed,
+    phase_started,
+    simulation_started,
+    simulation_stopped,
+    tool_called,
+    tool_completed,
+    tool_failed,
+    transaction_created,
+)
+
+__all__ = [
+    # Publisher
+    "EventPublisher",
+    "ClientConnection",
+    "get_publisher",
+    "start_publisher",
+    "stop_publisher",
+    # Event types
+    "EventType",
+    "SimulationEvent",
+    "AgentEvent",
+    "PhaseEvent",
+    "ToolEvent",
+    "TransactionEvent",
+    "MovementEvent",
+    # Factory functions
+    "simulation_started",
+    "simulation_stopped",
+    "day_started",
+    "day_completed",
+    "phase_started",
+    "phase_completed",
+    "agent_thinking",
+    "agent_speaking",
+    "agent_moving",
+    "tool_called",
+    "tool_completed",
+    "tool_failed",
+    "transaction_created",
+    "org_visited",
+    "error_event",
+]

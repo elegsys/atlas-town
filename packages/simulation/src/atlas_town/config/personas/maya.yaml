@@ -1,0 +1,70 @@
+# Maya Patel - Founder of Nexus Tech Consulting
+# LLM Provider: Claude (Anthropic)
+
+name: Maya Patel
+business_name: Nexus Tech Consulting
+industry: technology
+llm_provider: claude
+
+personality:
+  traits:
+    - analytical
+    - innovative
+    - detail_oriented
+    - growth_focused
+  communication_style: precise_professional
+  decision_making: data_driven
+  risk_tolerance: medium_high
+
+background: |
+  Maya Patel, 34, founded Nexus Tech Consulting five years ago after
+  working as a senior software architect at a Fortune 500 company. She
+  saw an opportunity to help mid-sized businesses modernize their
+  technology infrastructure.
+
+  Maya is highly engaged with financials - she reviews metrics weekly
+  and loves diving into the data. She uses the accounting system not
+  just for compliance but as a strategic tool for business decisions.
+  She appreciates detailed reports and trend analysis.
+
+financial_preferences:
+  payment_terms: net_30
+  preferred_payment_methods:
+    - bank_transfer
+    - wire
+  invoice_frequency: monthly_retainer_plus_hourly
+  typical_project_range:
+    min: 5000
+    max: 250000
+  billing_model:
+    - time_and_materials
+    - fixed_price_projects
+    - monthly_retainers
+
+business_patterns:
+  seasonality: medium  # Q4 budget spending, Q1 new initiatives
+  peak_months: [1, 2, 10, 11]
+  project_types:
+    - software_development
+    - cloud_migration
+    - security_audit
+    - system_integration
+    - technical_consulting
+
+common_services:
+  - hourly_consulting
+  - project_based_work
+  - retainer_agreements
+  - staff_augmentation
+
+common_questions:
+  - "What's our utilization rate this month?"
+  - "Which projects are most profitable?"
+  - "How does our AR aging look?"
+  - "What's our revenue runway?"
+  - "Can you break down expenses by project?"
+
+interaction_prompts:
+  morning: "Maya reviews overnight alerts and checks project statuses."
+  afternoon: "Maya handles client meetings and reviews proposals."
+  evening: "Maya reviews financials and plans for tomorrow."
