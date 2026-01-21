@@ -24,10 +24,10 @@ class LLMSettings(BaseSettings):
     openai_api_key: SecretStr = Field(..., description="OpenAI API key for GPT")
     google_api_key: SecretStr = Field(..., description="Google API key for Gemini")
 
-    # Model selections
-    claude_model: str = Field(default="claude-sonnet-4-20250514", description="Claude model ID")
-    gpt_model: str = Field(default="gpt-4o", description="OpenAI GPT model ID")
-    gemini_model: str = Field(default="gemini-1.5-pro", description="Google Gemini model ID")
+    # Model selections (defaults to cheapest capable models - Jan 2026)
+    claude_model: str = Field(default="claude-haiku-4-5", description="Claude model ID")
+    gpt_model: str = Field(default="gpt-5-nano", description="OpenAI GPT model ID")
+    gemini_model: str = Field(default="gemini-2.5-flash", description="Google Gemini model ID")
 
     # Rate limiting
     max_tokens: int = Field(default=4096, description="Max tokens per response")
@@ -101,12 +101,12 @@ class FlatSettings(BaseSettings):
     openai_api_key: SecretStr = Field(..., validation_alias="OPENAI_API_KEY")
     google_api_key: SecretStr = Field(..., validation_alias="GOOGLE_API_KEY")
 
-    # Model selections
+    # Model selections (defaults to cheapest capable models - Jan 2026)
     claude_model: str = Field(
-        default="claude-sonnet-4-20250514", validation_alias="CLAUDE_MODEL"
+        default="claude-haiku-4-5", validation_alias="CLAUDE_MODEL"
     )
-    gpt_model: str = Field(default="gpt-4o", validation_alias="GPT_MODEL")
-    gemini_model: str = Field(default="gemini-1.5-pro", validation_alias="GEMINI_MODEL")
+    gpt_model: str = Field(default="gpt-5-nano", validation_alias="GPT_MODEL")
+    gemini_model: str = Field(default="gemini-2.5-flash", validation_alias="GEMINI_MODEL")
 
     # LLM parameters
     llm_max_tokens: int = Field(default=4096, validation_alias="LLM_MAX_TOKENS")

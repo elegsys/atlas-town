@@ -31,8 +31,10 @@ def test_settings_has_defaults():
     assert settings.atlas_api_url == "http://localhost:8000"
     assert settings.atlas_timeout == 30.0
     assert settings.atlas_max_retries == 3
-    assert settings.claude_model == "claude-sonnet-4-20250514"
-    assert settings.gpt_model == "gpt-4o"
+    # Defaults to cheapest models (Jan 2026)
+    assert settings.claude_model == "claude-haiku-4-5"
+    assert settings.gpt_model == "gpt-5-nano"
+    assert settings.gemini_model == "gemini-2.5-flash"
     assert settings.ws_port == 8765
     assert settings.simulation_speed == 1.0
 
