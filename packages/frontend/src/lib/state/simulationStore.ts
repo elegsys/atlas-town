@@ -17,12 +17,37 @@ export interface AgentState {
   orgId: string | null;
 }
 
-// Organization state
+// Organization state with financial metrics
 export interface OrgState {
   id: string;
   name: string;
   industry: string;
   owner: string | null;
+  // Financial metrics
+  totalAR: number; // Accounts Receivable
+  totalAP: number; // Accounts Payable
+  cashBalance: number;
+  invoiceCount: number;
+  billCount: number;
+}
+
+// Financial summary across all organizations
+export interface FinancialSummary {
+  totalAR: number;
+  totalAP: number;
+  totalCash: number;
+  dailyTransactionCount: number;
+  byOrg: Map<string, OrgFinancials>;
+}
+
+export interface OrgFinancials {
+  orgId: string;
+  orgName: string;
+  industry: string;
+  ar: number;
+  ap: number;
+  cash: number;
+  transactions: number;
 }
 
 // Phase state
@@ -52,6 +77,8 @@ interface SimulationState {
   // Simulation status
   isRunning: boolean;
   isPaused: boolean;
+  simulationSpeed: number; // 1, 2, 5, 10
+  setSpeed: (speed: number) => void;
 
   // Time tracking
   currentDay: number;
@@ -77,6 +104,10 @@ interface SimulationState {
   recentEvents: SimulationEvent[];
   addEvent: (event: SimulationEvent) => void;
 
+  // Financial summary
+  financialSummary: FinancialSummary;
+  updateOrgFinancials: (orgId: string, updates: Partial<OrgFinancials>) => void;
+
   // Process incoming events
   processEvent: (event: SimulationEvent) => void;
 
@@ -95,6 +126,8 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
   // Simulation status
   isRunning: false,
   isPaused: false,
+  simulationSpeed: 1,
+  setSpeed: (speed) => set({ simulationSpeed: speed }),
 
   // Time
   currentDay: 1,
@@ -161,6 +194,53 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
   // Organizations
   organizations: new Map(),
   currentOrgId: null,
+
+  // Financial summary
+  financialSummary: {
+    totalAR: 0,
+    totalAP: 0,
+    totalCash: 0,
+    dailyTransactionCount: 0,
+    byOrg: new Map(),
+  },
+
+  updateOrgFinancials: (orgId, updates) =>
+    set((state) => {
+      const byOrg = new Map(state.financialSummary.byOrg);
+      const existing = byOrg.get(orgId) || {
+        orgId,
+        orgName: "",
+        industry: "",
+        ar: 0,
+        ap: 0,
+        cash: 0,
+        transactions: 0,
+      };
+      byOrg.set(orgId, { ...existing, ...updates });
+
+      // Recalculate totals
+      let totalAR = 0;
+      let totalAP = 0;
+      let totalCash = 0;
+      let dailyTransactionCount = 0;
+      byOrg.forEach((org) => {
+        totalAR += org.ar;
+        totalAP += org.ap;
+        totalCash += org.cash;
+        dailyTransactionCount += org.transactions;
+      });
+
+      return {
+        financialSummary: {
+          ...state.financialSummary,
+          totalAR,
+          totalAP,
+          totalCash,
+          dailyTransactionCount,
+          byOrg,
+        },
+      };
+    }),
 
   // Transactions
   transactions: [],
@@ -265,15 +345,50 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
       case "payment.sent":
       case "transaction.created":
         if (event.transaction && event.org) {
+          const orgId = event.org.id || "unknown";
+          const amount = event.transaction.amount;
+          const txType = event.transaction.type;
+
           state.addTransaction({
             id: event.id,
             timestamp: event.timestamp,
-            type: event.transaction.type,
+            type: txType,
             orgName: event.org.name,
-            amount: event.transaction.amount,
+            amount: amount,
             counterparty: event.transaction.counterparty,
             description: event.transaction.description,
           });
+
+          // Update financial metrics for the organization
+          const currentOrg = state.financialSummary.byOrg.get(orgId) || {
+            orgId,
+            orgName: event.org.name,
+            industry: "",
+            ar: 0,
+            ap: 0,
+            cash: 0,
+            transactions: 0,
+          };
+
+          const updates: Partial<OrgFinancials> = {
+            orgName: event.org.name,
+            transactions: currentOrg.transactions + 1,
+          };
+
+          // Update AR/AP/Cash based on transaction type
+          if (txType === "invoice" || txType === "invoice_created") {
+            updates.ar = currentOrg.ar + amount;
+          } else if (txType === "bill" || txType === "bill_created") {
+            updates.ap = currentOrg.ap + amount;
+          } else if (txType === "payment_received") {
+            updates.ar = Math.max(0, currentOrg.ar - amount);
+            updates.cash = currentOrg.cash + amount;
+          } else if (txType === "payment_sent") {
+            updates.ap = Math.max(0, currentOrg.ap - amount);
+            updates.cash = currentOrg.cash - amount;
+          }
+
+          state.updateOrgFinancials(orgId, updates);
         }
         break;
 
@@ -288,12 +403,20 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
     set({
       isRunning: false,
       isPaused: false,
+      simulationSpeed: 1,
       currentDay: 1,
       currentPhase: "early_morning",
       phaseDescription: "",
       currentOrgId: null,
       transactions: [],
       recentEvents: [],
+      financialSummary: {
+        totalAR: 0,
+        totalAP: 0,
+        totalCash: 0,
+        dailyTransactionCount: 0,
+        byOrg: new Map(),
+      },
       agents: new Map([
         [
           "sarah",

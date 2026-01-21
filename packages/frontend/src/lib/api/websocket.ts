@@ -260,6 +260,47 @@ export class SimulationWebSocket {
     }
   }
 
+  // === Simulation Control Commands ===
+
+  /**
+   * Start or resume the simulation.
+   */
+  play(): void {
+    this.sendCommand("play");
+  }
+
+  /**
+   * Pause the simulation.
+   */
+  pause(): void {
+    this.sendCommand("pause");
+  }
+
+  /**
+   * Set the simulation speed multiplier.
+   */
+  setSpeed(speed: number): void {
+    this.sendCommand("set_speed", { speed });
+  }
+
+  /**
+   * Reset the simulation to day 1.
+   */
+  resetSimulation(): void {
+    this.sendCommand("reset");
+  }
+
+  /**
+   * Send a control command to the simulation backend.
+   */
+  private sendCommand(command: string, data: Record<string, unknown> = {}): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) {
+      console.warn(`[WS] Cannot send command "${command}": not connected`);
+      return;
+    }
+    this.ws.send(JSON.stringify({ type: "command", command, ...data }));
+  }
+
   /**
    * Check if connected.
    */
