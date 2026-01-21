@@ -54,6 +54,7 @@ class AtlasAPIClient:
         self._refresh_token: str | None = None
         self._token_expires_at: datetime | None = None
         self._current_org_id: UUID | None = None
+        self._current_company_id: UUID | None = None
         self._organizations: list[dict[str, Any]] = []
 
         self._client: httpx.AsyncClient | None = None
@@ -113,6 +114,10 @@ class AtlasAPIClient:
             user=data["user"]["email"],
             org_count=len(self._organizations),
         )
+
+        # Fetch default company for the organization
+        await self._fetch_default_company()
+
         return data
 
     async def refresh_tokens(self) -> None:
@@ -166,9 +171,13 @@ class AtlasAPIClient:
         response.raise_for_status()
 
         data = response.json()
-        self._access_token = data["tokens"]["access_token"]
-        self._refresh_token = data["tokens"]["refresh_token"]
+        # switch-org returns flat access_token, not nested under "tokens"
+        self._access_token = data.get("access_token") or data.get("tokens", {}).get("access_token")
+        # switch-org doesn't return refresh_token, keep the existing one
         self._current_org_id = org_id
+
+        # Fetch default company for the new organization
+        await self._fetch_default_company()
 
         logger.info("switched_organization", org_id=str(org_id))
         return data
@@ -179,11 +188,42 @@ class AtlasAPIClient:
         return self._current_org_id
 
     @property
+    def current_company_id(self) -> UUID | None:
+        """Get current company ID."""
+        return self._current_company_id
+
+    @property
     def organizations(self) -> list[dict[str, Any]]:
         """Get list of available organizations."""
         return self._organizations
 
+    async def _fetch_default_company(self) -> None:
+        """Fetch and set the default company for the current organization."""
+        client = await self._get_client()
+        response = await client.get(
+            "/api/v1/companies/",
+            headers=self._get_headers(),
+        )
+        if response.status_code == 200:
+            companies = response.json()
+            if companies:
+                self._current_company_id = UUID(companies[0]["id"])
+                logger.info("company_set", company_id=str(self._current_company_id))
+
     # === Generic Request Methods ===
+
+    # Paths that require company_id parameter
+    _COMPANY_SCOPED_PATHS = (
+        "/api/v1/customers",
+        "/api/v1/vendors",
+        "/api/v1/invoices",
+        "/api/v1/bills",
+        "/api/v1/payments",
+        "/api/v1/accounts",
+        "/api/v1/journal-entries",
+        "/api/v1/bank-transactions",
+        "/api/v1/reports",
+    )
 
     async def _request(
         self,
@@ -196,6 +236,12 @@ class AtlasAPIClient:
         """Make an authenticated API request with retry logic."""
         await self._ensure_authenticated()
         client = await self._get_client()
+
+        # Auto-inject company_id for scoped endpoints
+        if self._current_company_id and any(path.startswith(p) for p in self._COMPANY_SCOPED_PATHS):
+            params = params or {}
+            if "company_id" not in params:
+                params["company_id"] = str(self._current_company_id)
 
         try:
             response = await client.request(

@@ -408,6 +408,11 @@ class Scheduler:
             await self.run_day()
             days_run += 1
 
+            # run_day() sets _is_running to False at the end,
+            # but we want to continue in continuous mode
+            if max_days is None or days_run < max_days:
+                self._is_running = True
+
             # Small delay between days
             await asyncio.sleep(0.1)
 

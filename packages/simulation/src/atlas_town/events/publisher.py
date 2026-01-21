@@ -42,6 +42,16 @@ class ClientConnection:
             addr = self.websocket.remote_address
             self.client_id = f"{addr[0]}:{addr[1]}" if isinstance(addr, tuple) else str(addr)
 
+    def __hash__(self) -> int:
+        """Make hashable for use in sets (required for websockets v15+)."""
+        return hash(id(self.websocket))
+
+    def __eq__(self, other: object) -> bool:
+        """Equality based on websocket identity."""
+        if not isinstance(other, ClientConnection):
+            return False
+        return self.websocket is other.websocket
+
 
 class EventPublisher:
     """WebSocket server for publishing simulation events.
