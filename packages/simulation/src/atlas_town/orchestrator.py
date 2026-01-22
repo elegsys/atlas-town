@@ -10,8 +10,9 @@ It manages:
 """
 
 import asyncio
+import random
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
@@ -50,6 +51,12 @@ from atlas_town.events import (
 )
 from atlas_town.scheduler import DayPhase, Scheduler
 from atlas_town.tools import AtlasAPIClient, ToolExecutor
+from atlas_town.transactions import (
+    GeneratedTransaction,
+    TransactionGenerator,
+    TransactionType,
+    create_transaction_generator,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -116,6 +123,9 @@ class Orchestrator:
         # Event publishing
         self._event_publisher = event_publisher or get_publisher()
         self._start_websocket = start_websocket
+
+        # Transaction generator for realistic daily activity
+        self._tx_generator = create_transaction_generator()
 
         # State
         self._is_initialized = False
@@ -351,6 +361,165 @@ class Orchestrator:
 
         self._logger.info("organization_switched", org_id=str(org_id), name=ctx.name)
 
+    # === Helper Methods for Transaction Generation ===
+
+    def _get_simulation_date(self) -> date:
+        """Get the current simulation date based on day number."""
+        base_date = date.today() - timedelta(days=30)  # Start 30 days ago
+        return base_date + timedelta(days=self._scheduler.current_time.day - 1)
+
+    async def _create_invoice(
+        self,
+        ctx: OrganizationContext,
+        tx: GeneratedTransaction,
+        sim_date: date,
+    ) -> dict[str, Any] | None:
+        """Create an invoice from a generated transaction."""
+        if not self._api_client or not tx.customer_id:
+            return None
+
+        try:
+            # Get revenue account
+            accounts = await self._api_client.list_accounts()
+            revenue_account = next(
+                (a for a in accounts if "revenue" in a["name"].lower() or a["code"].startswith("4")),
+                None
+            )
+
+            invoice_data = {
+                "customer_id": str(tx.customer_id),
+                "invoice_date": sim_date.isoformat(),
+                "due_date": (sim_date + timedelta(days=30)).isoformat(),
+                "lines": [{
+                    "description": tx.description,
+                    "quantity": "1",
+                    "unit_price": str(tx.amount),
+                    "revenue_account_id": revenue_account["id"] if revenue_account else None,
+                }],
+            }
+
+            result = await self._api_client.create_invoice(invoice_data)
+
+            # Publish event
+            self._event_publisher.publish(
+                transaction_created(
+                    tx_type="invoice",
+                    amount=str(tx.amount),
+                    description=tx.description,
+                    org_id=ctx.id,
+                    org_name=ctx.name,
+                )
+            )
+
+            self._logger.info("invoice_created", org=ctx.name, amount=str(tx.amount))
+            return result
+
+        except Exception as e:
+            self._logger.error("invoice_creation_failed", error=str(e))
+            return None
+
+    async def _create_bill(
+        self,
+        ctx: OrganizationContext,
+        tx: GeneratedTransaction,
+        sim_date: date,
+    ) -> dict[str, Any] | None:
+        """Create a bill from a generated transaction."""
+        if not self._api_client or not tx.vendor_id:
+            return None
+
+        try:
+            # Get expense account
+            accounts = await self._api_client.list_accounts()
+            expense_account = next(
+                (a for a in accounts if "expense" in a["name"].lower() or a["code"].startswith("5") or a["code"].startswith("6")),
+                None
+            )
+
+            bill_data = {
+                "vendor_id": str(tx.vendor_id),
+                "bill_date": sim_date.isoformat(),
+                "due_date": (sim_date + timedelta(days=30)).isoformat(),
+                "bill_number": f"BILL-{sim_date.strftime('%Y%m%d')}-{random.randint(100, 999)}",
+                "lines": [{
+                    "description": tx.description,
+                    "quantity": "1",
+                    "unit_price": str(tx.amount),
+                    "expense_account_id": expense_account["id"] if expense_account else None,
+                }],
+            }
+
+            result = await self._api_client.create_bill(bill_data)
+
+            # Publish event
+            self._event_publisher.publish(
+                transaction_created(
+                    tx_type="bill",
+                    amount=str(tx.amount),
+                    description=tx.description,
+                    org_id=ctx.id,
+                    org_name=ctx.name,
+                )
+            )
+
+            self._logger.info("bill_created", org=ctx.name, amount=str(tx.amount))
+            return result
+
+        except Exception as e:
+            self._logger.error("bill_creation_failed", error=str(e))
+            return None
+
+    async def _record_payment(
+        self,
+        ctx: OrganizationContext,
+        tx: GeneratedTransaction,
+    ) -> dict[str, Any] | None:
+        """Record a payment received for an invoice."""
+        if not self._api_client or not tx.metadata:
+            return None
+
+        invoice_id = tx.metadata.get("invoice_id")
+        if not invoice_id:
+            return None
+
+        try:
+            # Create payment
+            payment_data = {
+                "customer_id": str(tx.customer_id) if tx.customer_id else None,
+                "amount": str(tx.amount),
+                "payment_date": self._get_simulation_date().isoformat(),
+                "payment_method": "check",
+                "reference": f"PMT-{random.randint(10000, 99999)}",
+            }
+
+            result = await self._api_client.create_payment(payment_data)
+
+            if result and result.get("id"):
+                # Apply to invoice
+                await self._api_client.apply_payment_to_invoice(
+                    UUID(result["id"]),
+                    UUID(invoice_id),
+                    str(tx.amount),
+                )
+
+            # Publish event
+            self._event_publisher.publish(
+                transaction_created(
+                    tx_type="payment",
+                    amount=str(tx.amount),
+                    description=tx.description,
+                    org_id=ctx.id,
+                    org_name=ctx.name,
+                )
+            )
+
+            self._logger.info("payment_received", org=ctx.name, amount=str(tx.amount))
+            return result
+
+        except Exception as e:
+            self._logger.error("payment_failed", error=str(e))
+            return None
+
     # === Task Execution ===
 
     async def run_single_task(self, task: str, org_id: UUID | None = None) -> str:
@@ -421,9 +590,10 @@ class Orchestrator:
         return results
 
     async def _handle_morning(self, time: Any, phase: DayPhase) -> list[Any]:
-        """Morning: Sarah reviews each organization."""
+        """Morning: Generate new business activity (invoices, sales)."""
         results = []
         day = self._scheduler.current_time.day
+        sim_date = self._get_simulation_date()
 
         self._event_publisher.publish(
             phase_started(day, phase.value, "Morning business activity")
@@ -432,17 +602,46 @@ class Orchestrator:
         for org_id, ctx in self._organizations.items():
             await self.switch_organization(org_id)
 
-            task = f"""Good morning! Please review the financial status for {ctx.name}.
-            Check the AR aging report and identify any overdue invoices.
-            Provide a brief summary of the accounts receivable situation."""
-
             try:
-                response = await self.run_single_task(task)
-                results.append({"org": ctx.name, "response": response[:200]})
+                # Get customers and vendors for this org
+                customers = await self._api_client.list_customers() if self._api_client else []
+                vendors = await self._api_client.list_vendors() if self._api_client else []
+
+                # Generate realistic transactions for this business
+                transactions = self._tx_generator.generate_daily_transactions(
+                    business_key=ctx.owner_key,
+                    current_date=sim_date,
+                    customers=customers,
+                    vendors=vendors,
+                )
+
+                # Process invoices and sales
+                invoices_created = 0
+                for tx in transactions:
+                    if tx.transaction_type in [TransactionType.INVOICE, TransactionType.CASH_SALE]:
+                        await self._create_invoice(ctx, tx, sim_date)
+                        invoices_created += 1
+
+                if invoices_created > 0:
+                    self._event_publisher.publish(
+                        agent_speaking(
+                            agent_id=self._accountant.id if self._accountant else UUID(int=0),
+                            agent_name="Sarah Chen",
+                            message=f"Created {invoices_created} invoice(s) for {ctx.name} today.",
+                            org_id=org_id,
+                        )
+                    )
+
+                results.append({
+                    "org": ctx.name,
+                    "invoices_created": invoices_created,
+                    "transaction_count": len(transactions),
+                })
+
             except Exception as e:
                 self._logger.error("morning_task_error", org=ctx.name, error=str(e))
                 self._event_publisher.publish(
-                    error_event(f"Error reviewing {ctx.name}", {"error": str(e)})
+                    error_event(f"Error generating business for {ctx.name}", {"error": str(e)})
                 )
 
         self._event_publisher.publish(phase_completed(day, phase.value, results))
@@ -472,9 +671,10 @@ class Orchestrator:
         return results
 
     async def _handle_afternoon(self, time: Any, phase: DayPhase) -> list[Any]:
-        """Afternoon: Peak business, process transactions."""
+        """Afternoon: Process bills and receive payments."""
         results = []
         day = self._scheduler.current_time.day
+        sim_date = self._get_simulation_date()
 
         self._event_publisher.publish(
             phase_started(day, phase.value, "Peak afternoon activity")
@@ -483,17 +683,49 @@ class Orchestrator:
         for org_id, ctx in self._organizations.items():
             await self.switch_organization(org_id)
 
-            task = f"""Process any pending transactions for {ctx.name}.
-            Check for:
-            1. Any bills that need to be approved
-            2. Any payments that need to be applied
-            3. Any bank transactions that need categorization
-
-            Take appropriate actions for each item found."""
-
             try:
-                response = await self.run_single_task(task)
-                results.append({"org": ctx.name, "response": response[:200]})
+                # Get customers, vendors, and pending invoices
+                customers = await self._api_client.list_customers() if self._api_client else []
+                vendors = await self._api_client.list_vendors() if self._api_client else []
+                pending_invoices = await self._api_client.list_invoices(status="sent") if self._api_client else []
+
+                # Generate transactions (bills and payments)
+                transactions = self._tx_generator.generate_daily_transactions(
+                    business_key=ctx.owner_key,
+                    current_date=sim_date,
+                    customers=customers,
+                    vendors=vendors,
+                    pending_invoices=pending_invoices,
+                )
+
+                bills_created = 0
+                payments_received = 0
+
+                for tx in transactions:
+                    if tx.transaction_type == TransactionType.BILL:
+                        await self._create_bill(ctx, tx, sim_date)
+                        bills_created += 1
+                    elif tx.transaction_type == TransactionType.PAYMENT_RECEIVED:
+                        if tx.metadata and tx.metadata.get("invoice_id"):
+                            await self._record_payment(ctx, tx)
+                            payments_received += 1
+
+                if bills_created > 0 or payments_received > 0:
+                    self._event_publisher.publish(
+                        agent_speaking(
+                            agent_id=self._accountant.id if self._accountant else UUID(int=0),
+                            agent_name="Sarah Chen",
+                            message=f"{ctx.name}: Recorded {bills_created} bill(s), received {payments_received} payment(s).",
+                            org_id=org_id,
+                        )
+                    )
+
+                results.append({
+                    "org": ctx.name,
+                    "bills_created": bills_created,
+                    "payments_received": payments_received,
+                })
+
             except Exception as e:
                 self._logger.error("afternoon_task_error", org=ctx.name, error=str(e))
                 self._event_publisher.publish(

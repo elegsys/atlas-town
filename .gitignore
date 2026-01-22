@@ -38,3 +38,6 @@ htmlcov/
 
 # Misc
 *.local
+
+# Simulation credentials (contains passwords)
+packages/simulation/business_credentials.json

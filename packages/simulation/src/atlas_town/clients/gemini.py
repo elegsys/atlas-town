@@ -1,10 +1,13 @@
-"""Google Gemini client with function calling support."""
+"""Google Gemini client with function calling support.
+
+Uses the new google-genai SDK (v1.0+) for both text generation and image generation.
+"""
 
 from dataclasses import dataclass
 from typing import Any
 
-import google.generativeai as genai
-from google.generativeai.types import FunctionDeclaration, Tool
+from google import genai
+from google.genai import types
 import structlog
 
 from atlas_town.config import get_settings
@@ -23,7 +26,11 @@ class GeminiResponse:
 
 
 class GeminiClient:
-    """Client for Google's Gemini API with tool use support."""
+    """Client for Google's Gemini API with tool use support.
+
+    Uses the new google-genai SDK which provides a unified interface for
+    both Gemini text models and Imagen/Nano Banana image models.
+    """
 
     def __init__(
         self,
@@ -38,8 +45,8 @@ class GeminiClient:
         self._max_tokens = max_tokens or settings.llm_max_tokens
         self._temperature = temperature or settings.llm_temperature
 
-        # Configure the API
-        genai.configure(api_key=self._api_key)
+        # Initialize the new SDK client
+        self._client = genai.Client(api_key=self._api_key)
 
         self._logger = logger.bind(client="gemini", model=self._model_name)
 
@@ -84,7 +91,7 @@ class GeminiClient:
 
     def _convert_tools_to_gemini_format(
         self, tools: list[dict[str, Any]]
-    ) -> list[Tool]:
+    ) -> list[types.Tool]:
         """Convert our tool format to Gemini's expected format."""
         function_declarations = []
 
@@ -92,57 +99,64 @@ class GeminiClient:
             # Convert the input schema
             parameters = self._convert_json_schema_to_gemini(tool["input_schema"])
 
-            func_decl = FunctionDeclaration(
+            func_decl = types.FunctionDeclaration(
                 name=tool["name"],
                 description=tool["description"],
                 parameters=parameters,
             )
             function_declarations.append(func_decl)
 
-        return [Tool(function_declarations=function_declarations)]
+        return [types.Tool(function_declarations=function_declarations)]
 
     def _convert_messages_to_gemini_format(
         self, messages: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
+    ) -> list[types.Content]:
         """Convert conversation history to Gemini's content format."""
         gemini_contents = []
 
         for msg in messages:
             if msg["role"] == "user":
-                gemini_contents.append({
-                    "role": "user",
-                    "parts": [{"text": msg["content"]}],
-                })
+                gemini_contents.append(
+                    types.Content(
+                        role="user",
+                        parts=[types.Part(text=msg["content"])],
+                    )
+                )
             elif msg["role"] == "assistant":
                 parts = []
 
                 # Add text content if present
                 if msg.get("content"):
-                    parts.append({"text": msg["content"]})
+                    parts.append(types.Part(text=msg["content"]))
 
                 # Add function calls if present
                 for tool_call in msg.get("tool_calls", []):
-                    parts.append({
-                        "function_call": {
-                            "name": tool_call["name"],
-                            "args": tool_call["arguments"],
-                        }
-                    })
+                    parts.append(
+                        types.Part(
+                            function_call=types.FunctionCall(
+                                name=tool_call["name"],
+                                args=tool_call["arguments"],
+                            )
+                        )
+                    )
 
-                gemini_contents.append({
-                    "role": "model",
-                    "parts": parts,
-                })
+                gemini_contents.append(
+                    types.Content(role="model", parts=parts)
+                )
             elif msg["role"] == "tool_result":
-                gemini_contents.append({
-                    "role": "user",
-                    "parts": [{
-                        "function_response": {
-                            "name": msg.get("tool_name", "function"),
-                            "response": {"result": msg["content"]},
-                        }
-                    }],
-                })
+                gemini_contents.append(
+                    types.Content(
+                        role="user",
+                        parts=[
+                            types.Part(
+                                function_response=types.FunctionResponse(
+                                    name=msg.get("tool_name", "function"),
+                                    response={"result": msg["content"]},
+                                )
+                            )
+                        ],
+                    )
+                )
 
         return gemini_contents
 
@@ -158,7 +172,7 @@ class GeminiClient:
             for part in candidate.content.parts:
                 if hasattr(part, "text") and part.text:
                     content = part.text
-                elif hasattr(part, "function_call"):
+                elif hasattr(part, "function_call") and part.function_call:
                     fc = part.function_call
                     tool_calls.append({
                         "id": f"call_{fc.name}_{len(tool_calls)}",
@@ -168,14 +182,15 @@ class GeminiClient:
 
             # Map finish reasons
             finish_reason = candidate.finish_reason
+            # New SDK uses string enums
             stop_reason_map = {
-                1: "end_turn",  # STOP
-                2: "max_tokens",  # MAX_TOKENS
-                3: "content_filter",  # SAFETY
-                4: "content_filter",  # RECITATION
-                5: "tool_use",  # OTHER (often means tool use)
+                "STOP": "end_turn",
+                "MAX_TOKENS": "max_tokens",
+                "SAFETY": "content_filter",
+                "RECITATION": "content_filter",
+                "OTHER": "tool_use",
             }
-            stop_reason = stop_reason_map.get(finish_reason, "end_turn")
+            stop_reason = stop_reason_map.get(str(finish_reason), "end_turn")
 
             # If we have tool calls, override stop reason
             if tool_calls:
@@ -184,8 +199,8 @@ class GeminiClient:
         # Get usage metadata if available
         usage = {"input_tokens": 0, "output_tokens": 0}
         if hasattr(response, "usage_metadata") and response.usage_metadata:
-            usage["input_tokens"] = getattr(response.usage_metadata, "prompt_token_count", 0)
-            usage["output_tokens"] = getattr(response.usage_metadata, "candidates_token_count", 0)
+            usage["input_tokens"] = getattr(response.usage_metadata, "prompt_token_count", 0) or 0
+            usage["output_tokens"] = getattr(response.usage_metadata, "candidates_token_count", 0) or 0
 
         return GeminiResponse(
             content=content,
@@ -216,30 +231,27 @@ class GeminiClient:
             tool_count=len(tools) if tools else 0,
         )
 
-        # Create the model with system instruction
-        generation_config = {
-            "max_output_tokens": self._max_tokens,
-            "temperature": self._temperature,
-        }
-
-        model_kwargs: dict[str, Any] = {
-            "model_name": self._model_name,
-            "generation_config": generation_config,
-            "system_instruction": system_prompt,
-        }
+        # Build configuration
+        config = types.GenerateContentConfig(
+            max_output_tokens=self._max_tokens,
+            temperature=self._temperature,
+            system_instruction=system_prompt,
+        )
 
         # Add tools if provided
         if tools:
-            model_kwargs["tools"] = self._convert_tools_to_gemini_format(tools)
-
-        model = genai.GenerativeModel(**model_kwargs)
+            config.tools = self._convert_tools_to_gemini_format(tools)
 
         # Convert messages to Gemini format
         gemini_contents = self._convert_messages_to_gemini_format(messages)
 
         try:
-            # Generate response
-            response = model.generate_content(gemini_contents)
+            # Generate response using new SDK
+            response = self._client.models.generate_content(
+                model=self._model_name,
+                contents=gemini_contents,
+                config=config,
+            )
 
             parsed = self._parse_response(response)
 

@@ -42,6 +42,8 @@ class AtlasAPIClient:
         base_url: str | None = None,
         username: str | None = None,
         password: str | None = None,
+        access_token: str | None = None,
+        refresh_token: str | None = None,
     ):
         settings = get_settings()
         self.base_url = (base_url or settings.atlas_api_url).rstrip("/")
@@ -50,9 +52,14 @@ class AtlasAPIClient:
         self._timeout = settings.atlas_timeout
         self._max_retries = settings.atlas_max_retries
 
-        self._access_token: str | None = None
-        self._refresh_token: str | None = None
+        # Allow pre-populated tokens (from signup/login)
+        self._access_token: str | None = access_token
+        self._refresh_token: str | None = refresh_token
         self._token_expires_at: datetime | None = None
+        if access_token:
+            # Assume token is fresh, set expiry to 55 minutes from now
+            self._token_expires_at = datetime.now(timezone.utc) + timedelta(minutes=55)
+
         self._current_org_id: UUID | None = None
         self._current_company_id: UUID | None = None
         self._organizations: list[dict[str, Any]] = []
@@ -266,7 +273,10 @@ class AtlasAPIClient:
                 )
 
             if response.status_code >= 400:
-                error_detail = response.json() if response.content else {}
+                try:
+                    error_detail = response.json() if response.content else {}
+                except Exception:
+                    error_detail = {"raw": response.text[:500] if response.text else "empty response"}
                 raise AtlasAPIError(
                     f"API error: {response.status_code}",
                     status_code=response.status_code,
