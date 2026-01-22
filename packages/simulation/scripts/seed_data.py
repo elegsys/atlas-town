@@ -308,20 +308,26 @@ async def login_business(
 
 async def setup_chart_of_accounts(client: AtlasAPIClient) -> dict[str, UUID]:
     """Set up chart of accounts and return account name -> ID mapping."""
-    try:
-        # Try to set up COA with US GAAP template (general industry has templates)
-        await client.post(
-            "/api/v1/accounts/setup-coa",
-            json={"template_name": "us_gaap", "industry": "general"},
-        )
-        print("    ✓ Chart of accounts created")
-    except AtlasAPIError as e:
-        error_str = str(e.details).lower() if e.details else ""
-        if "already" in error_str or "exists" in error_str:
-            print("    ℹ Chart of accounts already exists")
-        else:
-            print(f"    ✗ COA setup error: {e.details}")
-            raise
+    # First check if accounts already exist
+    existing_accounts = await client.list_accounts(limit=10)
+    if existing_accounts:
+        print(f"    ℹ Chart of accounts already exists ({len(existing_accounts)}+ accounts)")
+    else:
+        # Only try to set up COA if no accounts exist
+        try:
+            await client.post(
+                "/api/v1/accounts/setup-coa",
+                json={"template_name": "us_gaap", "industry": "general"},
+            )
+            print("    ✓ Chart of accounts created")
+        except AtlasAPIError as e:
+            error_str = str(e.details).lower() if e.details else ""
+            if "already" in error_str or "exists" in error_str or e.status_code == 500:
+                # 500 often means COA already exists (backend bug)
+                print("    ℹ Chart of accounts already exists (or setup failed)")
+            else:
+                print(f"    ✗ COA setup error: {e.details}")
+                raise
 
     # Get all accounts and build mapping
     accounts = await client.list_accounts(limit=200)
