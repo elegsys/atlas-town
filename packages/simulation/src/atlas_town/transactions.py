@@ -39,6 +39,8 @@ class TransactionPattern:
     # Time-of-day modifiers for realistic business patterns
     phase_multipliers: dict[str, float] | None = None  # e.g., {"evening": 2.5, "night": 1.5}
     active_hours: tuple[int, int] | None = None  # (start_hour, end_hour) - restricts when pattern is active
+    # Seasonal modifiers - maps month (1-12) to multiplier for pattern-specific overrides
+    seasonal_multipliers: dict[int, float] | None = None
 
 
 @dataclass
@@ -280,6 +282,45 @@ BUSINESS_PATTERNS: dict[str, list[TransactionPattern]] = {
     ],
 }
 
+# ============================================================================
+# BUSINESS SEASONALITY
+# ============================================================================
+# Maps business key to month-specific multipliers.
+# Months not listed default to 1.0 (no change).
+# Values > 1.0 = busier than average, < 1.0 = slower than average.
+
+BUSINESS_SEASONALITY: dict[str, dict[int, float]] = {
+    "craig": {
+        # Peak: April-September (landscaping high season)
+        4: 1.5, 5: 1.8, 6: 2.0, 7: 2.0, 8: 1.8, 9: 1.5,
+        # Shoulder: March, October, November
+        3: 1.0, 10: 0.8, 11: 0.6,
+        # Slow: December-February (winter dormancy)
+        12: 0.3, 1: 0.2, 2: 0.25,
+    },
+    "tony": {
+        # Low seasonality - slight holiday boost
+        11: 1.1, 12: 1.15, 2: 1.1,  # Thanksgiving, Christmas, Valentine's
+    },
+    "maya": {
+        # Q4 budget spending, Q1 new initiatives
+        1: 1.5, 2: 1.4, 10: 1.6, 11: 1.8,
+        12: 0.7,  # Holiday freeze
+    },
+    "chen": {
+        # Summer breaks (families scheduling), year-end insurance rush
+        6: 1.5, 7: 1.6, 11: 1.7, 12: 1.8,
+        1: 0.5, 2: 0.6,  # Post-holiday slow
+    },
+    "marcus": {
+        # Spring/summer home-buying season
+        4: 1.4, 5: 1.8, 6: 2.0, 7: 1.8, 8: 1.5,
+        3: 1.0, 9: 1.0, 10: 0.8,
+        # Winter slowdown
+        11: 0.4, 12: 0.3, 1: 0.25, 2: 0.3,
+    },
+}
+
 # Sample data for template substitution
 TEMPLATE_DATA = {
     "location": ["Front yard", "Backyard", "Commercial property", "Apartment complex", "HOA common areas"],
@@ -314,12 +355,39 @@ class TransactionGenerator:
                 result = result.replace(placeholder, self._rng.choice(values))
         return result
 
+    def _get_seasonal_multiplier(
+        self,
+        business_key: str,
+        month: int,
+        pattern: TransactionPattern,
+    ) -> float:
+        """Get seasonal multiplier for a business/pattern in a given month.
+
+        Pattern-specific seasonal_multipliers override business-wide seasonality.
+        Returns 1.0 if no seasonality is defined (backward-compatible).
+
+        Args:
+            business_key: The business identifier (craig, tony, etc.)
+            month: Month number (1-12)
+            pattern: The transaction pattern (may have its own seasonal_multipliers)
+
+        Returns:
+            Multiplier to apply to base probability (1.0 = no change)
+        """
+        # Pattern-specific override takes precedence
+        if pattern.seasonal_multipliers and month in pattern.seasonal_multipliers:
+            return pattern.seasonal_multipliers[month]
+
+        # Fall back to business-wide seasonality
+        return BUSINESS_SEASONALITY.get(business_key, {}).get(month, 1.0)
+
     def _should_generate(
         self,
         pattern: TransactionPattern,
         current_date: date,
         current_hour: int | None = None,
         current_phase: str | None = None,
+        business_key: str | None = None,
     ) -> bool:
         """Determine if a transaction should be generated based on probability.
 
@@ -328,6 +396,7 @@ class TransactionGenerator:
             current_date: The simulation date
             current_hour: Optional hour (0-23) for time-based filtering
             current_phase: Optional phase name for phase multipliers
+            business_key: Optional business identifier for seasonal multipliers
         """
         weekday = current_date.weekday()
         is_weekend = weekday >= 5
@@ -358,6 +427,13 @@ class TransactionGenerator:
         # Apply phase multiplier
         if current_phase and pattern.phase_multipliers:
             probability *= pattern.phase_multipliers.get(current_phase, 1.0)
+
+        # Apply seasonal multiplier
+        if business_key:
+            seasonal_mult = self._get_seasonal_multiplier(
+                business_key, current_date.month, pattern
+            )
+            probability *= seasonal_mult
 
         return self._rng.random() < probability
 
@@ -412,7 +488,9 @@ class TransactionGenerator:
         )
 
         for pattern in patterns:
-            if not self._should_generate(pattern, current_date, current_hour, current_phase):
+            if not self._should_generate(
+                pattern, current_date, current_hour, current_phase, business_key
+            ):
                 continue
 
             # Handle payment transactions specially

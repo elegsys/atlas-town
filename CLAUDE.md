@@ -10,6 +10,8 @@ Atlas Town is an AI simulation system where LLM-powered agents role-play busines
 
 ### Simulation (Python)
 
+**Important:** All commands must be run from the `packages/simulation` directory using `uv run` to ensure the virtual environment is active.
+
 ```bash
 cd packages/simulation
 
@@ -17,22 +19,22 @@ cd packages/simulation
 uv sync
 
 # Run simulation
-python -m atlas_town.orchestrator
+uv run python -m atlas_town.orchestrator
 
 # Run all tests
-pytest
+uv run pytest tests/
 
 # Run specific test file
-pytest tests/test_scheduler.py
+uv run pytest tests/test_scheduler.py -v
 
 # Run with verbose output
-pytest -v
+uv run pytest tests/ -v
 
-# Lint
-ruff check src/ tests/
+# Lint (note: ruff/mypy may not be installed in venv)
+uv run ruff check src/ tests/
 
 # Type check
-mypy src/
+uv run mypy src/
 ```
 
 ### Frontend (Next.js) - Not yet implemented
