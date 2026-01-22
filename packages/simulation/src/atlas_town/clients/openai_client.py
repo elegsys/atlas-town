@@ -23,23 +23,34 @@ class OpenAIResponse:
 
 
 class OpenAIClient:
-    """Client for OpenAI's GPT API with tool use support."""
+    """Client for OpenAI's GPT API with tool use support.
+
+    Also supports OpenAI-compatible APIs like LM Studio via custom base_url.
+    """
 
     def __init__(
         self,
         api_key: str | None = None,
+        base_url: str | None = None,
         model: str | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
     ):
         settings = get_settings()
         self._api_key = api_key or settings.openai_api_key.get_secret_value()
+        self._base_url = base_url  # None means use OpenAI's default
         self._model = model or settings.gpt_model
         self._max_tokens = max_tokens or settings.llm_max_tokens
         self._temperature = temperature or settings.llm_temperature
 
-        self._client = openai.OpenAI(api_key=self._api_key)
-        self._logger = logger.bind(client="openai", model=self._model)
+        # Create client with optional custom base_url (for LM Studio, etc.)
+        client_kwargs: dict[str, Any] = {"api_key": self._api_key}
+        if self._base_url:
+            client_kwargs["base_url"] = self._base_url
+
+        self._client = openai.OpenAI(**client_kwargs)
+        client_name = "lm_studio" if self._base_url else "openai"
+        self._logger = logger.bind(client=client_name, model=self._model)
 
     def _convert_tools_to_openai_format(
         self, tools: list[dict[str, Any]]

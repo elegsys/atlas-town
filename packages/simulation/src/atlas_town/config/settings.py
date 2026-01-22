@@ -29,6 +29,24 @@ class LLMSettings(BaseSettings):
     gpt_model: str = Field(default="gpt-5-nano", description="OpenAI GPT model ID")
     gemini_model: str = Field(default="gemini-2.5-flash", description="Google Gemini model ID")
 
+    # Local LLM settings (Ollama)
+    ollama_base_url: str = Field(
+        default="http://localhost:11434", description="Ollama API base URL"
+    )
+    ollama_model: str = Field(default="qwen3:30b", description="Ollama model name")
+
+    # LM Studio settings (OpenAI-compatible API)
+    lm_studio_base_url: str = Field(
+        default="http://localhost:1234/v1", description="LM Studio API base URL"
+    )
+    lm_studio_model: str = Field(default="", description="LM Studio model name")
+
+    # Default provider selection
+    default_provider: str = Field(
+        default="claude",
+        description="Default LLM provider (claude/openai/gemini/ollama/lm_studio)",
+    )
+
     # Rate limiting
     max_tokens: int = Field(default=4096, description="Max tokens per response")
     temperature: float = Field(default=0.7, description="LLM temperature for creativity")
@@ -107,6 +125,23 @@ class FlatSettings(BaseSettings):
     )
     gpt_model: str = Field(default="gpt-5-nano", validation_alias="GPT_MODEL")
     gemini_model: str = Field(default="gemini-2.5-flash", validation_alias="GEMINI_MODEL")
+
+    # Local LLM settings (Ollama)
+    ollama_base_url: str = Field(
+        default="http://localhost:11434", validation_alias="OLLAMA_BASE_URL"
+    )
+    ollama_model: str = Field(default="qwen3:30b", validation_alias="OLLAMA_MODEL")
+
+    # LM Studio settings (OpenAI-compatible API)
+    lm_studio_base_url: str = Field(
+        default="http://localhost:1234/v1", validation_alias="LM_STUDIO_BASE_URL"
+    )
+    lm_studio_model: str = Field(default="", validation_alias="LM_STUDIO_MODEL")
+
+    # Default LLM provider
+    llm_provider: str = Field(
+        default="claude", validation_alias="LLM_PROVIDER"
+    )
 
     # LLM parameters
     llm_max_tokens: int = Field(default=4096, validation_alias="LLM_MAX_TOKENS")

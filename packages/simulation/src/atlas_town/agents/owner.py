@@ -10,7 +10,9 @@ import structlog
 from atlas_town.agents.base import AgentAction, AgentState, BaseAgent
 from atlas_town.clients.claude import ClaudeClient
 from atlas_town.clients.gemini import GeminiClient
+from atlas_town.clients.ollama import OllamaClient
 from atlas_town.clients.openai_client import OpenAIClient
+from atlas_town.config import get_settings
 from atlas_town.tools.definitions import OWNER_TOOLS
 
 logger = structlog.get_logger(__name__)
@@ -22,6 +24,8 @@ class LLMProvider(str, Enum):
     CLAUDE = "claude"
     OPENAI = "openai"
     GEMINI = "gemini"
+    OLLAMA = "ollama"
+    LM_STUDIO = "lm_studio"
 
 
 @dataclass
@@ -193,14 +197,33 @@ class OwnerAgent(BaseAgent):
             business=self._persona.business_name,
         )
 
-    def _create_llm_client(self) -> ClaudeClient | OpenAIClient | GeminiClient:
-        """Create the LLM client based on persona's provider."""
-        if self._persona.llm_provider == LLMProvider.CLAUDE:
+    def _create_llm_client(self) -> ClaudeClient | OpenAIClient | GeminiClient | OllamaClient:
+        """Create the LLM client based on persona's provider or environment override."""
+        # Check for environment variable override
+        settings = get_settings()
+        provider_override = settings.llm_provider.lower()
+
+        # Use override if set to a local provider, otherwise use persona's provider
+        if provider_override in ("ollama", "lm_studio"):
+            provider = LLMProvider(provider_override)
+        else:
+            provider = self._persona.llm_provider
+
+        if provider == LLMProvider.CLAUDE:
             return ClaudeClient()
-        elif self._persona.llm_provider == LLMProvider.OPENAI:
+        elif provider == LLMProvider.OPENAI:
             return OpenAIClient()
-        elif self._persona.llm_provider == LLMProvider.GEMINI:
+        elif provider == LLMProvider.GEMINI:
             return GeminiClient()
+        elif provider == LLMProvider.OLLAMA:
+            return OllamaClient()
+        elif provider == LLMProvider.LM_STUDIO:
+            # LM Studio uses OpenAI-compatible API
+            return OpenAIClient(
+                api_key="lm-studio",  # LM Studio doesn't require a real key
+                base_url=settings.lm_studio_base_url,
+                model=settings.lm_studio_model or None,
+            )
         else:
             # Default to OpenAI
             return OpenAIClient()

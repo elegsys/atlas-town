@@ -1,12 +1,17 @@
 """Sarah the Accountant - manages books for all organizations."""
 
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import structlog
 
 from atlas_town.agents.base import AgentAction, AgentState, BaseAgent
+from atlas_town.agents.owner import LLMProvider
 from atlas_town.clients.claude import ClaudeClient
+from atlas_town.clients.gemini import GeminiClient
+from atlas_town.clients.ollama import OllamaClient
+from atlas_town.clients.openai_client import OpenAIClient
+from atlas_town.config import get_settings
 from atlas_town.tools.definitions import ACCOUNTANT_TOOLS
 from atlas_town.tools.executor import ToolExecutor
 
@@ -58,14 +63,15 @@ Remember: Accuracy is paramount. When in doubt, ask for clarification rather tha
 class AccountantAgent(BaseAgent):
     """Sarah the Accountant - manages financial records for all businesses.
 
-    This agent uses Claude for reasoning and has access to all accounting
-    tools including invoicing, bills, payments, and reports.
+    This agent uses the configured LLM provider for reasoning and has access
+    to all accounting tools including invoicing, bills, payments, and reports.
     """
 
     def __init__(
         self,
         agent_id: UUID | None = None,
-        llm_client: ClaudeClient | None = None,
+        llm_client: ClaudeClient | OpenAIClient | GeminiClient | OllamaClient | None = None,
+        llm_provider: LLMProvider | None = None,
         tool_executor: ToolExecutor | None = None,
     ):
         super().__init__(
@@ -74,9 +80,40 @@ class AccountantAgent(BaseAgent):
             description="Professional bookkeeper managing finances for Atlas Town businesses",
         )
 
-        self._llm_client = llm_client or ClaudeClient()
+        self._llm_client = llm_client or self._create_llm_client(llm_provider)
         self._tool_executor = tool_executor
         self._logger = logger.bind(agent_id=str(self.id), agent_name=self.name)
+
+    def _create_llm_client(
+        self, provider: LLMProvider | None = None
+    ) -> ClaudeClient | OpenAIClient | GeminiClient | OllamaClient:
+        """Create the LLM client based on provider or environment config."""
+        settings = get_settings()
+
+        # Use explicit provider, env var override, or default to Claude
+        if provider is None:
+            provider_str = settings.llm_provider.lower()
+            try:
+                provider = LLMProvider(provider_str)
+            except ValueError:
+                provider = LLMProvider.CLAUDE
+
+        if provider == LLMProvider.CLAUDE:
+            return ClaudeClient()
+        elif provider == LLMProvider.OPENAI:
+            return OpenAIClient()
+        elif provider == LLMProvider.GEMINI:
+            return GeminiClient()
+        elif provider == LLMProvider.OLLAMA:
+            return OllamaClient()
+        elif provider == LLMProvider.LM_STUDIO:
+            return OpenAIClient(
+                api_key="lm-studio",
+                base_url=settings.lm_studio_base_url,
+                model=settings.lm_studio_model or None,
+            )
+        else:
+            return ClaudeClient()
 
     def set_tool_executor(self, executor: ToolExecutor) -> None:
         """Set the tool executor for this agent."""

@@ -363,6 +363,69 @@ class Orchestrator:
 
     # === Helper Methods for Transaction Generation ===
 
+    def _find_revenue_account(self, accounts: list[dict[str, Any]]) -> dict[str, Any] | None:
+        """Find a revenue account using multiple strategies.
+
+        Tries in order:
+        1. account_type == "revenue" (most correct)
+        2. account_number starting with "4" (US GAAP revenue accounts)
+        3. name containing "revenue" (fallback)
+        """
+        # Strategy 1: By account_type (most reliable if available)
+        account = next(
+            (a for a in accounts if a.get("account_type") == "revenue"),
+            None
+        )
+        if account:
+            return account
+
+        # Strategy 2: By account_number (US GAAP: 4xxx = Revenue)
+        account = next(
+            (a for a in accounts if str(a.get("account_number", "")).startswith("4")),
+            None
+        )
+        if account:
+            return account
+
+        # Strategy 3: By name containing "revenue" (last resort)
+        account = next(
+            (a for a in accounts if "revenue" in a.get("name", "").lower()),
+            None
+        )
+        return account
+
+    def _find_expense_account(self, accounts: list[dict[str, Any]]) -> dict[str, Any] | None:
+        """Find an expense account using multiple strategies.
+
+        Tries in order:
+        1. account_type == "expense" (most correct)
+        2. account_number starting with "5" or "6" (US GAAP expense accounts)
+        3. name containing "expense" (fallback)
+        """
+        # Strategy 1: By account_type (most reliable if available)
+        account = next(
+            (a for a in accounts if a.get("account_type") == "expense"),
+            None
+        )
+        if account:
+            return account
+
+        # Strategy 2: By account_number (US GAAP: 5xxx/6xxx = Expenses)
+        account = next(
+            (a for a in accounts
+             if str(a.get("account_number", "")).startswith(("5", "6"))),
+            None
+        )
+        if account:
+            return account
+
+        # Strategy 3: By name containing "expense" (last resort)
+        account = next(
+            (a for a in accounts if "expense" in a.get("name", "").lower()),
+            None
+        )
+        return account
+
     def _get_simulation_date(self) -> date:
         """Get the current simulation date based on day number."""
         base_date = date.today() - timedelta(days=30)  # Start 30 days ago
@@ -379,12 +442,18 @@ class Orchestrator:
             return None
 
         try:
-            # Get revenue account
+            # Get revenue account - required for invoice creation
             accounts = await self._api_client.list_accounts()
-            revenue_account = next(
-                (a for a in accounts if "revenue" in a["name"].lower() or a["code"].startswith("4")),
-                None
-            )
+            revenue_account = self._find_revenue_account(accounts)
+
+            if not revenue_account:
+                self._logger.warning(
+                    "no_revenue_account_found",
+                    org=ctx.name,
+                    account_count=len(accounts),
+                    msg="Cannot create invoice - no revenue account in chart of accounts",
+                )
+                return None
 
             invoice_data = {
                 "customer_id": str(tx.customer_id),
@@ -394,7 +463,7 @@ class Orchestrator:
                     "description": tx.description,
                     "quantity": "1",
                     "unit_price": str(tx.amount),
-                    "revenue_account_id": revenue_account["id"] if revenue_account else None,
+                    "revenue_account_id": revenue_account["id"],
                 }],
             }
 
@@ -429,12 +498,18 @@ class Orchestrator:
             return None
 
         try:
-            # Get expense account
+            # Get expense account - required for bill creation
             accounts = await self._api_client.list_accounts()
-            expense_account = next(
-                (a for a in accounts if "expense" in a["name"].lower() or a["code"].startswith("5") or a["code"].startswith("6")),
-                None
-            )
+            expense_account = self._find_expense_account(accounts)
+
+            if not expense_account:
+                self._logger.warning(
+                    "no_expense_account_found",
+                    org=ctx.name,
+                    account_count=len(accounts),
+                    msg="Cannot create bill - no expense account in chart of accounts",
+                )
+                return None
 
             bill_data = {
                 "vendor_id": str(tx.vendor_id),
@@ -445,7 +520,7 @@ class Orchestrator:
                     "description": tx.description,
                     "quantity": "1",
                     "unit_price": str(tx.amount),
-                    "expense_account_id": expense_account["id"] if expense_account else None,
+                    "expense_account_id": expense_account["id"],
                 }],
             }
 
