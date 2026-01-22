@@ -688,6 +688,8 @@ class Orchestrator:
                     current_date=sim_date,
                     customers=customers,
                     vendors=vendors,
+                    current_hour=self._scheduler.current_time.hour,
+                    current_phase=phase.value,
                 )
 
                 # Process invoices and sales
@@ -771,6 +773,8 @@ class Orchestrator:
                     customers=customers,
                     vendors=vendors,
                     pending_invoices=pending_invoices,
+                    current_hour=self._scheduler.current_time.hour,
+                    current_phase=phase.value,
                 )
 
                 bills_created = 0
@@ -811,44 +815,124 @@ class Orchestrator:
         return results
 
     async def _handle_evening(self, time: Any, phase: DayPhase) -> list[Any]:
-        """Evening: Reconciliation and reports."""
+        """Evening: Dinner rush for restaurants + reconciliation and reports."""
         results = []
         day = self._scheduler.current_time.day
+        sim_date = self._get_simulation_date()
 
         self._event_publisher.publish(
-            phase_started(day, phase.value, "Wind down and accounting")
+            phase_started(day, phase.value, "Evening activity and accounting")
         )
 
         for org_id, ctx in self._organizations.items():
             await self.switch_organization(org_id)
 
-            task = f"""End of day for {ctx.name}. Please:
-            1. Run a trial balance to ensure books are balanced
-            2. Provide a quick summary of today's activity
-            3. Note any issues that need attention tomorrow"""
-
             try:
+                # Generate evening transactions (dinner rush for restaurants)
+                customers = await self._api_client.list_customers() if self._api_client else []
+                vendors = await self._api_client.list_vendors() if self._api_client else []
+
+                transactions = self._tx_generator.generate_daily_transactions(
+                    business_key=ctx.owner_key,
+                    current_date=sim_date,
+                    customers=customers,
+                    vendors=vendors,
+                    current_hour=self._scheduler.current_time.hour,
+                    current_phase=phase.value,
+                )
+
+                # Process cash sales and invoices (dinner rush)
+                invoices_created = 0
+                for tx in transactions:
+                    if tx.transaction_type in [TransactionType.INVOICE, TransactionType.CASH_SALE]:
+                        await self._create_invoice(ctx, tx, sim_date)
+                        invoices_created += 1
+
+                if invoices_created > 0:
+                    self._event_publisher.publish(
+                        agent_speaking(
+                            agent_id=self._accountant.id if self._accountant else UUID(int=0),
+                            agent_name="Sarah Chen",
+                            message=f"Created {invoices_created} evening invoice(s) for {ctx.name} (dinner rush).",
+                            org_id=org_id,
+                        )
+                    )
+
+                # End of day accounting task
+                task = f"""End of day for {ctx.name}. Please:
+                1. Run a trial balance to ensure books are balanced
+                2. Provide a quick summary of today's activity
+                3. Note any issues that need attention tomorrow"""
+
                 response = await self.run_single_task(task)
-                results.append({"org": ctx.name, "response": response[:200]})
+                results.append({
+                    "org": ctx.name,
+                    "invoices_created": invoices_created,
+                    "response": response[:200],
+                })
+
             except Exception as e:
                 self._logger.error("evening_task_error", org=ctx.name, error=str(e))
                 self._event_publisher.publish(
-                    error_event(f"Error closing {ctx.name}", {"error": str(e)})
+                    error_event(f"Error during evening for {ctx.name}", {"error": str(e)})
                 )
 
         self._event_publisher.publish(phase_completed(day, phase.value, results))
         return results
 
     async def _handle_night(self, time: Any, phase: DayPhase) -> list[Any]:
-        """Night: Day transition and cleanup."""
+        """Night: Late-night transactions and day transition cleanup."""
         results = []
         day = self._scheduler.current_time.day
+        sim_date = self._get_simulation_date()
 
         self._event_publisher.publish(
-            phase_started(day, phase.value, "End of day processing")
+            phase_started(day, phase.value, "Late-night activity and cleanup")
         )
 
-        # Clear agent histories
+        # Generate late-night transactions (e.g., late-night pizza orders)
+        for org_id, ctx in self._organizations.items():
+            await self.switch_organization(org_id)
+
+            try:
+                customers = await self._api_client.list_customers() if self._api_client else []
+                vendors = await self._api_client.list_vendors() if self._api_client else []
+
+                transactions = self._tx_generator.generate_daily_transactions(
+                    business_key=ctx.owner_key,
+                    current_date=sim_date,
+                    customers=customers,
+                    vendors=vendors,
+                    current_hour=self._scheduler.current_time.hour,
+                    current_phase=phase.value,
+                )
+
+                # Process late-night cash sales
+                invoices_created = 0
+                for tx in transactions:
+                    if tx.transaction_type == TransactionType.CASH_SALE:
+                        await self._create_invoice(ctx, tx, sim_date)
+                        invoices_created += 1
+
+                if invoices_created > 0:
+                    self._event_publisher.publish(
+                        agent_speaking(
+                            agent_id=self._accountant.id if self._accountant else UUID(int=0),
+                            agent_name="Sarah Chen",
+                            message=f"Recorded {invoices_created} late-night sale(s) for {ctx.name}.",
+                            org_id=org_id,
+                        )
+                    )
+
+                results.append({
+                    "org": ctx.name,
+                    "late_night_sales": invoices_created,
+                })
+
+            except Exception as e:
+                self._logger.error("night_transaction_error", org=ctx.name, error=str(e))
+
+        # Clear agent histories for next day
         if self._accountant:
             self._accountant.clear_history()
 

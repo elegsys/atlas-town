@@ -36,6 +36,9 @@ class TransactionPattern:
     probability: float  # 0.0 to 1.0 - chance of occurring each day
     weekday_only: bool = False  # Only occurs Mon-Fri
     weekend_boost: float = 1.0  # Multiplier for weekend probability
+    # Time-of-day modifiers for realistic business patterns
+    phase_multipliers: dict[str, float] | None = None  # e.g., {"evening": 2.5, "night": 1.5}
+    active_hours: tuple[int, int] | None = None  # (start_hour, end_hour) - restricts when pattern is active
 
 
 @dataclass
@@ -97,20 +100,44 @@ BUSINESS_PATTERNS: dict[str, list[TransactionPattern]] = {
         ),
     ],
     "tony": [
-        # Pizzeria - high volume, low margin
+        # Pizzeria - time-of-day aware patterns for realistic restaurant activity
+        # Lunch service (lower volume, daytime crowd)
         TransactionPattern(
             TransactionType.CASH_SALE,
-            "Daily pizza sales",
-            Decimal("800.00"), Decimal("2500.00"),
-            probability=0.95,
-            weekend_boost=1.3,  # Busier weekends
+            "Lunch service - pizza sales",
+            Decimal("400.00"), Decimal("1200.00"),
+            probability=0.7,
+            phase_multipliers={"morning": 0.3, "lunch": 1.5, "afternoon": 0.8},
+            active_hours=(11, 14),  # 11 AM - 2 PM
         ),
+        # Dinner rush (peak activity)
+        TransactionPattern(
+            TransactionType.CASH_SALE,
+            "Dinner service - pizza sales",
+            Decimal("1200.00"), Decimal("3500.00"),
+            probability=0.95,
+            weekend_boost=1.4,
+            phase_multipliers={"evening": 2.5},  # Peak dinner rush
+            active_hours=(17, 21),  # 5 PM - 9 PM
+        ),
+        # Late-night (reduced but active)
+        TransactionPattern(
+            TransactionType.CASH_SALE,
+            "Late night - pizza sales",
+            Decimal("600.00"), Decimal("1800.00"),
+            probability=0.6,
+            weekend_boost=1.8,  # Busier weekend nights
+            phase_multipliers={"night": 1.5},
+            active_hours=(21, 24),  # 9 PM - midnight
+        ),
+        # Catering orders (unchanged - not time-sensitive)
         TransactionPattern(
             TransactionType.INVOICE,
             "Catering order - {event_type}",
             Decimal("200.00"), Decimal("1200.00"),
             probability=0.4,
         ),
+        # Bills (unchanged - not time-sensitive)
         TransactionPattern(
             TransactionType.BILL,
             "Food supplies - {supplier}",
@@ -291,8 +318,17 @@ class TransactionGenerator:
         self,
         pattern: TransactionPattern,
         current_date: date,
+        current_hour: int | None = None,
+        current_phase: str | None = None,
     ) -> bool:
-        """Determine if a transaction should be generated based on probability."""
+        """Determine if a transaction should be generated based on probability.
+
+        Args:
+            pattern: The transaction pattern to evaluate
+            current_date: The simulation date
+            current_hour: Optional hour (0-23) for time-based filtering
+            current_phase: Optional phase name for phase multipliers
+        """
         weekday = current_date.weekday()
         is_weekend = weekday >= 5
 
@@ -300,10 +336,28 @@ class TransactionGenerator:
         if pattern.weekday_only and is_weekend:
             return False
 
-        # Adjust probability for weekends
+        # Check active hours constraint
+        if current_hour is not None and pattern.active_hours:
+            start_h, end_h = pattern.active_hours
+            if start_h <= end_h:
+                # Normal range (e.g., 9-17)
+                if not (start_h <= current_hour < end_h):
+                    return False
+            else:
+                # Wraps midnight (e.g., 20-2)
+                if not (current_hour >= start_h or current_hour < end_h):
+                    return False
+
+        # Calculate probability with modifiers
         probability = pattern.probability
+
+        # Apply weekend boost
         if is_weekend:
             probability *= pattern.weekend_boost
+
+        # Apply phase multiplier
+        if current_phase and pattern.phase_multipliers:
+            probability *= pattern.phase_multipliers.get(current_phase, 1.0)
 
         return self._rng.random() < probability
 
@@ -328,6 +382,8 @@ class TransactionGenerator:
         customers: list[dict[str, Any]],
         vendors: list[dict[str, Any]],
         pending_invoices: list[dict[str, Any]] | None = None,
+        current_hour: int | None = None,
+        current_phase: str | None = None,
     ) -> list[GeneratedTransaction]:
         """Generate transactions for a business for one day.
 
@@ -337,6 +393,8 @@ class TransactionGenerator:
             customers: List of customer records from the API
             vendors: List of vendor records from the API
             pending_invoices: Optional list of unpaid invoices for payment generation
+            current_hour: Optional hour (0-23) for time-based transaction patterns
+            current_phase: Optional phase name (e.g., "evening") for phase multipliers
 
         Returns:
             List of transactions to create
@@ -349,10 +407,12 @@ class TransactionGenerator:
             business=business_key,
             date=current_date.isoformat(),
             pattern_count=len(patterns),
+            hour=current_hour,
+            phase=current_phase,
         )
 
         for pattern in patterns:
-            if not self._should_generate(pattern, current_date):
+            if not self._should_generate(pattern, current_date, current_hour, current_phase):
                 continue
 
             # Handle payment transactions specially
