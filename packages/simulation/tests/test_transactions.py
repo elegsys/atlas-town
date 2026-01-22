@@ -11,6 +11,7 @@ from decimal import Decimal
 import pytest
 
 from atlas_town.transactions import (
+    BUSINESS_DAY_PATTERNS,
     BUSINESS_PATTERNS,
     BUSINESS_SEASONALITY,
     TransactionGenerator,
@@ -211,21 +212,21 @@ class TestShouldGenerateWithSeasonality:
         assert isinstance(result, bool)
 
     def test_weekend_and_seasonal_stack(self, generator):
-        """Weekend boost and seasonal multiplier should both apply."""
+        """Weekend boost, day multiplier, and seasonal multiplier should all apply."""
         pattern = TransactionPattern(
             transaction_type=TransactionType.CASH_SALE,
             description_template="Test",
             min_amount=Decimal("100"),
             max_amount=Decimal("500"),
-            probability=0.3,
+            probability=0.5,
             weekend_boost=1.5,
         )
 
-        # Saturday in June for Craig (seasonal=2.0, weekend=1.5)
-        # Effective: 0.3 * 1.5 * 2.0 = 0.9
+        # Saturday in June for Craig (day=0.4, weekend=1.5, seasonal=2.0)
+        # Effective: 0.5 * 0.4 * 1.5 * 2.0 = 0.6
         saturday_june = date(2024, 6, 15)  # This is a Saturday
 
-        # Count over trials - should be high
+        # Count over trials - should be moderately high
         count = sum(
             1
             for _ in range(500)
@@ -234,8 +235,8 @@ class TestShouldGenerateWithSeasonality:
             )
         )
 
-        # Should generate very often (prob ~0.9)
-        assert count > 300, f"Expected high generation rate, got {count}/500"
+        # Should generate moderately often (prob ~0.6)
+        assert count > 220, f"Expected moderate generation rate (~0.6), got {count}/500"
 
 
 class TestTransactionPatternSeasonalMultipliers:
@@ -288,8 +289,10 @@ class TestGenerateDailyTransactions:
         self, mock_customers, mock_vendors
     ):
         """Craig should generate more transactions in peak season."""
-        peak_date = date(2024, 6, 15)  # June
-        slow_date = date(2024, 1, 15)  # January
+        # Use Wednesdays to compare seasonal effect fairly
+        # (Craig's day multiplier is 1.2 for Wednesday in both cases)
+        peak_date = date(2024, 6, 19)  # Wednesday in June (seasonal=2.0, day=1.2)
+        slow_date = date(2024, 1, 17)  # Wednesday in January (seasonal=0.2, day=1.2)
 
         # Run multiple trials and count total transactions
         peak_total = 0
@@ -307,7 +310,7 @@ class TestGenerateDailyTransactions:
             peak_total += len(peak_txns)
             slow_total += len(slow_txns)
 
-        # Peak should generate significantly more (expect ~5-10x ratio)
+        # Peak should generate significantly more (expect ~5-10x ratio due to seasonal)
         assert peak_total > slow_total * 3, (
             f"Peak ({peak_total}) should be much higher than slow ({slow_total})"
         )
@@ -539,7 +542,7 @@ class TestPhaseMultipliers:
         assert 80 < morning_count < 180, f"Expected ~120, got {morning_count}"
 
     def test_phase_and_weekend_stack(self, generator):
-        """Phase multiplier and weekend boost should both apply."""
+        """Phase multiplier and weekend boost should both apply (no business_key)."""
         pattern = TransactionPattern(
             transaction_type=TransactionType.CASH_SALE,
             description_template="Weekend dinner",
@@ -550,7 +553,8 @@ class TestPhaseMultipliers:
             phase_multipliers={"evening": 2.0},
         )
 
-        # Saturday evening: 0.3 * 1.5 * 2.0 = 0.9
+        # Saturday evening without business_key: 0.3 * 1.5 * 2.0 = 0.9
+        # (no day multiplier applied without business_key)
         saturday = date(2024, 6, 15)  # Saturday
 
         count = sum(
@@ -630,10 +634,10 @@ class TestTonyTimeAwarePatterns:
 
 
 class TestAllMultipliersStack:
-    """Test that all multipliers (weekend, phase, seasonal) stack correctly."""
+    """Test that all multipliers (day, weekend, phase, seasonal) stack correctly."""
 
-    def test_all_three_multipliers_stack(self):
-        """Weekend boost, phase multiplier, and seasonal should all apply."""
+    def test_all_four_multipliers_stack(self):
+        """Day, weekend boost, phase multiplier, and seasonal should all apply."""
         pattern = TransactionPattern(
             transaction_type=TransactionType.CASH_SALE,
             description_template="Peak everything",
@@ -645,7 +649,7 @@ class TestAllMultipliersStack:
         )
 
         # Saturday in June for Craig:
-        # 0.1 (base) * 1.5 (weekend) * 2.0 (phase) * 2.0 (seasonal) = 0.6
+        # 0.1 (base) * 0.4 (day=Sat) * 1.5 (weekend) * 2.0 (phase) * 2.0 (seasonal) = 0.24
         saturday_june = date(2024, 6, 15)
 
         count = sum(
@@ -658,8 +662,8 @@ class TestAllMultipliersStack:
             )
         )
 
-        # Should be around 60% generation rate
-        assert 450 < count < 750, f"Expected ~600 (0.6 rate), got {count}/1000"
+        # Should be around 24% generation rate
+        assert 150 < count < 350, f"Expected ~240 (0.24 rate), got {count}/1000"
 
     def test_weekday_no_phase_slow_season(self):
         """Weekday without phase in slow season should have very low rate."""
@@ -672,8 +676,8 @@ class TestAllMultipliersStack:
             phase_multipliers={"evening": 2.0},  # But we won't use evening
         )
 
-        # Monday in January for Craig (slow season = 0.2)
-        # 0.5 (base) * 1.0 (weekday) * 1.0 (no phase match) * 0.2 (seasonal) = 0.1
+        # Monday in January for Craig (slow season = 0.2, day = 0.9)
+        # 0.5 (base) * 0.9 (day) * 1.0 (weekday boost) * 1.0 (no phase match) * 0.2 (seasonal) = 0.09
         monday_january = date(2024, 1, 15)
 
         count = sum(
@@ -686,5 +690,302 @@ class TestAllMultipliersStack:
             )
         )
 
-        # Should be around 10% generation rate
-        assert 50 < count < 200, f"Expected ~100 (0.1 rate), got {count}/1000"
+        # Should be around 9% generation rate
+        assert 30 < count < 180, f"Expected ~90 (0.09 rate), got {count}/1000"
+
+
+# ============================================================================
+# Issue #11: Day-of-Week Patterns (BUSINESS_DAY_PATTERNS)
+# ============================================================================
+
+
+class TestBusinessDayPatterns:
+    """Tests for BUSINESS_DAY_PATTERNS configuration."""
+
+    def test_all_businesses_have_day_patterns(self):
+        """All businesses with patterns should have day-of-week patterns defined."""
+        for business_key in BUSINESS_PATTERNS:
+            assert business_key in BUSINESS_DAY_PATTERNS, (
+                f"Missing day patterns for {business_key}"
+            )
+
+    def test_tony_peaks_thu_sat(self):
+        """Tony's pizzeria should peak Thursday-Saturday."""
+        tony = BUSINESS_DAY_PATTERNS["tony"]
+
+        # Peak days (Thu=3, Fri=4, Sat=5)
+        assert tony[3] >= 1.2  # Thursday
+        assert tony[4] >= 1.2  # Friday
+        assert tony[5] >= 1.4  # Saturday (highest)
+
+        # Slower early week
+        assert tony[0] < 1.0  # Monday
+        assert tony[1] < 1.0  # Tuesday
+
+        # Saturday should be the peak
+        assert tony[5] == max(tony.values())
+
+    def test_chen_quiet_on_weekends(self):
+        """Chen's dental practice should be quiet on weekends."""
+        chen = BUSINESS_DAY_PATTERNS["chen"]
+
+        # Weekdays are normal to busy
+        assert chen[1] >= 1.0  # Tuesday
+        assert chen[2] >= 1.0  # Wednesday
+        assert chen[3] >= 1.0  # Thursday
+
+        # Weekends are very slow/closed
+        assert chen[5] <= 0.5  # Saturday (limited hours)
+        assert chen[6] == 0.0  # Sunday (closed)
+
+    def test_craig_landscaping_weekday_focus(self):
+        """Craig's landscaping should focus on weekdays, slow on weekends."""
+        craig = BUSINESS_DAY_PATTERNS["craig"]
+
+        # Mid-week peak
+        assert craig[2] >= 1.1  # Wednesday (peak)
+
+        # Weekends slow
+        assert craig[5] <= 0.5  # Saturday
+        assert craig[6] <= 0.5  # Sunday
+
+    def test_maya_tech_consulting_pattern(self):
+        """Maya's tech consulting should be busy Mon-Thu, quiet on weekends."""
+        maya = BUSINESS_DAY_PATTERNS["maya"]
+
+        # Business days busy
+        assert maya[0] >= 1.0  # Monday
+        assert maya[1] >= 1.0  # Tuesday
+        assert maya[2] >= 1.0  # Wednesday
+        assert maya[3] >= 1.0  # Thursday
+
+        # Friday lighter, weekends very quiet
+        assert maya[4] < 1.0  # Friday
+        assert maya[5] <= 0.3  # Saturday
+        assert maya[6] <= 0.2  # Sunday
+
+    def test_marcus_weekend_showings(self):
+        """Marcus's real estate should have weekend showings."""
+        marcus = BUSINESS_DAY_PATTERNS["marcus"]
+
+        # Weekend showings should be busy
+        assert marcus[5] >= 1.3  # Saturday
+        assert marcus[6] >= 1.0  # Sunday
+
+        # Thu-Fri closings
+        assert marcus[3] >= 1.0  # Thursday
+        assert marcus[4] >= 1.0  # Friday
+
+    def test_day_patterns_values_valid(self):
+        """All day pattern multipliers should be valid (non-negative)."""
+        for business_key, days in BUSINESS_DAY_PATTERNS.items():
+            for day, mult in days.items():
+                assert 0 <= day <= 6, f"Invalid day {day} for {business_key}"
+                assert mult >= 0, f"Negative multiplier {mult} for {business_key} day {day}"
+
+
+class TestGetDayMultiplier:
+    """Tests for TransactionGenerator._get_day_multiplier()."""
+
+    @pytest.fixture
+    def generator(self):
+        """Create a seeded generator for reproducibility."""
+        return TransactionGenerator(seed=42)
+
+    def test_returns_business_day_multiplier(self, generator):
+        """Should return correct day multiplier for known business/day."""
+        # Tony on Saturday (peak)
+        mult = generator._get_day_multiplier("tony", 5)
+        assert mult == 1.5
+
+        # Tony on Monday (slow)
+        mult = generator._get_day_multiplier("tony", 0)
+        assert mult == 0.7
+
+    def test_returns_1_for_undefined_day(self, generator):
+        """Should return 1.0 for days not in day patterns dict."""
+        # If a business has a partial dict (all have full, but test the logic)
+        # Use an unknown business which returns empty dict
+        mult = generator._get_day_multiplier("unknown_biz", 0)
+        assert mult == 1.0
+
+    def test_returns_1_for_unknown_business(self, generator):
+        """Should return 1.0 for businesses not in BUSINESS_DAY_PATTERNS."""
+        mult = generator._get_day_multiplier("unknown_biz", 5)
+        assert mult == 1.0
+
+    def test_chen_sunday_returns_zero(self, generator):
+        """Chen on Sunday should return 0.0 (closed)."""
+        mult = generator._get_day_multiplier("chen", 6)
+        assert mult == 0.0
+
+
+class TestShouldGenerateWithDayPatterns:
+    """Tests for _should_generate() with day-of-week multipliers."""
+
+    @pytest.fixture
+    def high_prob_pattern(self):
+        """Pattern with high base probability."""
+        return TransactionPattern(
+            transaction_type=TransactionType.INVOICE,
+            description_template="Test",
+            min_amount=Decimal("100"),
+            max_amount=Decimal("500"),
+            probability=0.8,
+        )
+
+    def test_day_multiplier_affects_probability(self, high_prob_pattern):
+        """Day multiplier should affect generation probability."""
+        # Tony on Saturday (mult=1.5) vs Monday (mult=0.7)
+        saturday = date(2024, 6, 15)  # Saturday
+        monday = date(2024, 6, 17)    # Monday
+
+        sat_count = 0
+        mon_count = 0
+        trials = 1000
+
+        for _ in range(trials):
+            gen = TransactionGenerator(seed=None)
+            if gen._should_generate(high_prob_pattern, saturday, business_key="tony"):
+                sat_count += 1
+            if gen._should_generate(high_prob_pattern, monday, business_key="tony"):
+                mon_count += 1
+
+        # Saturday should generate more often (1.5x vs 0.7x)
+        # Expected ratio: ~2.1x (1.5/0.7)
+        assert sat_count > mon_count * 1.5, (
+            f"Saturday ({sat_count}) should be much higher than Monday ({mon_count})"
+        )
+
+    def test_chen_sunday_generates_nothing(self, high_prob_pattern):
+        """Chen on Sunday (mult=0.0) should never generate."""
+        sunday = date(2024, 6, 16)  # Sunday
+
+        count = sum(
+            1
+            for _ in range(500)
+            if TransactionGenerator()._should_generate(
+                high_prob_pattern, sunday, business_key="chen"
+            )
+        )
+
+        # Should be exactly 0 (0.0 multiplier)
+        assert count == 0, f"Expected 0 generations on Sunday for Chen, got {count}"
+
+    def test_backward_compatible_without_business_key(self, high_prob_pattern):
+        """Should work without business_key (backward compatibility)."""
+        test_date = date(2024, 6, 15)
+
+        # Should not raise, just doesn't apply day multiplier
+        result = TransactionGenerator(seed=42)._should_generate(
+            high_prob_pattern, test_date
+        )
+        assert isinstance(result, bool)
+
+
+class TestDayAndOtherMultipliersStack:
+    """Test that day multipliers stack correctly with other multipliers."""
+
+    def test_day_and_weekend_boost_stack(self):
+        """Day multiplier and weekend boost should both apply."""
+        pattern = TransactionPattern(
+            transaction_type=TransactionType.CASH_SALE,
+            description_template="Test",
+            min_amount=Decimal("100"),
+            max_amount=Decimal("500"),
+            probability=0.4,
+            weekend_boost=1.5,
+        )
+
+        # Saturday for Tony: 0.4 * 1.5 (day) * 1.5 (weekend) = 0.9
+        saturday = date(2024, 6, 15)
+
+        count = sum(
+            1
+            for _ in range(500)
+            if TransactionGenerator()._should_generate(
+                pattern, saturday, business_key="tony"
+            )
+        )
+
+        # Should be around 90% generation rate
+        assert count > 350, f"Expected high rate (~0.9), got {count}/500"
+
+    def test_day_and_seasonal_stack(self):
+        """Day multiplier and seasonal multiplier should both apply."""
+        pattern = TransactionPattern(
+            transaction_type=TransactionType.INVOICE,
+            description_template="Test",
+            min_amount=Decimal("100"),
+            max_amount=Decimal("500"),
+            probability=0.5,
+        )
+
+        # Wednesday in June for Craig:
+        # day=1.2, seasonal=2.0 → 0.5 * 1.2 * 2.0 = 1.2 (clamped to ~1.0)
+        wednesday_june = date(2024, 6, 19)  # Wednesday
+
+        count = sum(
+            1
+            for _ in range(500)
+            if TransactionGenerator()._should_generate(
+                pattern, wednesday_june, business_key="craig"
+            )
+        )
+
+        # Should be very high (prob > 1.0 after multipliers)
+        assert count > 450, f"Expected very high rate, got {count}/500"
+
+    def test_all_four_multipliers_stack(self):
+        """Day, weekend, phase, and seasonal multipliers should all apply."""
+        pattern = TransactionPattern(
+            transaction_type=TransactionType.CASH_SALE,
+            description_template="Peak everything",
+            min_amount=Decimal("100"),
+            max_amount=Decimal("500"),
+            probability=0.1,  # Low base probability
+            weekend_boost=1.3,
+            phase_multipliers={"evening": 1.5},
+        )
+
+        # Saturday in June for Tony during evening:
+        # 0.1 (base) * 1.5 (day=Sat) * 1.3 (weekend) * 1.5 (phase) * 1.1 (seasonal Nov boost, but June=default 1.0)
+        # Tony in June has no seasonal, so just: 0.1 * 1.5 * 1.3 * 1.5 ≈ 0.29
+        saturday_june = date(2024, 6, 15)
+
+        count = sum(
+            1
+            for _ in range(1000)
+            if TransactionGenerator()._should_generate(
+                pattern, saturday_june,
+                current_phase="evening",
+                business_key="tony",
+            )
+        )
+
+        # Should be around 29% generation rate
+        assert 180 < count < 400, f"Expected ~290 (0.29 rate), got {count}/1000"
+
+    def test_low_day_multiplier_reduces_generation(self):
+        """Low day multiplier should significantly reduce generation."""
+        pattern = TransactionPattern(
+            transaction_type=TransactionType.INVOICE,
+            description_template="Test",
+            min_amount=Decimal("100"),
+            max_amount=Decimal("500"),
+            probability=0.8,
+        )
+
+        # Sunday for Maya (mult=0.1)
+        sunday = date(2024, 6, 16)
+
+        count = sum(
+            1
+            for _ in range(1000)
+            if TransactionGenerator()._should_generate(
+                pattern, sunday, business_key="maya"
+            )
+        )
+
+        # Should be around 8% (0.8 * 0.1)
+        assert count < 150, f"Expected low rate (~0.08), got {count}/1000"

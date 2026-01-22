@@ -321,6 +321,67 @@ BUSINESS_SEASONALITY: dict[str, dict[int, float]] = {
     },
 }
 
+# ============================================================================
+# BUSINESS DAY-OF-WEEK PATTERNS
+# ============================================================================
+# Maps business key to day-of-week multipliers.
+# Days: 0=Monday, 1=Tuesday, ..., 6=Sunday
+# Days not listed default to 1.0 (no change).
+# Values > 1.0 = busier than average, < 1.0 = slower than average.
+
+BUSINESS_DAY_PATTERNS: dict[str, dict[int, float]] = {
+    "tony": {
+        # Restaurant: Thu-Sat peaks, Mon-Wed slower
+        0: 0.7,  # Monday
+        1: 0.8,  # Tuesday
+        2: 0.9,  # Wednesday
+        3: 1.2,  # Thursday
+        4: 1.3,  # Friday
+        5: 1.5,  # Saturday
+        6: 0.9,  # Sunday
+    },
+    "chen": {
+        # Dental: Tue-Thu peak, weekends closed/slow
+        0: 0.9,  # Monday
+        1: 1.1,  # Tuesday
+        2: 1.2,  # Wednesday
+        3: 1.1,  # Thursday
+        4: 0.9,  # Friday
+        5: 0.3,  # Saturday (limited hours)
+        6: 0.0,  # Sunday (closed)
+    },
+    "marcus": {
+        # Real Estate: Thu-Fri closings, Sat-Sun showings
+        0: 0.7,  # Monday
+        1: 0.9,  # Tuesday
+        2: 1.0,  # Wednesday
+        3: 1.2,  # Thursday (closings)
+        4: 1.3,  # Friday (closings)
+        5: 1.4,  # Saturday (showings)
+        6: 1.2,  # Sunday (showings)
+    },
+    "craig": {
+        # Landscaping: Tue-Thu peak, weekends slow
+        0: 0.9,  # Monday
+        1: 1.1,  # Tuesday
+        2: 1.2,  # Wednesday
+        3: 1.1,  # Thursday
+        4: 1.0,  # Friday
+        5: 0.4,  # Saturday
+        6: 0.3,  # Sunday
+    },
+    "maya": {
+        # Tech Consulting: Mon-Thu busy, Fri lighter
+        0: 1.1,  # Monday
+        1: 1.2,  # Tuesday
+        2: 1.2,  # Wednesday
+        3: 1.1,  # Thursday
+        4: 0.8,  # Friday
+        5: 0.2,  # Saturday
+        6: 0.1,  # Sunday
+    },
+}
+
 # Sample data for template substitution
 TEMPLATE_DATA = {
     "location": ["Front yard", "Backyard", "Commercial property", "Apartment complex", "HOA common areas"],
@@ -381,6 +442,18 @@ class TransactionGenerator:
         # Fall back to business-wide seasonality
         return BUSINESS_SEASONALITY.get(business_key, {}).get(month, 1.0)
 
+    def _get_day_multiplier(self, business_key: str, weekday: int) -> float:
+        """Get day-of-week multiplier for a business.
+
+        Args:
+            business_key: Business identifier (craig, tony, etc.)
+            weekday: Day of week (0=Monday, 6=Sunday)
+
+        Returns:
+            Multiplier (1.0 = no change, default for unknown business/day)
+        """
+        return BUSINESS_DAY_PATTERNS.get(business_key, {}).get(weekday, 1.0)
+
     def _should_generate(
         self,
         pattern: TransactionPattern,
@@ -420,7 +493,11 @@ class TransactionGenerator:
         # Calculate probability with modifiers
         probability = pattern.probability
 
-        # Apply weekend boost
+        # Apply day-of-week multiplier (business-wide pattern)
+        if business_key:
+            probability *= self._get_day_multiplier(business_key, weekday)
+
+        # Apply weekend boost (pattern-specific override)
         if is_weekend:
             probability *= pattern.weekend_boost
 
