@@ -50,6 +50,15 @@ business_patterns:
     - root_canals
     - cosmetic_dentistry
 
+day_patterns:
+  monday: 0.9
+  tuesday: 1.1
+  wednesday: 1.2
+  thursday: 1.1
+  friday: 0.9
+  saturday: 0.3
+  sunday: 0.0
+
 insurance_considerations:
   - claim_submissions
   - pre_authorizations

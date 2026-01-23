@@ -10,13 +10,14 @@ from decimal import Decimal
 
 import pytest
 
+from atlas_town.config.personas_loader import load_persona_day_patterns
 from atlas_town.transactions import (
-    BUSINESS_DAY_PATTERNS,
     BUSINESS_PATTERNS,
     BUSINESS_SEASONALITY,
     TransactionGenerator,
     TransactionPattern,
     TransactionType,
+    get_business_day_patterns,
 )
 
 
@@ -695,23 +696,27 @@ class TestAllMultipliersStack:
 
 
 # ============================================================================
-# Issue #11: Day-of-Week Patterns (BUSINESS_DAY_PATTERNS)
+# Issue #11: Day-of-Week Patterns (persona YAML)
 # ============================================================================
 
 
 class TestBusinessDayPatterns:
-    """Tests for BUSINESS_DAY_PATTERNS configuration."""
+    """Tests for day-of-week patterns loaded from persona YAML."""
 
     def test_all_businesses_have_day_patterns(self):
         """All businesses with patterns should have day-of-week patterns defined."""
+        patterns = load_persona_day_patterns()
         for business_key in BUSINESS_PATTERNS:
-            assert business_key in BUSINESS_DAY_PATTERNS, (
+            assert business_key in patterns, (
                 f"Missing day patterns for {business_key}"
+            )
+            assert len(patterns[business_key]) == 7, (
+                f"Expected 7 day entries for {business_key}"
             )
 
     def test_tony_peaks_thu_sat(self):
         """Tony's pizzeria should peak Thursday-Saturday."""
-        tony = BUSINESS_DAY_PATTERNS["tony"]
+        tony = get_business_day_patterns()["tony"]
 
         # Peak days (Thu=3, Fri=4, Sat=5)
         assert tony[3] >= 1.2  # Thursday
@@ -727,7 +732,7 @@ class TestBusinessDayPatterns:
 
     def test_chen_quiet_on_weekends(self):
         """Chen's dental practice should be quiet on weekends."""
-        chen = BUSINESS_DAY_PATTERNS["chen"]
+        chen = get_business_day_patterns()["chen"]
 
         # Weekdays are normal to busy
         assert chen[1] >= 1.0  # Tuesday
@@ -740,7 +745,7 @@ class TestBusinessDayPatterns:
 
     def test_craig_landscaping_weekday_focus(self):
         """Craig's landscaping should focus on weekdays, slow on weekends."""
-        craig = BUSINESS_DAY_PATTERNS["craig"]
+        craig = get_business_day_patterns()["craig"]
 
         # Mid-week peak
         assert craig[2] >= 1.1  # Wednesday (peak)
@@ -751,7 +756,7 @@ class TestBusinessDayPatterns:
 
     def test_maya_tech_consulting_pattern(self):
         """Maya's tech consulting should be busy Mon-Thu, quiet on weekends."""
-        maya = BUSINESS_DAY_PATTERNS["maya"]
+        maya = get_business_day_patterns()["maya"]
 
         # Business days busy
         assert maya[0] >= 1.0  # Monday
@@ -766,7 +771,7 @@ class TestBusinessDayPatterns:
 
     def test_marcus_weekend_showings(self):
         """Marcus's real estate should have weekend showings."""
-        marcus = BUSINESS_DAY_PATTERNS["marcus"]
+        marcus = get_business_day_patterns()["marcus"]
 
         # Weekend showings should be busy
         assert marcus[5] >= 1.3  # Saturday
@@ -778,7 +783,7 @@ class TestBusinessDayPatterns:
 
     def test_day_patterns_values_valid(self):
         """All day pattern multipliers should be valid (non-negative)."""
-        for business_key, days in BUSINESS_DAY_PATTERNS.items():
+        for business_key, days in get_business_day_patterns().items():
             for day, mult in days.items():
                 assert 0 <= day <= 6, f"Invalid day {day} for {business_key}"
                 assert mult >= 0, f"Negative multiplier {mult} for {business_key} day {day}"
@@ -810,7 +815,7 @@ class TestGetDayMultiplier:
         assert mult == 1.0
 
     def test_returns_1_for_unknown_business(self, generator):
-        """Should return 1.0 for businesses not in BUSINESS_DAY_PATTERNS."""
+        """Should return 1.0 for businesses not in day patterns."""
         mult = generator._get_day_multiplier("unknown_biz", 5)
         assert mult == 1.0
 

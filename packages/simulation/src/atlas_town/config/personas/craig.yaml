@@ -47,6 +47,15 @@ business_patterns:
     - irrigation_installation
     - seasonal_cleanup
 
+day_patterns:
+  monday: 0.9
+  tuesday: 1.1
+  wednesday: 1.2
+  thursday: 1.1
+  friday: 1.0
+  saturday: 0.4
+  sunday: 0.3
+
 common_questions:
   - "How much did we make this month?"
   - "Who owes us money?"

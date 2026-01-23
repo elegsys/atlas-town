@@ -51,6 +51,15 @@ business_patterns:
     - system_integration
     - technical_consulting
 
+day_patterns:
+  monday: 1.1
+  tuesday: 1.2
+  wednesday: 1.2
+  thursday: 1.1
+  friday: 0.8
+  saturday: 0.2
+  sunday: 0.1
+
 common_services:
   - hourly_consulting
   - project_based_work

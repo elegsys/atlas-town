@@ -14,6 +14,8 @@ from uuid import UUID
 
 import structlog
 
+from atlas_town.config.personas_loader import load_persona_day_patterns
+
 logger = structlog.get_logger(__name__)
 
 
@@ -324,12 +326,13 @@ BUSINESS_SEASONALITY: dict[str, dict[int, float]] = {
 # ============================================================================
 # BUSINESS DAY-OF-WEEK PATTERNS
 # ============================================================================
-# Maps business key to day-of-week multipliers.
+# Maps business key to day-of-week multipliers (defaults).
+# Persona YAML `day_patterns` can override these values.
 # Days: 0=Monday, 1=Tuesday, ..., 6=Sunday
 # Days not listed default to 1.0 (no change).
 # Values > 1.0 = busier than average, < 1.0 = slower than average.
 
-BUSINESS_DAY_PATTERNS: dict[str, dict[int, float]] = {
+DEFAULT_BUSINESS_DAY_PATTERNS: dict[str, dict[int, float]] = {
     "tony": {
         # Restaurant: Thu-Sat peaks, Mon-Wed slower
         0: 0.7,  # Monday
@@ -382,6 +385,20 @@ BUSINESS_DAY_PATTERNS: dict[str, dict[int, float]] = {
     },
 }
 
+
+def get_business_day_patterns() -> dict[str, dict[int, float]]:
+    """Get business day-of-week multipliers, merged with persona overrides."""
+    merged = {key: days.copy() for key, days in DEFAULT_BUSINESS_DAY_PATTERNS.items()}
+    overrides = load_persona_day_patterns()
+
+    for business_key, days in overrides.items():
+        if business_key in merged:
+            merged[business_key] = {**merged[business_key], **days}
+        else:
+            merged[business_key] = days.copy()
+
+    return merged
+
 # Sample data for template substitution
 TEMPLATE_DATA = {
     "location": ["Front yard", "Backyard", "Commercial property", "Apartment complex", "HOA common areas"],
@@ -406,6 +423,7 @@ class TransactionGenerator:
         """Initialize with optional random seed for reproducibility."""
         self._rng = random.Random(seed)
         self._logger = logger.bind(component="transaction_generator")
+        self._day_patterns = get_business_day_patterns()
 
     def _fill_template(self, template: str) -> str:
         """Fill in template placeholders with random data."""
@@ -452,7 +470,7 @@ class TransactionGenerator:
         Returns:
             Multiplier (1.0 = no change, default for unknown business/day)
         """
-        return BUSINESS_DAY_PATTERNS.get(business_key, {}).get(weekday, 1.0)
+        return self._day_patterns.get(business_key, {}).get(weekday, 1.0)
 
     def _should_generate(
         self,
