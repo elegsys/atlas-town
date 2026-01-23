@@ -45,6 +45,10 @@ pnpm install
 pnpm dev
 ```
 
+### GitHub Access
+
+**Use the GitHub CLI (`gh`) for any GitHub queries or actions** (issues, PRs, releases, etc.).
+
 ## Architecture
 
 ### Multi-LLM Agent System
@@ -216,4 +220,3 @@ grepai trace graph "ValidateToken" --depth 3 --json
 2. Use `grepai trace` to understand function relationships
 3. Use `Read` tool to examine files from results
 4. Only use Grep for exact string searches if needed
-

@@ -45,6 +45,10 @@ pnpm install
 pnpm dev
 ```
 
+### GitHub Access
+
+**Use the GitHub CLI (`gh`) for any GitHub queries or actions** (issues, PRs, releases, etc.).
+
 ## Architecture
 
 ### Multi-LLM Agent System
