@@ -156,6 +156,9 @@ class Orchestrator:
         self._is_initialized = False
         self._current_org_id: UUID | None = None
 
+        # Account cache per org (for payment endpoints that need AR, AP, deposit accounts)
+        self._account_cache: dict[UUID, dict[str, Any]] = {}
+
         # Logging
         self._logger = logger.bind(component="orchestrator", mode=mode.value)
 
@@ -510,11 +513,12 @@ class Orchestrator:
             # Publish event
             self._event_publisher.publish(
                 transaction_created(
-                    tx_type="invoice",
-                    amount=str(tx.amount),
-                    description=tx.description,
                     org_id=ctx.id,
                     org_name=ctx.name,
+                    transaction_type="invoice",
+                    amount=float(tx.amount),
+                    counterparty=tx.description.split(" - ")[0] if " - " in tx.description else "Customer",
+                    description=tx.description,
                 )
             )
 
@@ -567,11 +571,12 @@ class Orchestrator:
             # Publish event
             self._event_publisher.publish(
                 transaction_created(
-                    tx_type="bill",
-                    amount=str(tx.amount),
-                    description=tx.description,
                     org_id=ctx.id,
                     org_name=ctx.name,
+                    transaction_type="bill",
+                    amount=float(tx.amount),
+                    counterparty=tx.description.split(" - ")[0] if " - " in tx.description else "Vendor",
+                    description=tx.description,
                 )
             )
 
@@ -582,30 +587,79 @@ class Orchestrator:
             self._logger.error("bill_creation_failed", error=str(e))
             return None
 
+    async def _get_accounts_for_org(self, org_id: UUID) -> dict[str, Any]:
+        """Get cached account info for an organization."""
+        if org_id not in self._account_cache and self._api_client:
+            accounts = await self._api_client.list_accounts(limit=200)
+
+            # Find AR account
+            ar_accounts = [a for a in accounts if a.get("account_type") == "accounts_receivable"]
+            if not ar_accounts:
+                ar_accounts = [
+                    a for a in accounts
+                    if a.get("account_type") == "asset"
+                    and "receivable" in a.get("name", "").lower()
+                ]
+            ar_account = ar_accounts[0] if ar_accounts else None
+
+            # Find deposit/bank account
+            bank_accounts = [a for a in accounts if a.get("account_type") == "bank"]
+            if not bank_accounts:
+                bank_accounts = [
+                    a for a in accounts
+                    if a.get("account_type") == "asset"
+                    and ("cash" in a.get("name", "").lower() or "checking" in a.get("name", "").lower())
+                ]
+            deposit_account = bank_accounts[0] if bank_accounts else None
+
+            self._account_cache[org_id] = {
+                "ar_account_id": ar_account["id"] if ar_account else None,
+                "deposit_account_id": deposit_account["id"] if deposit_account else None,
+            }
+
+        return self._account_cache.get(org_id, {})
+
     async def _record_payment(
         self,
         ctx: OrganizationContext,
         tx: GeneratedTransaction,
     ) -> dict[str, Any] | None:
         """Record a payment received for an invoice."""
-        if not self._api_client or not tx.metadata:
+        if not self._api_client or not tx.metadata or not tx.customer_id:
             return None
 
         invoice_id = tx.metadata.get("invoice_id")
         if not invoice_id:
             return None
 
+        # Get cached accounts
+        account_info = await self._get_accounts_for_org(ctx.id)
+        ar_account_id = account_info.get("ar_account_id")
+        deposit_account_id = account_info.get("deposit_account_id")
+
+        if not ar_account_id or not deposit_account_id:
+            self._logger.warning(
+                "payment_skipped_missing_accounts",
+                org=ctx.name,
+                ar_account=ar_account_id,
+                deposit_account=deposit_account_id,
+            )
+            return None
+
         try:
-            # Create payment
+            # Create payment with all required fields
             payment_data = {
-                "customer_id": str(tx.customer_id) if tx.customer_id else None,
+                "customer_id": str(tx.customer_id),
                 "amount": str(tx.amount),
                 "payment_date": self._get_simulation_date().isoformat(),
                 "payment_method": "check",
-                "reference": f"PMT-{random.randint(10000, 99999)}",
+                "deposit_account_id": deposit_account_id,
+                "reference_number": f"PMT-{random.randint(10000, 99999)}",
             }
 
-            result = await self._api_client.create_payment(payment_data)
+            result = await self._api_client.create_payment(
+                payment_data, ar_account_id=UUID(ar_account_id)
+            )
 
             if result and result.get("id"):
                 # Apply to invoice
@@ -618,11 +672,12 @@ class Orchestrator:
             # Publish event
             self._event_publisher.publish(
                 transaction_created(
-                    tx_type="payment",
-                    amount=str(tx.amount),
-                    description=tx.description,
                     org_id=ctx.id,
                     org_name=ctx.name,
+                    transaction_type="payment",
+                    amount=float(tx.amount),
+                    counterparty=tx.description.split(" - ")[0] if " - " in tx.description else "Customer",
+                    description=tx.description,
                 )
             )
 
