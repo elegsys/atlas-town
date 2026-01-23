@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -84,3 +85,99 @@ def load_persona_day_patterns() -> dict[str, dict[int, float]]:
             patterns[path.stem] = normalized
 
     return patterns
+
+
+@lru_cache
+def load_persona_recurring_transactions() -> dict[str, list[dict[str, Any]]]:
+    """Load recurring transaction configs from persona YAML files.
+
+    Returns:
+        Mapping of persona key (filename stem) to recurring transaction configs.
+    """
+    personas_dir = Path(__file__).resolve().parent / "personas"
+    if not personas_dir.exists():
+        return {}
+
+    recurring_by_persona: dict[str, list[dict[str, Any]]] = {}
+
+    for path in sorted(personas_dir.glob("*.yaml")):
+        raw = path.read_text(encoding="utf-8")
+        data = yaml.safe_load(raw) or {}
+        recurring = data.get("recurring_transactions")
+
+        if recurring is None:
+            continue
+        if not isinstance(recurring, list):
+            raise ValueError(f"{path.name}: recurring_transactions must be a list")
+
+        normalized: list[dict[str, Any]] = []
+        for idx, item in enumerate(recurring):
+            if not isinstance(item, dict):
+                raise ValueError(
+                    f"{path.name}: recurring_transactions[{idx}] must be a mapping"
+                )
+
+            name = item.get("name")
+            vendor = item.get("vendor")
+            amount = item.get("amount")
+            category = item.get("category")
+            day_of_month = item.get("day_of_month")
+            anniversary_raw = item.get("anniversary_date")
+            interval_months = item.get("interval_months", 1)
+
+            if not name or not vendor or amount is None:
+                raise ValueError(
+                    f"{path.name}: recurring_transactions[{idx}] missing name/vendor/amount"
+                )
+
+            if day_of_month is not None and (
+                not isinstance(day_of_month, int) or not (1 <= day_of_month <= 31)
+            ):
+                raise ValueError(
+                    f"{path.name}: recurring_transactions[{idx}] day_of_month must be 1-31"
+                )
+
+            anniversary_date = None
+            if anniversary_raw is not None:
+                if not isinstance(anniversary_raw, str):
+                    raise ValueError(
+                        f"{path.name}: recurring_transactions[{idx}] "
+                        "anniversary_date must be string"
+                    )
+                try:
+                    anniversary_date = date.fromisoformat(anniversary_raw)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"{path.name}: recurring_transactions[{idx}] invalid anniversary_date"
+                    ) from exc
+
+            if day_of_month is None and anniversary_date:
+                day_of_month = anniversary_date.day
+
+            if day_of_month is None and anniversary_date is None:
+                raise ValueError(
+                    f"{path.name}: recurring_transactions[{idx}] needs "
+                    "day_of_month or anniversary_date"
+                )
+
+            if not isinstance(interval_months, int) or interval_months < 1:
+                raise ValueError(
+                    f"{path.name}: recurring_transactions[{idx}] interval_months must be >= 1"
+                )
+
+            normalized.append(
+                {
+                    "name": str(name),
+                    "vendor": str(vendor),
+                    "amount": amount,
+                    "category": str(category) if category is not None else None,
+                    "day_of_month": day_of_month,
+                    "anniversary_date": anniversary_date,
+                    "interval_months": interval_months,
+                }
+            )
+
+        if normalized:
+            recurring_by_persona[path.stem] = normalized
+
+    return recurring_by_persona

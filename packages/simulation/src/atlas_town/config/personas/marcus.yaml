@@ -56,6 +56,23 @@ day_patterns:
   saturday: 1.4
   sunday: 1.2
 
+recurring_transactions:
+  - name: "Office Rent"
+    vendor: "Office Space Partners"
+    amount: 1800
+    day_of_month: 1
+    category: "Rent"
+  - name: "Utilities"
+    vendor: "Office Space Partners"
+    amount: 350
+    day_of_month: 10
+    category: "Utilities"
+  - name: "MLS Subscription"
+    vendor: "MLS Subscription Service"
+    amount: 400
+    anniversary_date: "2024-03-05"
+    category: "Subscriptions"
+
 financial_complexity:
   - trust_accounts
   - escrow_management

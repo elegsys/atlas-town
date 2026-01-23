@@ -14,7 +14,10 @@ from uuid import UUID
 
 import structlog
 
-from atlas_town.config.personas_loader import load_persona_day_patterns
+from atlas_town.config.personas_loader import (
+    load_persona_day_patterns,
+    load_persona_recurring_transactions,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -56,6 +59,118 @@ class GeneratedTransaction:
     customer_id: UUID | None = None
     vendor_id: UUID | None = None
     metadata: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class RecurringTransactionSpec:
+    """Config for a recurring calendar-based transaction."""
+
+    name: str
+    vendor: str
+    amount: Decimal
+    day_of_month: int
+    anniversary_date: date | None = None
+    category: str | None = None
+    interval_months: int = 1
+
+    def is_due(self, current_date: date) -> bool:
+        """Check if this recurring transaction should fire on the given date."""
+        if current_date.day != self.day_of_month:
+            return False
+
+        if self.anniversary_date:
+            months_delta = (
+                (current_date.year - self.anniversary_date.year) * 12
+                + (current_date.month - self.anniversary_date.month)
+            )
+            if months_delta < 0:
+                return False
+            if self.interval_months > 1 and months_delta % self.interval_months != 0:
+                return False
+        elif self.interval_months > 1:
+            return False
+
+        return True
+
+
+class RecurringTransactionScheduler:
+    """Deterministic scheduler for recurring monthly transactions."""
+
+    def __init__(self, recurring_by_business: dict[str, list[RecurringTransactionSpec]]):
+        self._recurring_by_business = recurring_by_business
+        self._last_generated: dict[tuple[str, str], date] = {}
+        self._logger = logger.bind(component="recurring_scheduler")
+
+    def _find_vendor_id(
+        self, vendor_name: str, vendors: list[dict[str, Any]]
+    ) -> UUID | None:
+        normalized = vendor_name.strip().lower()
+        for vendor in vendors:
+            name = str(vendor.get("name", "")).strip().lower()
+            if name == normalized:
+                try:
+                    return UUID(vendor["id"])
+                except (KeyError, ValueError, TypeError):
+                    continue
+        return None
+
+    def get_due_transactions(
+        self,
+        business_key: str,
+        current_date: date,
+        vendors: list[dict[str, Any]],
+    ) -> list[GeneratedTransaction]:
+        """Return recurring transactions due on the given date."""
+        results: list[GeneratedTransaction] = []
+        for spec in self._recurring_by_business.get(business_key, []):
+            if not spec.is_due(current_date):
+                continue
+
+            key = (business_key, spec.name)
+            last = self._last_generated.get(key)
+            if last and last.year == current_date.year and last.month == current_date.month:
+                continue
+
+            vendor_id = self._find_vendor_id(spec.vendor, vendors)
+            if vendor_id is None and vendors:
+                self._logger.warning(
+                    "recurring_vendor_fallback",
+                    business=business_key,
+                    vendor=spec.vendor,
+                )
+                try:
+                    vendor_id = UUID(vendors[0]["id"])
+                except (KeyError, ValueError, TypeError):
+                    vendor_id = None
+
+            if vendor_id is None:
+                self._logger.warning(
+                    "recurring_vendor_missing",
+                    business=business_key,
+                    vendor=spec.vendor,
+                )
+                continue
+
+            description = spec.name
+            if spec.category:
+                description = f"{spec.name} ({spec.category})"
+
+            results.append(
+                GeneratedTransaction(
+                    transaction_type=TransactionType.BILL,
+                    description=description,
+                    amount=spec.amount,
+                    vendor_id=vendor_id,
+                    metadata={
+                        "recurring_name": spec.name,
+                        "vendor_name": spec.vendor,
+                        "category": spec.category,
+                    },
+                )
+            )
+            self._last_generated[key] = current_date
+
+        return results
 
 
 # ============================================================================
@@ -443,6 +558,60 @@ class TransactionGenerator:
         self._rng = random.Random(seed)
         self._logger = logger.bind(component="transaction_generator")
         self._day_patterns = get_business_day_patterns()
+        self._recurring_scheduler = RecurringTransactionScheduler(
+            self._load_recurring_transactions()
+        )
+
+    def _load_recurring_transactions(
+        self,
+    ) -> dict[str, list[RecurringTransactionSpec]]:
+        """Load and normalize recurring transactions from persona configs."""
+        raw = load_persona_recurring_transactions()
+        recurring: dict[str, list[RecurringTransactionSpec]] = {}
+
+        for business_key, items in raw.items():
+            specs: list[RecurringTransactionSpec] = []
+            for item in items:
+                try:
+                    amount = Decimal(str(item["amount"]))
+                except (KeyError, ValueError, TypeError) as exc:
+                    raise ValueError(
+                        f"Recurring amount invalid for {business_key}: {item!r}"
+                    ) from exc
+
+                day_of_month = int(item["day_of_month"])
+                anniversary_date = item.get("anniversary_date")
+                interval_months = int(item.get("interval_months", 1))
+
+                specs.append(
+                    RecurringTransactionSpec(
+                        name=item["name"],
+                        vendor=item["vendor"],
+                        amount=amount,
+                        day_of_month=day_of_month,
+                        anniversary_date=anniversary_date,
+                        category=item.get("category"),
+                        interval_months=interval_months,
+                    )
+                )
+
+            if specs:
+                recurring[business_key] = specs
+
+        return recurring
+
+    def generate_recurring_transactions(
+        self,
+        business_key: str,
+        current_date: date,
+        vendors: list[dict[str, Any]],
+    ) -> list[GeneratedTransaction]:
+        """Generate recurring transactions for a business on the given date."""
+        return self._recurring_scheduler.get_due_transactions(
+            business_key=business_key,
+            current_date=current_date,
+            vendors=vendors,
+        )
 
     def _fill_template(self, template: str) -> str:
         """Fill in template placeholders with random data."""

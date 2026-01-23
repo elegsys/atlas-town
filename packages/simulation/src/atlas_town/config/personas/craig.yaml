@@ -56,6 +56,29 @@ day_patterns:
   saturday: 0.4
   sunday: 0.3
 
+recurring_transactions:
+  - name: "Equipment Yard Lease"
+    vendor: "Equipment Yard Lease"
+    amount: 1800
+    day_of_month: 1
+    category: "Rent"
+  - name: "Utilities"
+    vendor: "City Utilities"
+    amount: 275
+    day_of_month: 5
+    category: "Utilities"
+  - name: "Jobber Scheduling Software"
+    vendor: "Jobber Software"
+    amount: 79.99
+    anniversary_date: "2024-03-15"
+    category: "Software"
+  - name: "Liability Insurance"
+    vendor: "Smith Insurance Agency"
+    amount: 800
+    anniversary_date: "2024-01-15"
+    interval_months: 3
+    category: "Insurance"
+
 common_questions:
   - "How much did we make this month?"
   - "Who owes us money?"

@@ -59,6 +59,29 @@ day_patterns:
   saturday: 0.3
   sunday: 0.0
 
+recurring_transactions:
+  - name: "Office Rent"
+    vendor: "Medical Plaza Properties"
+    amount: 4200
+    day_of_month: 1
+    category: "Rent"
+  - name: "Utilities"
+    vendor: "City Utilities"
+    amount: 500
+    day_of_month: 6
+    category: "Utilities"
+  - name: "Practice Management Software"
+    vendor: "Practice Management Software"
+    amount: 350
+    anniversary_date: "2024-02-12"
+    category: "Software"
+  - name: "Equipment Lease"
+    vendor: "Medical Equipment Leasing"
+    amount: 1200
+    anniversary_date: "2024-01-15"
+    interval_months: 3
+    category: "Equipment Lease"
+
 insurance_considerations:
   - claim_submissions
   - pre_authorizations

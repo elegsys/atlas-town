@@ -244,6 +244,13 @@ class AccountingWorkflow:
             current_hour=current_hour,
             current_phase=current_phase,
         )
+        recurring_transactions = self._tx_gen.generate_recurring_transactions(
+            business_key=business_key,
+            current_date=current_date,
+            vendors=vendors,
+        )
+        if recurring_transactions:
+            transactions.extend(recurring_transactions)
 
         # Step 2-5: Process transactions (deterministic)
         results = await self._process_transactions(transactions, current_date, org_id)

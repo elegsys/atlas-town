@@ -753,6 +753,7 @@ class Orchestrator:
         """Early morning: Prep and planning."""
         results: list[Any] = []
         day = self._scheduler.current_time.day
+        sim_date = self._get_simulation_date()
 
         self._event_publisher.publish(
             phase_started(day, phase.value, "Business prep and planning")
@@ -768,6 +769,54 @@ class Orchestrator:
                     org_id=None,
                 )
             )
+
+        # Generate deterministic recurring bills (once per day)
+        for org_id, ctx in self._organizations.items():
+            await self.switch_organization(org_id)
+
+            if not self._api_client:
+                continue
+
+            try:
+                vendors = await self._api_client.list_vendors()
+                recurring = self._tx_generator.generate_recurring_transactions(
+                    business_key=ctx.owner_key,
+                    current_date=sim_date,
+                    vendors=vendors,
+                )
+
+                bills_created = 0
+                for tx in recurring:
+                    if tx.transaction_type == TransactionType.BILL:
+                        created = await self._create_bill(ctx, tx, sim_date)
+                        if created:
+                            bills_created += 1
+
+                if bills_created > 0:
+                    self._event_publisher.publish(
+                        agent_speaking(
+                            agent_id=self._accountant.id if self._accountant else UUID(int=0),
+                            agent_name="Sarah Chen",
+                            message=(
+                                f"{ctx.name}: Recorded {bills_created} recurring bill(s)."
+                            ),
+                            org_id=org_id,
+                        )
+                    )
+
+                results.append(
+                    {
+                        "org": ctx.name,
+                        "recurring_bills": bills_created,
+                    }
+                )
+
+            except Exception as exc:
+                self._logger.error(
+                    "recurring_bills_error",
+                    org=ctx.name,
+                    error=str(exc),
+                )
 
         self._event_publisher.publish(phase_completed(day, phase.value, results))
         return results

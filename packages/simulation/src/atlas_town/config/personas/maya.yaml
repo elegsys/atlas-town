@@ -60,6 +60,23 @@ day_patterns:
   saturday: 0.2
   sunday: 0.1
 
+recurring_transactions:
+  - name: "Office Rent"
+    vendor: "Coworking Space LLC"
+    amount: 2000
+    day_of_month: 1
+    category: "Rent"
+  - name: "Utilities"
+    vendor: "City Utilities"
+    amount: 300
+    day_of_month: 5
+    category: "Utilities"
+  - name: "Developer Tools Subscription"
+    vendor: "JetBrains Software"
+    amount: 500
+    anniversary_date: "2024-01-20"
+    category: "Software"
+
 common_services:
   - hourly_consulting
   - project_based_work
