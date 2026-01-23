@@ -167,6 +167,13 @@ class AtlasAPIClient:
 
     async def switch_organization(self, org_id: UUID) -> dict[str, Any]:
         """Switch to a different organization context."""
+        if self._current_org_id == org_id and self._current_company_id:
+            logger.info("organization_already_selected", org_id=str(org_id))
+            return {
+                "access_token": self._access_token or "",
+                "organization": {"id": str(org_id)},
+            }
+
         await self._ensure_authenticated()
         client = await self._get_client()
 
@@ -182,6 +189,8 @@ class AtlasAPIClient:
         self._access_token = data.get("access_token") or data.get("tokens", {}).get("access_token")
         # switch-org doesn't return refresh_token, keep the existing one
         self._current_org_id = org_id
+        if self._access_token:
+            self._token_expires_at = datetime.now(timezone.utc) + timedelta(minutes=55)
 
         # Fetch default company for the new organization
         await self._fetch_default_company()
@@ -206,16 +215,39 @@ class AtlasAPIClient:
 
     async def _fetch_default_company(self) -> None:
         """Fetch and set the default company for the current organization."""
-        client = await self._get_client()
-        response = await client.get(
-            "/api/v1/companies/",
-            headers=self._get_headers(),
-        )
-        if response.status_code == 200:
-            companies = response.json()
-            if companies:
-                self._current_company_id = UUID(companies[0]["id"])
-                logger.info("company_set", company_id=str(self._current_company_id))
+        try:
+            # Use _request_raw to bypass company_id injection (we don't have it yet)
+            await self._ensure_authenticated()
+            client = await self._get_client()
+            response = await client.get(
+                "/api/v1/companies/",
+                headers=self._get_headers(),
+            )
+
+            # Handle 401 by refreshing and retrying once
+            if response.status_code == 401:
+                await self.refresh_tokens()
+                response = await client.get(
+                    "/api/v1/companies/",
+                    headers=self._get_headers(),
+                )
+
+            if response.status_code == 200:
+                companies_raw = response.json()
+                companies = self._extract_items(companies_raw)
+                if companies:
+                    self._current_company_id = UUID(companies[0]["id"])
+                    logger.info("company_set", company_id=str(self._current_company_id))
+                else:
+                    logger.warning("no_companies_found", org_id=str(self._current_org_id))
+            else:
+                logger.warning(
+                    "fetch_company_failed",
+                    status_code=response.status_code,
+                    org_id=str(self._current_org_id),
+                )
+        except Exception as e:
+            logger.warning("fetch_company_error", error=str(e))
 
     # === Generic Request Methods ===
 
@@ -298,10 +330,13 @@ class AtlasAPIClient:
         return await self._request("GET", path, params=params)
 
     async def post(
-        self, path: str, json: dict[str, Any] | None = None
+        self,
+        path: str,
+        json: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
     ) -> dict[str, Any] | list[dict[str, Any]]:
         """Make POST request."""
-        return await self._request("POST", path, json=json)
+        return await self._request("POST", path, params=params, json=json)
 
     async def put(
         self, path: str, json: dict[str, Any] | None = None
@@ -321,12 +356,30 @@ class AtlasAPIClient:
 
     # === Customer Endpoints ===
 
+    @staticmethod
+    def _clamp_limit(limit: int) -> int:
+        return min(max(limit, 1), 500)
+
+    @staticmethod
+    def _extract_items(result: Any) -> list[dict[str, Any]]:
+        """Return list of items from a list or paged response."""
+        if isinstance(result, list):
+            return result
+        if isinstance(result, dict):
+            items = result.get("items")
+            if isinstance(items, list):
+                return items
+        return []
+
     async def list_customers(
-        self, skip: int = 0, limit: int = 100
+        self, offset: int = 0, limit: int = 100
     ) -> list[dict[str, Any]]:
         """List customers for current organization."""
-        result = await self.get("/api/v1/customers/", params={"skip": skip, "limit": limit})
-        return result if isinstance(result, list) else []
+        result = await self.get(
+            "/api/v1/customers/",
+            params={"offset": offset, "limit": self._clamp_limit(limit)},
+        )
+        return self._extract_items(result)
 
     async def get_customer(self, customer_id: UUID) -> dict[str, Any]:
         """Get customer by ID."""
@@ -347,10 +400,15 @@ class AtlasAPIClient:
 
     # === Vendor Endpoints ===
 
-    async def list_vendors(self, skip: int = 0, limit: int = 100) -> list[dict[str, Any]]:
+    async def list_vendors(
+        self, offset: int = 0, limit: int = 100
+    ) -> list[dict[str, Any]]:
         """List vendors for current organization."""
-        result = await self.get("/api/v1/vendors/", params={"skip": skip, "limit": limit})
-        return result if isinstance(result, list) else []
+        result = await self.get(
+            "/api/v1/vendors/",
+            params={"offset": offset, "limit": self._clamp_limit(limit)},
+        )
+        return self._extract_items(result)
 
     async def get_vendor(self, vendor_id: UUID) -> dict[str, Any]:
         """Get vendor by ID."""
@@ -365,14 +423,14 @@ class AtlasAPIClient:
     # === Invoice Endpoints ===
 
     async def list_invoices(
-        self, skip: int = 0, limit: int = 100, status: str | None = None
+        self, offset: int = 0, limit: int = 100, status: str | None = None
     ) -> list[dict[str, Any]]:
         """List invoices for current organization."""
-        params: dict[str, Any] = {"skip": skip, "limit": limit}
+        params: dict[str, Any] = {"offset": offset, "limit": self._clamp_limit(limit)}
         if status:
             params["status"] = status
         result = await self.get("/api/v1/invoices/", params=params)
-        return result if isinstance(result, list) else []
+        return self._extract_items(result)
 
     async def get_invoice(self, invoice_id: UUID) -> dict[str, Any]:
         """Get invoice by ID."""
@@ -384,9 +442,14 @@ class AtlasAPIClient:
         result = await self.post("/api/v1/invoices/", json=data)
         return result if isinstance(result, dict) else {}
 
-    async def send_invoice(self, invoice_id: UUID) -> dict[str, Any]:
-        """Mark invoice as sent."""
-        result = await self.post(f"/api/v1/invoices/{invoice_id}/send")
+    async def send_invoice(
+        self, invoice_id: UUID, ar_account_id: UUID
+    ) -> dict[str, Any]:
+        """Mark invoice as sent and create AR journal entry."""
+        result = await self.post(
+            f"/api/v1/invoices/{invoice_id}/send",
+            params={"ar_account_id": str(ar_account_id)},
+        )
         return result if isinstance(result, dict) else {}
 
     async def void_invoice(self, invoice_id: UUID, reason: str) -> dict[str, Any]:
@@ -399,14 +462,14 @@ class AtlasAPIClient:
     # === Bill Endpoints ===
 
     async def list_bills(
-        self, skip: int = 0, limit: int = 100, status: str | None = None
+        self, offset: int = 0, limit: int = 100, status: str | None = None
     ) -> list[dict[str, Any]]:
         """List bills for current organization."""
-        params: dict[str, Any] = {"skip": skip, "limit": limit}
+        params: dict[str, Any] = {"offset": offset, "limit": self._clamp_limit(limit)}
         if status:
             params["status"] = status
         result = await self.get("/api/v1/bills/", params=params)
-        return result if isinstance(result, list) else []
+        return self._extract_items(result)
 
     async def get_bill(self, bill_id: UUID) -> dict[str, Any]:
         """Get bill by ID."""
@@ -426,15 +489,24 @@ class AtlasAPIClient:
     # === Payment Endpoints ===
 
     async def list_payments(
-        self, skip: int = 0, limit: int = 100
+        self, offset: int = 0, limit: int = 100
     ) -> list[dict[str, Any]]:
         """List payments for current organization."""
-        result = await self.get("/api/v1/payments/", params={"skip": skip, "limit": limit})
-        return result if isinstance(result, list) else []
+        result = await self.get(
+            "/api/v1/payments/",
+            params={"offset": offset, "limit": self._clamp_limit(limit)},
+        )
+        return self._extract_items(result)
 
-    async def create_payment(self, data: dict[str, Any]) -> dict[str, Any]:
+    async def create_payment(
+        self, data: dict[str, Any], ar_account_id: UUID
+    ) -> dict[str, Any]:
         """Create a payment (receive money from customer)."""
-        result = await self.post("/api/v1/payments/", json=data)
+        result = await self.post(
+            "/api/v1/payments/",
+            json=data,
+            params={"ar_account_id": str(ar_account_id)},
+        )
         return result if isinstance(result, dict) else {}
 
     async def apply_payment_to_invoice(
@@ -450,13 +522,14 @@ class AtlasAPIClient:
     # === Bill Payment Endpoints ===
 
     async def list_bill_payments(
-        self, skip: int = 0, limit: int = 100
+        self, offset: int = 0, limit: int = 100
     ) -> list[dict[str, Any]]:
         """List bill payments for current organization."""
         result = await self.get(
-            "/api/v1/bill-payments/", params={"skip": skip, "limit": limit}
+            "/api/v1/bill-payments/",
+            params={"offset": offset, "limit": self._clamp_limit(limit)},
         )
-        return result if isinstance(result, list) else []
+        return self._extract_items(result)
 
     async def create_bill_payment(self, data: dict[str, Any]) -> dict[str, Any]:
         """Create a bill payment (pay vendor)."""
@@ -465,10 +538,15 @@ class AtlasAPIClient:
 
     # === Account Endpoints ===
 
-    async def list_accounts(self, skip: int = 0, limit: int = 100) -> list[dict[str, Any]]:
+    async def list_accounts(
+        self, offset: int = 0, limit: int = 100
+    ) -> list[dict[str, Any]]:
         """List chart of accounts."""
-        result = await self.get("/api/v1/accounts/", params={"skip": skip, "limit": limit})
-        return result if isinstance(result, list) else []
+        result = await self.get(
+            "/api/v1/accounts/",
+            params={"offset": offset, "limit": self._clamp_limit(limit)},
+        )
+        return self._extract_items(result)
 
     async def get_account(self, account_id: UUID) -> dict[str, Any]:
         """Get account by ID."""
@@ -483,13 +561,14 @@ class AtlasAPIClient:
     # === Journal Entry Endpoints ===
 
     async def list_journal_entries(
-        self, skip: int = 0, limit: int = 100
+        self, offset: int = 0, limit: int = 100
     ) -> list[dict[str, Any]]:
         """List journal entries."""
         result = await self.get(
-            "/api/v1/journal-entries/", params={"skip": skip, "limit": limit}
+            "/api/v1/journal-entries/",
+            params={"offset": offset, "limit": self._clamp_limit(limit)},
         )
-        return result if isinstance(result, list) else []
+        return self._extract_items(result)
 
     async def create_journal_entry(self, data: dict[str, Any]) -> dict[str, Any]:
         """Create a journal entry."""
@@ -507,12 +586,12 @@ class AtlasAPIClient:
         return result if isinstance(result, dict) else {}
 
     async def get_profit_loss(
-        self, start_date: str, end_date: str
+        self, period_start: str, period_end: str
     ) -> dict[str, Any]:
         """Get profit and loss report."""
         result = await self.get(
             "/api/v1/reports/profit-loss",
-            params={"start_date": start_date, "end_date": end_date},
+            params={"period_start": period_start, "period_end": period_end},
         )
         return result if isinstance(result, dict) else {}
 
@@ -536,13 +615,14 @@ class AtlasAPIClient:
     # === Bank Transaction Endpoints ===
 
     async def list_bank_transactions(
-        self, skip: int = 0, limit: int = 100
+        self, offset: int = 0, limit: int = 100
     ) -> list[dict[str, Any]]:
         """List bank transactions."""
         result = await self.get(
-            "/api/v1/bank-transactions/", params={"skip": skip, "limit": limit}
+            "/api/v1/bank-transactions/",
+            params={"offset": offset, "limit": self._clamp_limit(limit)},
         )
-        return result if isinstance(result, list) else []
+        return self._extract_items(result)
 
     async def categorize_bank_transaction(
         self, transaction_id: UUID, account_id: UUID

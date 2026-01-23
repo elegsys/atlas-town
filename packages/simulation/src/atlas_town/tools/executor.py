@@ -106,9 +106,9 @@ class ToolExecutor:
     # === Customer Handlers ===
 
     async def _list_customers(
-        self, skip: int = 0, limit: int = 100
+        self, offset: int = 0, limit: int = 100
     ) -> list[dict[str, Any]]:
-        return await self.client.list_customers(skip=skip, limit=limit)
+        return await self.client.list_customers(offset=offset, limit=limit)
 
     async def _get_customer(self, customer_id: str) -> dict[str, Any]:
         return await self.client.get_customer(UUID(customer_id))
@@ -119,9 +119,9 @@ class ToolExecutor:
     # === Vendor Handlers ===
 
     async def _list_vendors(
-        self, skip: int = 0, limit: int = 100
+        self, offset: int = 0, limit: int = 100
     ) -> list[dict[str, Any]]:
-        return await self.client.list_vendors(skip=skip, limit=limit)
+        return await self.client.list_vendors(offset=offset, limit=limit)
 
     async def _get_vendor(self, vendor_id: str) -> dict[str, Any]:
         return await self.client.get_vendor(UUID(vendor_id))
@@ -132,9 +132,9 @@ class ToolExecutor:
     # === Invoice Handlers ===
 
     async def _list_invoices(
-        self, skip: int = 0, limit: int = 100, status: str | None = None
+        self, offset: int = 0, limit: int = 100, status: str | None = None
     ) -> list[dict[str, Any]]:
-        return await self.client.list_invoices(skip=skip, limit=limit, status=status)
+        return await self.client.list_invoices(offset=offset, limit=limit, status=status)
 
     async def _get_invoice(self, invoice_id: str) -> dict[str, Any]:
         return await self.client.get_invoice(UUID(invoice_id))
@@ -151,9 +151,9 @@ class ToolExecutor:
     # === Bill Handlers ===
 
     async def _list_bills(
-        self, skip: int = 0, limit: int = 100, status: str | None = None
+        self, offset: int = 0, limit: int = 100, status: str | None = None
     ) -> list[dict[str, Any]]:
-        return await self.client.list_bills(skip=skip, limit=limit, status=status)
+        return await self.client.list_bills(offset=offset, limit=limit, status=status)
 
     async def _get_bill(self, bill_id: str) -> dict[str, Any]:
         return await self.client.get_bill(UUID(bill_id))
@@ -167,9 +167,9 @@ class ToolExecutor:
     # === Payment Handlers ===
 
     async def _list_payments(
-        self, skip: int = 0, limit: int = 100
+        self, offset: int = 0, limit: int = 100
     ) -> list[dict[str, Any]]:
-        return await self.client.list_payments(skip=skip, limit=limit)
+        return await self.client.list_payments(offset=offset, limit=limit)
 
     async def _create_payment(self, **data: Any) -> dict[str, Any]:
         return await self.client.create_payment(data)
@@ -187,9 +187,9 @@ class ToolExecutor:
     # === Account Handlers ===
 
     async def _list_accounts(
-        self, skip: int = 0, limit: int = 100
+        self, offset: int = 0, limit: int = 100
     ) -> list[dict[str, Any]]:
-        return await self.client.list_accounts(skip=skip, limit=limit)
+        return await self.client.list_accounts(offset=offset, limit=limit)
 
     async def _get_account_balance(self, account_id: str) -> dict[str, Any]:
         return await self.client.get_account_balance(UUID(account_id))
@@ -197,9 +197,9 @@ class ToolExecutor:
     # === Journal Entry Handlers ===
 
     async def _list_journal_entries(
-        self, skip: int = 0, limit: int = 100
+        self, offset: int = 0, limit: int = 100
     ) -> list[dict[str, Any]]:
-        return await self.client.list_journal_entries(skip=skip, limit=limit)
+        return await self.client.list_journal_entries(offset=offset, limit=limit)
 
     async def _create_journal_entry(self, **data: Any) -> dict[str, Any]:
         return await self.client.create_journal_entry(data)
@@ -212,9 +212,9 @@ class ToolExecutor:
         return await self.client.get_trial_balance(as_of_date)
 
     async def _get_profit_loss(
-        self, start_date: str, end_date: str
+        self, period_start: str, period_end: str
     ) -> dict[str, Any]:
-        return await self.client.get_profit_loss(start_date, end_date)
+        return await self.client.get_profit_loss(period_start, period_end)
 
     async def _get_balance_sheet(self, as_of_date: str) -> dict[str, Any]:
         return await self.client.get_balance_sheet(as_of_date)
@@ -228,9 +228,9 @@ class ToolExecutor:
     # === Bank Transaction Handlers ===
 
     async def _list_bank_transactions(
-        self, skip: int = 0, limit: int = 100
+        self, offset: int = 0, limit: int = 100
     ) -> list[dict[str, Any]]:
-        return await self.client.list_bank_transactions(skip=skip, limit=limit)
+        return await self.client.list_bank_transactions(offset=offset, limit=limit)
 
     async def _categorize_bank_transaction(
         self, transaction_id: str, account_id: str

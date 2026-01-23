@@ -14,9 +14,9 @@ LIST_CUSTOMERS_TOOL: dict[str, Any] = {
     "input_schema": {
         "type": "object",
         "properties": {
-            "skip": {
+            "offset": {
                 "type": "integer",
-                "description": "Number of records to skip for pagination",
+                "description": "Number of records to offset for pagination",
                 "default": 0,
             },
             "limit": {
@@ -89,9 +89,9 @@ LIST_VENDORS_TOOL: dict[str, Any] = {
     "input_schema": {
         "type": "object",
         "properties": {
-            "skip": {
+            "offset": {
                 "type": "integer",
-                "description": "Number of records to skip",
+                "description": "Number of records to offset",
                 "default": 0,
             },
             "limit": {
@@ -157,7 +157,7 @@ LIST_INVOICES_TOOL: dict[str, Any] = {
                 "enum": ["draft", "sent", "viewed", "partial", "paid", "overdue", "voided"],
                 "description": "Filter by invoice status",
             },
-            "skip": {"type": "integer", "default": 0},
+            "offset": {"type": "integer", "default": 0},
             "limit": {"type": "integer", "default": 100},
         },
         "required": [],
@@ -287,7 +287,7 @@ LIST_BILLS_TOOL: dict[str, Any] = {
                 "enum": ["draft", "pending", "approved", "partial", "paid", "overdue", "voided"],
                 "description": "Filter by bill status",
             },
-            "skip": {"type": "integer", "default": 0},
+            "offset": {"type": "integer", "default": 0},
             "limit": {"type": "integer", "default": 100},
         },
         "required": [],
@@ -383,7 +383,7 @@ LIST_PAYMENTS_TOOL: dict[str, Any] = {
     "input_schema": {
         "type": "object",
         "properties": {
-            "skip": {"type": "integer", "default": 0},
+            "offset": {"type": "integer", "default": 0},
             "limit": {"type": "integer", "default": 100},
         },
         "required": [],
@@ -510,7 +510,7 @@ LIST_ACCOUNTS_TOOL: dict[str, Any] = {
     "input_schema": {
         "type": "object",
         "properties": {
-            "skip": {"type": "integer", "default": 0},
+            "offset": {"type": "integer", "default": 0},
             "limit": {"type": "integer", "default": 100},
         },
         "required": [],
@@ -541,7 +541,7 @@ LIST_JOURNAL_ENTRIES_TOOL: dict[str, Any] = {
     "input_schema": {
         "type": "object",
         "properties": {
-            "skip": {"type": "integer", "default": 0},
+            "offset": {"type": "integer", "default": 0},
             "limit": {"type": "integer", "default": 100},
         },
         "required": [],
@@ -620,18 +620,18 @@ GET_PROFIT_LOSS_TOOL: dict[str, Any] = {
     "input_schema": {
         "type": "object",
         "properties": {
-            "start_date": {
+            "period_start": {
                 "type": "string",
                 "format": "date",
                 "description": "Start of period",
             },
-            "end_date": {
+            "period_end": {
                 "type": "string",
                 "format": "date",
                 "description": "End of period",
             },
         },
-        "required": ["start_date", "end_date"],
+        "required": ["period_start", "period_end"],
     },
 }
 
@@ -679,7 +679,7 @@ LIST_BANK_TRANSACTIONS_TOOL: dict[str, Any] = {
     "input_schema": {
         "type": "object",
         "properties": {
-            "skip": {"type": "integer", "default": 0},
+            "offset": {"type": "integer", "default": 0},
             "limit": {"type": "integer", "default": 100},
         },
         "required": [],
