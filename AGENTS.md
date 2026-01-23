@@ -1,10 +1,10 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to AI agents working in this repository.
 
 ## Project Overview
 
-Atlas Town is an AI simulation system where LLM-powered agents role-play business stakeholders in a visual 2D town, generating realistic accounting data through the existing Atlas API. The simulation runs 5 businesses with different owners, customers, and vendors, all managed by a central accountant agent (Sarah).
+Atlas Town is an AI simulation system where LLM-powered agents role-play business stakeholders in a visual 2D town, generating realistic accounting data through the Atlas API. The simulation runs 5 businesses with different owners, customers, and vendors, all managed by a central accountant agent (Sarah).
 
 ## Commands
 
@@ -148,7 +148,6 @@ GOOGLE_API_KEY=...
 
 Each has industry-specific customer and vendor archetypes with realistic payment patterns defined in `agents/customer.py` and `agents/vendor.py`.
 
-
 ## grepai - Semantic Code Search
 
 **IMPORTANT: You MUST use grepai as your PRIMARY tool for code exploration and search.**
@@ -216,4 +215,3 @@ grepai trace graph "ValidateToken" --depth 3 --json
 2. Use `grepai trace` to understand function relationships
 3. Use `Read` tool to examine files from results
 4. Only use Grep for exact string searches if needed
-
