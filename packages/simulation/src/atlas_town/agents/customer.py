@@ -1,13 +1,13 @@
 """Customer agent archetypes for generating realistic transactions."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import structlog
 
-from atlas_town.agents.base import AgentAction, AgentState, BaseAgent
+from atlas_town.agents.base import AgentAction, BaseAgent
 from atlas_town.clients.openai_client import OpenAIClient
 
 logger = structlog.get_logger(__name__)
@@ -221,7 +221,8 @@ class CustomerAgent(BaseAgent):
 
     def _get_system_prompt(self) -> str:
         """Get the customer's system prompt."""
-        return f"""You are simulating a {self._profile.customer_type.value} customer for a {self._industry} business.
+        return f"""You are simulating a {self._profile.customer_type.value} customer for a
+{self._industry} business.
 
 Profile:
 - Name: {self._profile.name}

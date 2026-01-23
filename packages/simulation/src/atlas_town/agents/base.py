@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 from uuid import UUID, uuid4
@@ -30,7 +30,7 @@ class AgentMessage:
     content: str
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     tool_call_id: str | None = None
-    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 @dataclass
@@ -42,7 +42,7 @@ class AgentAction:
     tool_name: str | None = None
     tool_args: dict[str, Any] = field(default_factory=dict)
     message: str | None = None
-    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 @dataclass
@@ -53,7 +53,7 @@ class AgentObservation:
     success: bool
     result: Any = None
     error: str | None = None
-    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 class BaseAgent(ABC):
@@ -249,4 +249,7 @@ class BaseAgent(ABC):
         self.state = AgentState.IDLE
 
     def __repr__(self) -> str:
-        return f"{self.__class__.__name__}(id={self.id}, name={self.name}, state={self.state.value})"
+        return (
+            f"{self.__class__.__name__}(id={self.id}, name={self.name}, "
+            f"state={self.state.value})"
+        )

@@ -10,7 +10,10 @@ from typing import Any
 
 LIST_CUSTOMERS_TOOL: dict[str, Any] = {
     "name": "list_customers",
-    "description": "List all customers for the current organization. Returns customer names, contact info, and balances.",
+    "description": (
+        "List all customers for the current organization. Returns customer names, "
+        "contact info, and balances."
+    ),
     "input_schema": {
         "type": "object",
         "properties": {
@@ -47,7 +50,10 @@ GET_CUSTOMER_TOOL: dict[str, Any] = {
 
 CREATE_CUSTOMER_TOOL: dict[str, Any] = {
     "name": "create_customer",
-    "description": "Create a new customer record. Customers are people or businesses that owe you money.",
+    "description": (
+        "Create a new customer record. Customers are people or businesses that "
+        "owe you money."
+    ),
     "input_schema": {
         "type": "object",
         "properties": {
@@ -85,7 +91,10 @@ CREATE_CUSTOMER_TOOL: dict[str, Any] = {
 
 LIST_VENDORS_TOOL: dict[str, Any] = {
     "name": "list_vendors",
-    "description": "List all vendors for the current organization. Vendors are people or businesses you owe money to.",
+    "description": (
+        "List all vendors for the current organization. Vendors are people or "
+        "businesses you owe money to."
+    ),
     "input_schema": {
         "type": "object",
         "properties": {
@@ -148,7 +157,10 @@ CREATE_VENDOR_TOOL: dict[str, Any] = {
 
 LIST_INVOICES_TOOL: dict[str, Any] = {
     "name": "list_invoices",
-    "description": "List invoices for the current organization. Invoices represent money owed TO you by customers.",
+    "description": (
+        "List invoices for the current organization. Invoices represent money "
+        "owed TO you by customers."
+    ),
     "input_schema": {
         "type": "object",
         "properties": {
@@ -182,7 +194,10 @@ GET_INVOICE_TOOL: dict[str, Any] = {
 
 CREATE_INVOICE_TOOL: dict[str, Any] = {
     "name": "create_invoice",
-    "description": "Create a new invoice for a customer. This records revenue and creates an accounts receivable entry.",
+    "description": (
+        "Create a new invoice for a customer. This records revenue and creates "
+        "an accounts receivable entry."
+    ),
     "input_schema": {
         "type": "object",
         "properties": {
@@ -256,7 +271,10 @@ SEND_INVOICE_TOOL: dict[str, Any] = {
 
 VOID_INVOICE_TOOL: dict[str, Any] = {
     "name": "void_invoice",
-    "description": "Void an invoice. This reverses the journal entry and marks the invoice as voided.",
+    "description": (
+        "Void an invoice. This reverses the journal entry and marks the invoice "
+        "as voided."
+    ),
     "input_schema": {
         "type": "object",
         "properties": {
@@ -278,7 +296,10 @@ VOID_INVOICE_TOOL: dict[str, Any] = {
 
 LIST_BILLS_TOOL: dict[str, Any] = {
     "name": "list_bills",
-    "description": "List bills for the current organization. Bills represent money YOU owe to vendors.",
+    "description": (
+        "List bills for the current organization. Bills represent money YOU owe "
+        "to vendors."
+    ),
     "input_schema": {
         "type": "object",
         "properties": {
@@ -312,7 +333,10 @@ GET_BILL_TOOL: dict[str, Any] = {
 
 CREATE_BILL_TOOL: dict[str, Any] = {
     "name": "create_bill",
-    "description": "Create a new bill from a vendor. This records an expense and creates an accounts payable entry.",
+    "description": (
+        "Create a new bill from a vendor. This records an expense and creates "
+        "an accounts payable entry."
+    ),
     "input_schema": {
         "type": "object",
         "properties": {
@@ -392,7 +416,10 @@ LIST_PAYMENTS_TOOL: dict[str, Any] = {
 
 CREATE_PAYMENT_TOOL: dict[str, Any] = {
     "name": "create_payment",
-    "description": "Record a payment received from a customer. This increases cash and reduces accounts receivable.",
+    "description": (
+        "Record a payment received from a customer. This increases cash and "
+        "reduces accounts receivable."
+    ),
     "input_schema": {
         "type": "object",
         "properties": {
@@ -458,7 +485,10 @@ APPLY_PAYMENT_TOOL: dict[str, Any] = {
 
 CREATE_BILL_PAYMENT_TOOL: dict[str, Any] = {
     "name": "create_bill_payment",
-    "description": "Record a payment made to a vendor. This decreases cash and reduces accounts payable.",
+    "description": (
+        "Record a payment made to a vendor. This decreases cash and reduces "
+        "accounts payable."
+    ),
     "input_schema": {
         "type": "object",
         "properties": {
@@ -537,7 +567,10 @@ GET_ACCOUNT_BALANCE_TOOL: dict[str, Any] = {
 
 LIST_JOURNAL_ENTRIES_TOOL: dict[str, Any] = {
     "name": "list_journal_entries",
-    "description": "List journal entries. Journal entries are the fundamental accounting records that affect account balances.",
+    "description": (
+        "List journal entries. Journal entries are the fundamental accounting "
+        "records that affect account balances."
+    ),
     "input_schema": {
         "type": "object",
         "properties": {
@@ -550,7 +583,10 @@ LIST_JOURNAL_ENTRIES_TOOL: dict[str, Any] = {
 
 CREATE_JOURNAL_ENTRY_TOOL: dict[str, Any] = {
     "name": "create_journal_entry",
-    "description": "Create a manual journal entry. Debits must equal credits. Use for adjustments, corrections, or complex transactions.",
+    "description": (
+        "Create a manual journal entry. Debits must equal credits. Use for "
+        "adjustments, corrections, or complex transactions."
+    ),
     "input_schema": {
         "type": "object",
         "properties": {
@@ -600,7 +636,10 @@ CREATE_JOURNAL_ENTRY_TOOL: dict[str, Any] = {
 
 GET_TRIAL_BALANCE_TOOL: dict[str, Any] = {
     "name": "get_trial_balance",
-    "description": "Get the trial balance report showing all account balances. Useful for verifying books are balanced.",
+    "description": (
+        "Get the trial balance report showing all account balances. Useful for "
+        "verifying books are balanced."
+    ),
     "input_schema": {
         "type": "object",
         "properties": {
@@ -653,7 +692,10 @@ GET_BALANCE_SHEET_TOOL: dict[str, Any] = {
 
 GET_AR_AGING_TOOL: dict[str, Any] = {
     "name": "get_ar_aging",
-    "description": "Get the Accounts Receivable aging report showing who owes you money and how long overdue.",
+    "description": (
+        "Get the Accounts Receivable aging report showing who owes you money "
+        "and how long overdue."
+    ),
     "input_schema": {
         "type": "object",
         "properties": {},
@@ -663,7 +705,10 @@ GET_AR_AGING_TOOL: dict[str, Any] = {
 
 GET_AP_AGING_TOOL: dict[str, Any] = {
     "name": "get_ap_aging",
-    "description": "Get the Accounts Payable aging report showing who you owe money to and due dates.",
+    "description": (
+        "Get the Accounts Payable aging report showing who you owe money to "
+        "and due dates."
+    ),
     "input_schema": {
         "type": "object",
         "properties": {},
@@ -737,7 +782,10 @@ MATCH_BANK_TRANSACTION_TOOL: dict[str, Any] = {
 
 SWITCH_ORGANIZATION_TOOL: dict[str, Any] = {
     "name": "switch_organization",
-    "description": "Switch to a different organization context. Use this when you need to work on a different business's books.",
+    "description": (
+        "Switch to a different organization context. Use this when you need "
+        "to work on a different business's books."
+    ),
     "input_schema": {
         "type": "object",
         "properties": {

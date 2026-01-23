@@ -5,10 +5,9 @@ from uuid import uuid4
 import pytest
 
 from atlas_town.agents.owner import (
+    OWNER_PERSONAS,
     LLMProvider,
     OwnerAgent,
-    OwnerPersona,
-    OWNER_PERSONAS,
     create_all_owners,
 )
 

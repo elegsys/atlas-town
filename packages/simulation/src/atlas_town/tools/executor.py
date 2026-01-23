@@ -143,7 +143,8 @@ class ToolExecutor:
         return await self.client.create_invoice(data)
 
     async def _send_invoice(self, invoice_id: str) -> dict[str, Any]:
-        return await self.client.send_invoice(UUID(invoice_id))
+        ar_account_id = await self._get_ar_account_id()
+        return await self.client.send_invoice(UUID(invoice_id), ar_account_id)
 
     async def _void_invoice(self, invoice_id: str, reason: str) -> dict[str, Any]:
         return await self.client.void_invoice(UUID(invoice_id), reason)
@@ -172,7 +173,8 @@ class ToolExecutor:
         return await self.client.list_payments(offset=offset, limit=limit)
 
     async def _create_payment(self, **data: Any) -> dict[str, Any]:
-        return await self.client.create_payment(data)
+        ar_account_id = await self._get_ar_account_id()
+        return await self.client.create_payment(data, ar_account_id=ar_account_id)
 
     async def _apply_payment_to_invoice(
         self, payment_id: str, invoice_id: str, amount: str
@@ -193,6 +195,26 @@ class ToolExecutor:
 
     async def _get_account_balance(self, account_id: str) -> dict[str, Any]:
         return await self.client.get_account_balance(UUID(account_id))
+
+    async def _get_ar_account_id(self) -> UUID:
+        """Get a default AR account ID for the current organization."""
+        accounts = await self.client.list_accounts(limit=200)
+        ar_accounts = [
+            a for a in accounts if a.get("account_type") == "accounts_receivable"
+        ]
+        if not ar_accounts:
+            ar_accounts = [
+                a
+                for a in accounts
+                if a.get("account_type") == "asset"
+                and "receivable" in a.get("name", "").lower()
+            ]
+        if not ar_accounts:
+            raise ToolExecutionError(
+                "get_ar_account_id",
+                "No accounts receivable account found",
+            )
+        return UUID(ar_accounts[0]["id"])
 
     # === Journal Entry Handlers ===
 

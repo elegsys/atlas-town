@@ -3,12 +3,13 @@
 Uses the new google-genai SDK (v1.0+) for both text generation and image generation.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
+import structlog
 from google import genai
 from google.genai import types
-import structlog
 
 from atlas_town.config import get_settings
 
@@ -97,7 +98,9 @@ class GeminiClient:
 
         for tool in tools:
             # Convert the input schema
-            parameters = self._convert_json_schema_to_gemini(tool["input_schema"])
+            parameters = types.Schema.model_validate(
+                self._convert_json_schema_to_gemini(tool["input_schema"])
+            )
 
             func_decl = types.FunctionDeclaration(
                 name=tool["name"],
@@ -163,7 +166,7 @@ class GeminiClient:
     def _parse_response(self, response: Any) -> GeminiResponse:
         """Parse Gemini response into our format."""
         content = ""
-        tool_calls = []
+        tool_calls: list[dict[str, Any]] = []
 
         # Get the first candidate's content
         if response.candidates:
@@ -199,8 +202,12 @@ class GeminiClient:
         # Get usage metadata if available
         usage = {"input_tokens": 0, "output_tokens": 0}
         if hasattr(response, "usage_metadata") and response.usage_metadata:
-            usage["input_tokens"] = getattr(response.usage_metadata, "prompt_token_count", 0) or 0
-            usage["output_tokens"] = getattr(response.usage_metadata, "candidates_token_count", 0) or 0
+            usage["input_tokens"] = (
+                getattr(response.usage_metadata, "prompt_token_count", 0) or 0
+            )
+            usage["output_tokens"] = (
+                getattr(response.usage_metadata, "candidates_token_count", 0) or 0
+            )
 
         return GeminiResponse(
             content=content,
@@ -240,16 +247,20 @@ class GeminiClient:
 
         # Add tools if provided
         if tools:
-            config.tools = self._convert_tools_to_gemini_format(tools)
+            config.tools = cast(
+                list[types.Tool | Callable[..., Any]],
+                self._convert_tools_to_gemini_format(tools),
+            )
 
         # Convert messages to Gemini format
         gemini_contents = self._convert_messages_to_gemini_format(messages)
+        contents_payload = cast(list[Any], gemini_contents)
 
         try:
             # Generate response using new SDK
             response = self._client.models.generate_content(
                 model=self._model_name,
-                contents=gemini_contents,
+                contents=contents_payload,
                 config=config,
             )
 

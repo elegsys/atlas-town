@@ -132,10 +132,13 @@ class OpenAIClient:
 
         if message.tool_calls:
             for tc in message.tool_calls:
+                function = getattr(tc, "function", None)
+                if function is None:
+                    continue
                 tool_calls.append({
                     "id": tc.id,
-                    "name": tc.function.name,
-                    "arguments": json.loads(tc.function.arguments),
+                    "name": function.name,
+                    "arguments": json.loads(function.arguments),
                 })
 
         # Map OpenAI finish reasons to our format

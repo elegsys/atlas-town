@@ -3,7 +3,6 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
-import httpx
 import pytest
 
 from atlas_town.tools.atlas_api import (

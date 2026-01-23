@@ -9,16 +9,18 @@ simulation events as they occur. It supports:
 """
 
 import asyncio
+import contextlib
 import json
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Callable
+from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 import structlog
 import websockets
-from websockets.server import WebSocketServerProtocol
+from websockets.asyncio.server import Server, ServerConnection
 
 from atlas_town.config import get_settings
 from atlas_town.events.types import EventType, SimulationEvent
@@ -30,8 +32,8 @@ logger = structlog.get_logger(__name__)
 class ClientConnection:
     """Represents a connected WebSocket client."""
 
-    websocket: WebSocketServerProtocol
-    connected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    websocket: ServerConnection
+    connected_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     subscribed_events: set[EventType] = field(default_factory=set)
     subscribed_orgs: set[UUID] = field(default_factory=set)
     client_id: str = ""
@@ -78,7 +80,7 @@ class EventPublisher:
         self._port = port or settings.ws_port
         self._buffer_size = buffer_size
 
-        self._server: websockets.WebSocketServer | None = None
+        self._server: Server | None = None
         self._clients: set[ClientConnection] = set()
         self._event_buffer: deque[SimulationEvent] = deque(maxlen=buffer_size)
         self._is_running = False
@@ -163,7 +165,7 @@ class EventPublisher:
         self._is_running = False
         self._logger.info("publisher_stopped")
 
-    async def _handle_client(self, websocket: WebSocketServerProtocol) -> None:
+    async def _handle_client(self, websocket: ServerConnection) -> None:
         """Handle a new client connection."""
         client = ClientConnection(websocket=websocket)
         self._clients.add(client)
@@ -188,7 +190,7 @@ class EventPublisher:
         finally:
             self._clients.discard(client)
 
-    async def _handle_message(self, client: ClientConnection, message: str) -> None:
+    async def _handle_message(self, client: ClientConnection, message: str | bytes) -> None:
         """Handle an incoming message from a client.
 
         Supported message types:
@@ -197,6 +199,13 @@ class EventPublisher:
         - ping: Health check
         """
         try:
+            if isinstance(message, bytes):
+                try:
+                    message = message.decode("utf-8")
+                except UnicodeDecodeError:
+                    self._logger.warning("invalid_message_encoding", client_id=client.client_id)
+                    return
+
             data = json.loads(message)
             msg_type = data.get("type", "")
 
@@ -225,18 +234,14 @@ class EventPublisher:
         # Subscribe to event types
         event_types = data.get("event_types", [])
         for et in event_types:
-            try:
+            with contextlib.suppress(ValueError):
                 client.subscribed_events.add(EventType(et))
-            except ValueError:
-                pass  # Invalid event type
 
         # Subscribe to specific organizations
         org_ids = data.get("org_ids", [])
         for oid in org_ids:
-            try:
+            with contextlib.suppress(ValueError):
                 client.subscribed_orgs.add(UUID(oid))
-            except ValueError:
-                pass  # Invalid UUID
 
         self._logger.debug(
             "client_subscribed",
@@ -262,17 +267,13 @@ class EventPublisher:
         """Handle unsubscription requests."""
         event_types = data.get("event_types", [])
         for et in event_types:
-            try:
+            with contextlib.suppress(ValueError):
                 client.subscribed_events.discard(EventType(et))
-            except ValueError:
-                pass
 
         org_ids = data.get("org_ids", [])
         for oid in org_ids:
-            try:
+            with contextlib.suppress(ValueError):
                 client.subscribed_orgs.discard(UUID(oid))
-            except ValueError:
-                pass
 
     async def _send_event_history(self, client: ClientConnection) -> None:
         """Send recent events to a newly connected client."""

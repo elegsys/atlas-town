@@ -1,10 +1,11 @@
 """Scheduler for managing daily simulation phases and agent coordination."""
 
 import asyncio
-from dataclasses import dataclass, field
-from datetime import datetime, time, timezone
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, Callable
+from typing import Any
 from uuid import UUID
 
 import structlog
@@ -79,7 +80,7 @@ class SimulatedTime:
 
     def to_datetime(self, base_date: datetime | None = None) -> datetime:
         """Convert to datetime object."""
-        base = base_date or datetime(2024, 1, 1, tzinfo=timezone.utc)
+        base = base_date or datetime(2024, 1, 1, tzinfo=UTC)
         return base.replace(
             day=base.day + self.day - 1,
             hour=self.hour,

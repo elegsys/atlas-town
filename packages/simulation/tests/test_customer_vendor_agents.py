@@ -1,19 +1,18 @@
 """Tests for customer and vendor agent implementations."""
 
-import pytest
 
 from atlas_town.agents.customer import (
+    CUSTOMER_ARCHETYPES,
     CustomerAgent,
     CustomerProfile,
     CustomerType,
-    CUSTOMER_ARCHETYPES,
     create_customers_for_industry,
 )
 from atlas_town.agents.vendor import (
+    VENDOR_ARCHETYPES,
     VendorAgent,
     VendorProfile,
     VendorType,
-    VENDOR_ARCHETYPES,
     create_vendors_for_industry,
 )
 
@@ -50,7 +49,13 @@ class TestCustomerArchetypes:
 
     def test_all_industries_have_archetypes(self):
         """Test that all industries have customer archetypes."""
-        expected_industries = ["landscaping", "restaurant", "technology", "healthcare", "real_estate"]
+        expected_industries = [
+            "landscaping",
+            "restaurant",
+            "technology",
+            "healthcare",
+            "real_estate",
+        ]
 
         for industry in expected_industries:
             assert industry in CUSTOMER_ARCHETYPES, f"Missing archetypes for {industry}"
@@ -161,7 +166,13 @@ class TestVendorArchetypes:
 
     def test_all_industries_have_archetypes(self):
         """Test that all industries have vendor archetypes."""
-        expected_industries = ["landscaping", "restaurant", "technology", "healthcare", "real_estate"]
+        expected_industries = [
+            "landscaping",
+            "restaurant",
+            "technology",
+            "healthcare",
+            "real_estate",
+        ]
 
         for industry in expected_industries:
             assert industry in VENDOR_ARCHETYPES, f"Missing archetypes for {industry}"

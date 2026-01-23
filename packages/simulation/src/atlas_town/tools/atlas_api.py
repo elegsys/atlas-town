@@ -1,8 +1,8 @@
 """Atlas API client with JWT authentication and automatic token refresh."""
 
 import asyncio
-from datetime import datetime, timedelta, timezone
-from typing import Any
+from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 from uuid import UUID
 
 import httpx
@@ -58,7 +58,7 @@ class AtlasAPIClient:
         self._token_expires_at: datetime | None = None
         if access_token:
             # Assume token is fresh, set expiry to 55 minutes from now
-            self._token_expires_at = datetime.now(timezone.utc) + timedelta(minutes=55)
+            self._token_expires_at = datetime.now(UTC) + timedelta(minutes=55)
 
         self._current_org_id: UUID | None = None
         self._current_company_id: UUID | None = None
@@ -104,7 +104,12 @@ class AtlasAPIClient:
             raise AuthenticationError("Invalid credentials", status_code=401)
         response.raise_for_status()
 
-        data = response.json()
+        data_raw = response.json()
+        if not isinstance(data_raw, dict):
+            raise AtlasAPIError("Invalid switch-org response format")
+        data = cast(dict[str, Any], data_raw)
+        if not isinstance(data, dict):
+            raise AtlasAPIError("Invalid login response format")
         self._access_token = data["tokens"]["access_token"]
         self._refresh_token = data["tokens"]["refresh_token"]
         self._organizations = data.get("organizations", [])
@@ -114,7 +119,7 @@ class AtlasAPIClient:
             self._current_org_id = UUID(self._organizations[0]["id"])
 
         # Estimate token expiry (Atlas uses 60min access tokens, refresh at 55min)
-        self._token_expires_at = datetime.now(timezone.utc) + timedelta(minutes=55)
+        self._token_expires_at = datetime.now(UTC) + timedelta(minutes=55)
 
         logger.info(
             "logged_in",
@@ -144,10 +149,15 @@ class AtlasAPIClient:
             return
 
         response.raise_for_status()
-        data = response.json()
+        data_raw = response.json()
+        if not isinstance(data_raw, dict):
+            raise AtlasAPIError("Invalid switch-org response format")
+        data = cast(dict[str, Any], data_raw)
+        if not isinstance(data, dict):
+            raise AtlasAPIError("Invalid switch-org response format")
         self._access_token = data["access_token"]
         self._refresh_token = data.get("refresh_token", self._refresh_token)
-        self._token_expires_at = datetime.now(timezone.utc) + timedelta(minutes=55)
+        self._token_expires_at = datetime.now(UTC) + timedelta(minutes=55)
         logger.debug("tokens_refreshed")
 
     async def _ensure_authenticated(self) -> None:
@@ -155,7 +165,7 @@ class AtlasAPIClient:
         async with self._lock:
             if not self._access_token:
                 await self.login()
-            elif self._token_expires_at and datetime.now(timezone.utc) >= self._token_expires_at:
+            elif self._token_expires_at and datetime.now(UTC) >= self._token_expires_at:
                 await self.refresh_tokens()
 
     def _get_headers(self) -> dict[str, str]:
@@ -184,13 +194,16 @@ class AtlasAPIClient:
         )
         response.raise_for_status()
 
-        data = response.json()
+        data_raw = response.json()
+        if not isinstance(data_raw, dict):
+            raise AtlasAPIError("Invalid switch-org response format")
+        data = cast(dict[str, Any], data_raw)
         # switch-org returns flat access_token, not nested under "tokens"
         self._access_token = data.get("access_token") or data.get("tokens", {}).get("access_token")
         # switch-org doesn't return refresh_token, keep the existing one
         self._current_org_id = org_id
         if self._access_token:
-            self._token_expires_at = datetime.now(timezone.utc) + timedelta(minutes=55)
+            self._token_expires_at = datetime.now(UTC) + timedelta(minutes=55)
 
         # Fetch default company for the new organization
         await self._fetch_default_company()
@@ -212,6 +225,15 @@ class AtlasAPIClient:
     def organizations(self) -> list[dict[str, Any]]:
         """Get list of available organizations."""
         return self._organizations
+
+    async def get_organization(self, org_id: UUID) -> dict[str, Any]:
+        """Get organization details by ID."""
+        for org in self._organizations:
+            if org.get("id") == str(org_id):
+                return org
+
+        result = await self.get(f"/api/v1/organizations/{org_id}")
+        return result if isinstance(result, dict) else {}
 
     async def _fetch_default_company(self) -> None:
         """Fetch and set the default company for the current organization."""
@@ -308,7 +330,11 @@ class AtlasAPIClient:
                 try:
                     error_detail = response.json() if response.content else {}
                 except Exception:
-                    error_detail = {"raw": response.text[:500] if response.text else "empty response"}
+                    error_detail = {
+                        "raw": response.text[:500]
+                        if response.text
+                        else "empty response"
+                    }
                 raise AtlasAPIError(
                     f"API error: {response.status_code}",
                     status_code=response.status_code,

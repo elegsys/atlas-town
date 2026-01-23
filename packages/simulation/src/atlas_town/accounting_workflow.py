@@ -17,17 +17,17 @@ The LLM agent is still valuable for:
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, TypedDict
 from uuid import UUID
 
 import structlog
 
+from atlas_town.tools.atlas_api import AtlasAPIClient
 from atlas_town.transactions import (
     GeneratedTransaction,
     TransactionGenerator,
     TransactionType,
 )
-from atlas_town.tools.atlas_api import AtlasAPIClient
 
 logger = structlog.get_logger(__name__)
 
@@ -79,6 +79,19 @@ Expense Activity:
 Books Status: {status}
 {issues_text}
 """.strip()
+
+
+class WorkflowResults(TypedDict):
+    """Typed results for deterministic transaction processing."""
+
+    invoices_created: int
+    invoices_total: Decimal
+    bills_created: int
+    bills_total: Decimal
+    payments_received: int
+    payments_total: Decimal
+    bills_paid: int
+    bills_paid_total: Decimal
 
 
 # =============================================================================
@@ -154,7 +167,10 @@ class AccountingWorkflow:
                 bank_accounts = [
                     a for a in accounts
                     if a.get("account_type") == "asset"
-                    and ("cash" in a.get("name", "").lower() or "checking" in a.get("name", "").lower())
+                    and (
+                        "cash" in a.get("name", "").lower()
+                        or "checking" in a.get("name", "").lower()
+                    )
                 ]
             deposit_account = bank_accounts[0] if bank_accounts else None
 
@@ -233,7 +249,9 @@ class AccountingWorkflow:
         results = await self._process_transactions(transactions, current_date, org_id)
 
         # Step 6: Verify books are balanced
-        trial_balance = await self._api.get_trial_balance(as_of_date=current_date)
+        trial_balance = await self._api.get_trial_balance(
+            as_of_date=current_date.isoformat()
+        )
         is_balanced = self._check_trial_balance(trial_balance)
 
         # Step 7: Identify any issues
@@ -269,13 +287,13 @@ class AccountingWorkflow:
         transactions: list[GeneratedTransaction],
         current_date: date,
         org_id: UUID,
-    ) -> dict[str, Any]:
+    ) -> WorkflowResults:
         """Process generated transactions into accounting records.
 
         This is the deterministic replacement for LLM tool-calling.
         Instead of the LLM deciding what to do, we have explicit rules.
         """
-        results = {
+        results: WorkflowResults = {
             "invoices_created": 0,
             "invoices_total": Decimal("0"),
             "bills_created": 0,
@@ -578,10 +596,14 @@ class AccountingWorkflow:
     async def _get_org_name(self, org_id: UUID) -> str:
         """Get organization name."""
         try:
-            org = await self._api.get_organization(str(org_id))
-            return org.get("name", f"Org {org_id}")
+            org = await self._api.get_organization(org_id)
         except Exception:
             return f"Organization {org_id}"
+
+        name = org.get("name")
+        if isinstance(name, str) and name.strip():
+            return name
+        return f"Org {org_id}"
 
     # =========================================================================
     # BATCH OPERATIONS (Efficient bulk processing)
@@ -646,6 +668,12 @@ class AccountingWorkflow:
         for s in summaries:
             all_issues.extend(s.issues)
 
+        collection_rate = (
+            (total_payment_amount / total_invoice_amount * 100)
+            if total_invoice_amount
+            else 0
+        )
+
         return f"""
 Monthly Report: {org_name}
 Period: {month_start} to {month_end}
@@ -656,7 +684,7 @@ REVENUE SUMMARY
   Total Invoiced: ${total_invoice_amount:,.2f}
   Payments Received: {total_payments}
   Total Collected: ${total_payment_amount:,.2f}
-  Collection Rate: {(total_payment_amount / total_invoice_amount * 100) if total_invoice_amount else 0:.1f}%
+  Collection Rate: {collection_rate:.1f}%
 
 EXPENSE SUMMARY
   Bills Entered: {total_bills}

@@ -127,7 +127,8 @@ def _create_owner_system_prompt(persona: OwnerPersona) -> str:
     traits = ", ".join(persona.personality_traits)
     concerns = "\n".join(f"- {c}" for c in persona.typical_concerns)
 
-    return f"""You are {persona.name}, the owner of {persona.business_name}, a {persona.industry} business in Atlas Town.
+    return f"""You are {persona.name}, the owner of {persona.business_name}, a
+{persona.industry} business in Atlas Town.
 
 ## Your Personality
 You are {traits}. {persona.communication_style}
@@ -154,7 +155,8 @@ As a business owner, you:
 ## Communication Style
 {persona.communication_style}
 
-Remember: You're running a real business. Think about cash flow, customer relationships, vendor payments, and growth opportunities."""
+Remember: You're running a real business. Think about cash flow, customer
+relationships, vendor payments, and growth opportunities."""
 
 
 class OwnerAgent(BaseAgent):
@@ -174,7 +176,8 @@ class OwnerAgent(BaseAgent):
         org_id: UUID | None = None,
     ):
         if persona_key not in OWNER_PERSONAS:
-            raise ValueError(f"Unknown persona: {persona_key}. Valid: {list(OWNER_PERSONAS.keys())}")
+            valid_keys = list(OWNER_PERSONAS.keys())
+            raise ValueError(f"Unknown persona: {persona_key}. Valid: {valid_keys}")
 
         self._persona = OWNER_PERSONAS[persona_key]
 
@@ -319,14 +322,16 @@ class OwnerAgent(BaseAgent):
         """
         focus_text = f" Focus on {focus}." if focus else ""
 
-        prompt = f"""Please review the current financial status of {self._persona.business_name}.{focus_text}
-
-Look at:
-1. Outstanding invoices (AR aging)
-2. Bills due (AP aging)
-3. Recent profit/loss if available
-
-Share your thoughts as {self._persona.name}, commenting on anything that concerns you or looks good."""
+        prompt = (
+            f"Please review the current financial status of "
+            f"{self._persona.business_name}.{focus_text}\n\n"
+            "Look at:\n"
+            "1. Outstanding invoices (AR aging)\n"
+            "2. Bills due (AP aging)\n"
+            "3. Recent profit/loss if available\n\n"
+            f"Share your thoughts as {self._persona.name}, commenting on anything "
+            "that concerns you or looks good."
+        )
 
         action = await self.think(prompt)
         return action.message or ""

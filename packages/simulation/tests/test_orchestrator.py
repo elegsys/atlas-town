@@ -6,7 +6,6 @@ from uuid import uuid4
 import pytest
 
 from atlas_town.orchestrator import Orchestrator, OrganizationContext
-from atlas_town.scheduler import DayPhase
 
 
 class TestOrganizationContext:
@@ -108,24 +107,25 @@ class TestOrchestrator:
         mock_publisher.is_running = False
         mock_publisher.start = AsyncMock()
 
-        with patch("atlas_town.orchestrator.get_publisher", return_value=mock_publisher):
-            with patch("atlas_town.orchestrator.AtlasAPIClient") as MockClient:
-                mock_client = AsyncMock()
-                mock_client.login = AsyncMock(return_value={})
-                mock_client.organizations = [
-                    {"id": str(uuid4()), "name": "Test Org", "industry": "consulting"}
-                ]
-                mock_client.switch_organization = AsyncMock()
-                MockClient.return_value = mock_client
+        with patch(
+            "atlas_town.orchestrator.get_publisher", return_value=mock_publisher
+        ), patch("atlas_town.orchestrator.AtlasAPIClient") as MockClient:
+            mock_client = AsyncMock()
+            mock_client.login = AsyncMock(return_value={})
+            mock_client.organizations = [
+                {"id": str(uuid4()), "name": "Test Org", "industry": "consulting"}
+            ]
+            mock_client.switch_organization = AsyncMock()
+            MockClient.return_value = mock_client
 
-                orch = Orchestrator(start_websocket=False)
-                await orch.initialize()
+            orch = Orchestrator(start_websocket=False)
+            await orch.initialize()
 
-                assert orch._api_client is not None
-                assert orch._tool_executor is not None
-                assert orch._accountant is not None
-                assert orch._is_initialized is True
-                mock_client.login.assert_called_once()
+            assert orch._api_client is not None
+            assert orch._tool_executor is not None
+            assert orch._accountant is not None
+            assert orch._is_initialized is True
+            mock_client.login.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_shutdown_closes_client(self):
@@ -153,18 +153,19 @@ class TestOrchestrator:
         mock_publisher.start = AsyncMock()
         mock_publisher.stop = AsyncMock()
 
-        with patch("atlas_town.orchestrator.get_publisher", return_value=mock_publisher):
-            with patch("atlas_town.orchestrator.AtlasAPIClient") as MockClient:
-                mock_client = AsyncMock()
-                mock_client.login = AsyncMock(return_value={})
-                mock_client.organizations = []
-                mock_client.close = AsyncMock()
-                MockClient.return_value = mock_client
+        with patch(
+            "atlas_town.orchestrator.get_publisher", return_value=mock_publisher
+        ), patch("atlas_town.orchestrator.AtlasAPIClient") as MockClient:
+            mock_client = AsyncMock()
+            mock_client.login = AsyncMock(return_value={})
+            mock_client.organizations = []
+            mock_client.close = AsyncMock()
+            MockClient.return_value = mock_client
 
-                async with Orchestrator(start_websocket=False) as orch:
-                    assert orch._api_client is not None
+            async with Orchestrator(start_websocket=False) as orch:
+                assert orch._api_client is not None
 
-                mock_client.close.assert_called_once()
+            mock_client.close.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_switch_organization(self):

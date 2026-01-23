@@ -6,7 +6,7 @@ day of week, and seasonal patterns.
 
 import random
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal
 from enum import Enum
 from typing import Any
@@ -39,8 +39,10 @@ class TransactionPattern:
     weekday_only: bool = False  # Only occurs Mon-Fri
     weekend_boost: float = 1.0  # Multiplier for weekend probability
     # Time-of-day modifiers for realistic business patterns
-    phase_multipliers: dict[str, float] | None = None  # e.g., {"evening": 2.5, "night": 1.5}
-    active_hours: tuple[int, int] | None = None  # (start_hour, end_hour) - restricts when pattern is active
+    phase_multipliers: dict[str, float] | None = None
+    # e.g., {"evening": 2.5, "night": 1.5}
+    active_hours: tuple[int, int] | None = None
+    # (start_hour, end_hour) - restricts when pattern is active
     # Seasonal modifiers - maps month (1-12) to multiplier for pattern-specific overrides
     seasonal_multipliers: dict[int, float] | None = None
 
@@ -401,8 +403,20 @@ def get_business_day_patterns() -> dict[str, dict[int, float]]:
 
 # Sample data for template substitution
 TEMPLATE_DATA = {
-    "location": ["Front yard", "Backyard", "Commercial property", "Apartment complex", "HOA common areas"],
-    "project_type": ["Spring cleanup", "Mulching", "Tree trimming", "Irrigation install", "Patio installation"],
+    "location": [
+        "Front yard",
+        "Backyard",
+        "Commercial property",
+        "Apartment complex",
+        "HOA common areas",
+    ],
+    "project_type": [
+        "Spring cleanup",
+        "Mulching",
+        "Tree trimming",
+        "Irrigation install",
+        "Patio installation",
+    ],
     "supplier": ["Green Valley Nursery", "Home Depot", "Local supplier"],
     "event_type": ["Birthday party", "Corporate lunch", "School event", "Sports team"],
     "hours": ["8", "16", "24", "32", "40"],
@@ -411,7 +425,12 @@ TEMPLATE_DATA = {
     "procedure": ["Filling", "Crown", "Root canal", "Extraction", "Whitening"],
     "lab": ["Atlas Dental Lab", "Quality Dental Lab"],
     "payer": ["BlueCross", "Delta Dental", "Aetna"],
-    "property_address": ["123 Oak St", "456 Maple Ave", "789 Pine Rd", "321 Cedar Ln"],
+    "property_address": [
+        "123 Oak St",
+        "456 Maple Ave",
+        "789 Pine Rd",
+        "321 Cedar Ln",
+    ],
     "customer": ["Customer payment"],  # Generic
 }
 
@@ -541,7 +560,9 @@ class TransactionGenerator:
             return pattern.min_amount
 
         # Use triangular distribution (mode at lower end for realistic pricing)
-        amount = self._rng.triangular(min_val, max_val, min_val + (max_val - min_val) * 0.3)
+        amount = self._rng.triangular(
+            min_val, max_val, min_val + (max_val - min_val) * 0.3
+        )
         # Round to 2 decimal places, nearest 0.05 for realism
         amount = round(amount / 0.05) * 0.05
         return Decimal(str(round(amount, 2)))
@@ -593,14 +614,24 @@ class TransactionGenerator:
                 if pending_invoices:
                     # Pick a random invoice to pay
                     invoice = self._rng.choice(pending_invoices)
-                    amount = Decimal(str(invoice.get("balance", invoice.get("total", "100.00"))))
-                    transactions.append(GeneratedTransaction(
-                        transaction_type=pattern.transaction_type,
-                        description=f"Payment received - Invoice #{invoice.get('invoice_number', 'N/A')}",
-                        amount=amount,
-                        customer_id=UUID(invoice["customer_id"]) if invoice.get("customer_id") else None,
-                        metadata={"invoice_id": invoice.get("id")},
-                    ))
+                    amount = Decimal(
+                        str(invoice.get("balance", invoice.get("total", "100.00")))
+                    )
+                    invoice_number = invoice.get("invoice_number", "N/A")
+                    customer_id_value = (
+                        UUID(invoice["customer_id"])
+                        if invoice.get("customer_id")
+                        else None
+                    )
+                    transactions.append(
+                        GeneratedTransaction(
+                            transaction_type=pattern.transaction_type,
+                            description=f"Payment received - Invoice #{invoice_number}",
+                            amount=amount,
+                            customer_id=customer_id_value,
+                            metadata={"invoice_id": invoice.get("id")},
+                        )
+                    )
                 continue
 
             # Generate regular transaction
@@ -611,14 +642,16 @@ class TransactionGenerator:
             customer_id = None
             vendor_id = None
 
-            if pattern.transaction_type in [TransactionType.INVOICE, TransactionType.CASH_SALE]:
+            if pattern.transaction_type in [
+                TransactionType.INVOICE,
+                TransactionType.CASH_SALE,
+            ]:
                 if customers:
                     customer = self._rng.choice(customers)
                     customer_id = UUID(customer["id"])
-            elif pattern.transaction_type == TransactionType.BILL:
-                if vendors:
-                    vendor = self._rng.choice(vendors)
-                    vendor_id = UUID(vendor["id"])
+            elif pattern.transaction_type == TransactionType.BILL and vendors:
+                vendor = self._rng.choice(vendors)
+                vendor_id = UUID(vendor["id"])
 
             transactions.append(GeneratedTransaction(
                 transaction_type=pattern.transaction_type,
@@ -641,7 +674,7 @@ class TransactionGenerator:
         transactions: list[GeneratedTransaction],
     ) -> dict[str, Any]:
         """Get a summary of generated transactions."""
-        by_type = {}
+        by_type: dict[str, int] = {}
         total_revenue = Decimal("0")
         total_expenses = Decimal("0")
 
@@ -649,9 +682,16 @@ class TransactionGenerator:
             tx_type = tx.transaction_type.value
             by_type[tx_type] = by_type.get(tx_type, 0) + 1
 
-            if tx.transaction_type in [TransactionType.INVOICE, TransactionType.CASH_SALE, TransactionType.PAYMENT_RECEIVED]:
+            if tx.transaction_type in [
+                TransactionType.INVOICE,
+                TransactionType.CASH_SALE,
+                TransactionType.PAYMENT_RECEIVED,
+            ]:
                 total_revenue += tx.amount
-            elif tx.transaction_type in [TransactionType.BILL, TransactionType.BILL_PAYMENT]:
+            elif tx.transaction_type in [
+                TransactionType.BILL,
+                TransactionType.BILL_PAYMENT,
+            ]:
                 total_expenses += tx.amount
 
         return {

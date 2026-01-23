@@ -101,7 +101,11 @@ class OllamaClient:
                             "function": {
                                 "name": tc["name"],
                                 # Ollama expects arguments as a dict, not JSON string
-                                "arguments": tc["arguments"] if isinstance(tc["arguments"], dict) else json.loads(tc["arguments"]),
+                                "arguments": (
+                                    tc["arguments"]
+                                    if isinstance(tc["arguments"], dict)
+                                    else json.loads(tc["arguments"])
+                                ),
                             },
                         }
                         for tc in msg["tool_calls"]
@@ -121,7 +125,7 @@ class OllamaClient:
         """Parse Ollama response into our format."""
         message = response_data.get("message", {})
         content = message.get("content", "")
-        tool_calls = []
+        tool_calls: list[dict[str, Any]] = []
 
         # Parse tool calls if present
         if message.get("tool_calls"):

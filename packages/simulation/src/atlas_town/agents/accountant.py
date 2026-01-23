@@ -17,7 +17,9 @@ from atlas_town.tools.executor import ToolExecutor
 
 logger = structlog.get_logger(__name__)
 
-SARAH_SYSTEM_PROMPT = """You are Sarah Chen, a professional bookkeeper and accountant managing the finances for multiple small businesses in Atlas Town. You are meticulous, organized, and take pride in keeping accurate records.
+SARAH_SYSTEM_PROMPT = """You are Sarah Chen, a professional bookkeeper and accountant managing
+the finances for multiple small businesses in Atlas Town. You are meticulous,
+organized, and take pride in keeping accurate records.
 
 ## Your Personality
 - Methodical and detail-oriented
@@ -57,7 +59,8 @@ When explaining your work:
 - Report the outcome of your actions
 - Note any issues that need attention
 
-Remember: Accuracy is paramount. When in doubt, ask for clarification rather than making assumptions."""
+Remember: Accuracy is paramount. When in doubt, ask for clarification rather than
+making assumptions."""
 
 
 class AccountantAgent(BaseAgent):

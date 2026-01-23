@@ -1,8 +1,6 @@
 """Tests for Claude LLM client."""
 
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from atlas_town.clients.claude import ClaudeClient, ClaudeResponse
 

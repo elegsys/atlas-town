@@ -678,7 +678,8 @@ class TestAllMultipliersStack:
         )
 
         # Monday in January for Craig (slow season = 0.2, day = 0.9)
-        # 0.5 (base) * 0.9 (day) * 1.0 (weekday boost) * 1.0 (no phase match) * 0.2 (seasonal) = 0.09
+        # 0.5 (base) * 0.9 (day) * 1.0 (weekday boost)
+        # * 1.0 (no phase match) * 0.2 (seasonal) = 0.09
         monday_january = date(2024, 1, 15)
 
         count = sum(
@@ -954,7 +955,8 @@ class TestDayAndOtherMultipliersStack:
         )
 
         # Saturday in June for Tony during evening:
-        # 0.1 (base) * 1.5 (day=Sat) * 1.3 (weekend) * 1.5 (phase) * 1.1 (seasonal Nov boost, but June=default 1.0)
+        # 0.1 (base) * 1.5 (day=Sat) * 1.3 (weekend)
+        # * 1.5 (phase) * 1.1 (seasonal Nov boost, but June=default 1.0)
         # Tony in June has no seasonal, so just: 0.1 * 1.5 * 1.3 * 1.5 ≈ 0.29
         saturday_june = date(2024, 6, 15)
 

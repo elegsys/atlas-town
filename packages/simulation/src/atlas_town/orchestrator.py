@@ -17,24 +17,16 @@ Supports three modes:
 import asyncio
 import random
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from enum import Enum
 from typing import Any
 from uuid import UUID
 
-
-class SimulationMode(str, Enum):
-    """Simulation mode determining how accounting operations are handled."""
-
-    LLM = "llm"  # Full LLM agent reasoning (default, slower, costs money)
-    FAST = "fast"  # Rule-based workflow (15x faster, no API cost)
-    HYBRID = "hybrid"  # Rule-based ops + LLM for analysis when issues detected
-
 import structlog
 
+from atlas_town.accounting_workflow import AccountingWorkflow
 from atlas_town.agents import (
     AccountantAgent,
-    AgentState,
     CustomerAgent,
     OwnerAgent,
     VendorAgent,
@@ -58,22 +50,25 @@ from atlas_town.events import (
     phase_started,
     simulation_started,
     simulation_stopped,
-    tool_called,
-    tool_completed,
-    tool_failed,
     transaction_created,
 )
 from atlas_town.scheduler import DayPhase, Scheduler
 from atlas_town.tools import AtlasAPIClient, ToolExecutor
 from atlas_town.transactions import (
     GeneratedTransaction,
-    TransactionGenerator,
     TransactionType,
     create_transaction_generator,
 )
-from atlas_town.accounting_workflow import AccountingWorkflow
 
 logger = structlog.get_logger(__name__)
+
+
+class SimulationMode(str, Enum):
+    """Simulation mode determining how accounting operations are handled."""
+
+    LLM = "llm"  # Full LLM agent reasoning (default, slower, costs money)
+    FAST = "fast"  # Rule-based workflow (15x faster, no API cost)
+    HYBRID = "hybrid"  # Rule-based ops + LLM for analysis when issues detected
 
 
 @dataclass
@@ -291,7 +286,7 @@ class Orchestrator:
         self._owners = create_all_owners(self._org_by_owner)
 
         # Assign owners to organizations and create customers/vendors
-        for org_id, ctx in self._organizations.items():
+        for _org_id, ctx in self._organizations.items():
             # Assign owner
             if ctx.owner_key in self._owners:
                 ctx.owner = self._owners[ctx.owner_key]
@@ -511,13 +506,18 @@ class Orchestrator:
             result = await self._api_client.create_invoice(invoice_data)
 
             # Publish event
+            counterparty = (
+                tx.description.split(" - ")[0]
+                if " - " in tx.description
+                else "Customer"
+            )
             self._event_publisher.publish(
                 transaction_created(
                     org_id=ctx.id,
                     org_name=ctx.name,
                     transaction_type="invoice",
                     amount=float(tx.amount),
-                    counterparty=tx.description.split(" - ")[0] if " - " in tx.description else "Customer",
+                    counterparty=counterparty,
                     description=tx.description,
                 )
             )
@@ -569,13 +569,18 @@ class Orchestrator:
             result = await self._api_client.create_bill(bill_data)
 
             # Publish event
+            counterparty = (
+                tx.description.split(" - ")[0]
+                if " - " in tx.description
+                else "Vendor"
+            )
             self._event_publisher.publish(
                 transaction_created(
                     org_id=ctx.id,
                     org_name=ctx.name,
                     transaction_type="bill",
                     amount=float(tx.amount),
-                    counterparty=tx.description.split(" - ")[0] if " - " in tx.description else "Vendor",
+                    counterparty=counterparty,
                     description=tx.description,
                 )
             )
@@ -593,7 +598,9 @@ class Orchestrator:
             accounts = await self._api_client.list_accounts(limit=200)
 
             # Find AR account
-            ar_accounts = [a for a in accounts if a.get("account_type") == "accounts_receivable"]
+            ar_accounts = [
+                a for a in accounts if a.get("account_type") == "accounts_receivable"
+            ]
             if not ar_accounts:
                 ar_accounts = [
                     a for a in accounts
@@ -608,7 +615,10 @@ class Orchestrator:
                 bank_accounts = [
                     a for a in accounts
                     if a.get("account_type") == "asset"
-                    and ("cash" in a.get("name", "").lower() or "checking" in a.get("name", "").lower())
+                    and (
+                        "cash" in a.get("name", "").lower()
+                        or "checking" in a.get("name", "").lower()
+                    )
                 ]
             deposit_account = bank_accounts[0] if bank_accounts else None
 
@@ -670,13 +680,18 @@ class Orchestrator:
                 )
 
             # Publish event
+            counterparty = (
+                tx.description.split(" - ")[0]
+                if " - " in tx.description
+                else "Customer"
+            )
             self._event_publisher.publish(
                 transaction_created(
                     org_id=ctx.id,
                     org_name=ctx.name,
                     transaction_type="payment",
                     amount=float(tx.amount),
-                    counterparty=tx.description.split(" - ")[0] if " - " in tx.description else "Customer",
+                    counterparty=counterparty,
                     description=tx.description,
                 )
             )
@@ -736,7 +751,7 @@ class Orchestrator:
 
     async def _handle_early_morning(self, time: Any, phase: DayPhase) -> list[Any]:
         """Early morning: Prep and planning."""
-        results = []
+        results: list[Any] = []
         day = self._scheduler.current_time.day
 
         self._event_publisher.publish(
@@ -759,7 +774,7 @@ class Orchestrator:
 
     async def _handle_morning(self, time: Any, phase: DayPhase) -> list[Any]:
         """Morning: Generate new business activity (invoices, sales)."""
-        results = []
+        results: list[Any] = []
         day = self._scheduler.current_time.day
         sim_date = self._get_simulation_date()
 
@@ -819,7 +834,7 @@ class Orchestrator:
 
     async def _handle_lunch(self, time: Any, phase: DayPhase) -> list[Any]:
         """Lunch: Mid-day lull, light activity."""
-        results = []
+        results: list[Any] = []
         day = self._scheduler.current_time.day
 
         self._event_publisher.publish(
@@ -842,7 +857,7 @@ class Orchestrator:
 
     async def _handle_afternoon(self, time: Any, phase: DayPhase) -> list[Any]:
         """Afternoon: Process bills and receive payments."""
-        results = []
+        results: list[Any] = []
         day = self._scheduler.current_time.day
         sim_date = self._get_simulation_date()
 
@@ -855,9 +870,17 @@ class Orchestrator:
 
             try:
                 # Get customers, vendors, and pending invoices
-                customers = await self._api_client.list_customers() if self._api_client else []
-                vendors = await self._api_client.list_vendors() if self._api_client else []
-                pending_invoices = await self._api_client.list_invoices(status="sent") if self._api_client else []
+                customers = (
+                    await self._api_client.list_customers() if self._api_client else []
+                )
+                vendors = (
+                    await self._api_client.list_vendors() if self._api_client else []
+                )
+                pending_invoices = (
+                    await self._api_client.list_invoices(status="sent")
+                    if self._api_client
+                    else []
+                )
 
                 # Generate transactions (bills and payments)
                 transactions = self._tx_generator.generate_daily_transactions(
@@ -885,9 +908,16 @@ class Orchestrator:
                 if bills_created > 0 or payments_received > 0:
                     self._event_publisher.publish(
                         agent_speaking(
-                            agent_id=self._accountant.id if self._accountant else UUID(int=0),
+                            agent_id=(
+                                self._accountant.id
+                                if self._accountant
+                                else UUID(int=0)
+                            ),
                             agent_name="Sarah Chen",
-                            message=f"{ctx.name}: Recorded {bills_created} bill(s), received {payments_received} payment(s).",
+                            message=(
+                                f"{ctx.name}: Recorded {bills_created} bill(s), "
+                                f"received {payments_received} payment(s)."
+                            ),
                             org_id=org_id,
                         )
                     )
@@ -915,7 +945,7 @@ class Orchestrator:
         - LLM: Uses AccountantAgent (full LLM reasoning)
         - HYBRID: Uses AccountingWorkflow + LLM for analysis if issues found
         """
-        results = []
+        results: list[Any] = []
         day = self._scheduler.current_time.day
         sim_date = self._get_simulation_date()
 
@@ -1098,7 +1128,10 @@ Please provide specific recommendations for addressing each issue."""
                 agent_speaking(
                     agent_id=self._accountant.id if self._accountant else UUID(int=0),
                     agent_name="Sarah Chen",
-                    message=f"Created {invoices_created} evening invoice(s) for {ctx.name} (dinner rush).",
+                    message=(
+                        f"Created {invoices_created} evening invoice(s) for "
+                        f"{ctx.name} (dinner rush)."
+                    ),
                     org_id=org_id,
                 )
             )
@@ -1120,7 +1153,7 @@ Please provide specific recommendations for addressing each issue."""
 
     async def _handle_night(self, time: Any, phase: DayPhase) -> list[Any]:
         """Night: Late-night transactions and day transition cleanup."""
-        results = []
+        results: list[Any] = []
         day = self._scheduler.current_time.day
         sim_date = self._get_simulation_date()
 
@@ -1157,7 +1190,10 @@ Please provide specific recommendations for addressing each issue."""
                         agent_speaking(
                             agent_id=self._accountant.id if self._accountant else UUID(int=0),
                             agent_name="Sarah Chen",
-                            message=f"Recorded {invoices_created} late-night sale(s) for {ctx.name}.",
+                            message=(
+                                f"Recorded {invoices_created} late-night sale(s) "
+                                f"for {ctx.name}."
+                            ),
                             org_id=org_id,
                         )
                     )

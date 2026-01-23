@@ -2,7 +2,7 @@
 
 import logging
 import sys
-from typing import Literal
+from typing import Literal, cast
 
 import structlog
 
@@ -31,6 +31,7 @@ def configure_logging(
     )
 
     # Choose processors based on format
+    renderer: structlog.types.Processor
     if log_format == "json":
         renderer = structlog.processors.JSONRenderer()
     else:
@@ -70,4 +71,4 @@ def get_logger(name: str) -> structlog.stdlib.BoundLogger:
     Returns:
         Bound logger instance.
     """
-    return structlog.get_logger(name)
+    return cast(structlog.stdlib.BoundLogger, structlog.get_logger(name))

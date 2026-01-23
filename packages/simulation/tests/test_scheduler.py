@@ -7,7 +7,6 @@ import pytest
 
 from atlas_town.scheduler import (
     DayPhase,
-    PhaseConfig,
     ScheduledTask,
     Scheduler,
     SimulatedTime,
@@ -270,8 +269,6 @@ class TestScheduler:
     async def test_advance_to_phase(self):
         """Test advancing to a specific phase."""
         scheduler = Scheduler()
-        initial_hour = scheduler.current_time.hour
-
         await scheduler.advance_to_phase(DayPhase.AFTERNOON)
 
         assert scheduler.current_phase == DayPhase.AFTERNOON

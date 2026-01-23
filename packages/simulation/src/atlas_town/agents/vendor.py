@@ -266,7 +266,8 @@ class VendorAgent(BaseAgent):
 
     def _get_system_prompt(self) -> str:
         """Get the vendor's system prompt."""
-        return f"""You are simulating {self._profile.name}, a {self._profile.vendor_type.value} vendor.
+        return f"""You are simulating {self._profile.name}, a
+{self._profile.vendor_type.value} vendor.
 
 Profile:
 - Category: {self._profile.category}

@@ -1,12 +1,12 @@
 """Tests for agent implementations."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import UUID, uuid4
+from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import pytest
 
-from atlas_town.agents.base import AgentAction, AgentMessage, AgentState, BaseAgent
 from atlas_town.agents.accountant import AccountantAgent
+from atlas_town.agents.base import AgentAction, AgentMessage, AgentState, BaseAgent
 
 
 class ConcreteAgent(BaseAgent):

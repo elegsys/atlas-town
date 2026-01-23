@@ -89,8 +89,8 @@ class Settings(BaseSettings):
     )
 
     # Nested settings with prefixes
-    atlas: AtlasAPISettings = Field(default_factory=AtlasAPISettings)
-    llm: LLMSettings = Field(default_factory=LLMSettings)
+    atlas: AtlasAPISettings = Field(default_factory=AtlasAPISettings)  # type: ignore[arg-type]
+    llm: LLMSettings = Field(default_factory=LLMSettings)  # type: ignore[arg-type]
     websocket: WebSocketSettings = Field(default_factory=WebSocketSettings)
     simulation: SimulationSettings = Field(default_factory=SimulationSettings)
 
@@ -164,4 +164,4 @@ class FlatSettings(BaseSettings):
 @lru_cache
 def get_settings() -> FlatSettings:
     """Get cached settings instance."""
-    return FlatSettings()
+    return FlatSettings()  # type: ignore[call-arg]
