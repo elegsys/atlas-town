@@ -139,8 +139,11 @@ class Orchestrator:
         self._organizations: dict[UUID, OrganizationContext] = {}
         self._org_by_owner: dict[str, UUID] = {}  # owner_key -> org_id
 
-        # Scheduler
-        self._scheduler = Scheduler(speed_multiplier=settings.simulation_speed)
+        # Scheduler - use very high speed for fast mode (effectively no delays)
+        speed = settings.simulation_speed
+        if mode == SimulationMode.FAST:
+            speed = 10000.0  # Effectively instant phase transitions
+        self._scheduler = Scheduler(speed_multiplier=speed)
 
         # Event publishing
         self._event_publisher = event_publisher or get_publisher()
