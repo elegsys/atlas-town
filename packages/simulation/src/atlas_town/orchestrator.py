@@ -7,14 +7,28 @@ It manages:
 - Customer and vendor agents for generating transactions
 - Event publishing for real-time frontend updates
 - Daily simulation cycles with phase transitions
+
+Supports three modes:
+- LLM: Full agent reasoning with Claude/GPT/Gemini (default)
+- FAST: Rule-based workflow, no LLM calls (15x faster, $0 cost)
+- HYBRID: Rule-based operations + LLM for analysis
 """
 
 import asyncio
 import random
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
+from enum import Enum
 from typing import Any
 from uuid import UUID
+
+
+class SimulationMode(str, Enum):
+    """Simulation mode determining how accounting operations are handled."""
+
+    LLM = "llm"  # Full LLM agent reasoning (default, slower, costs money)
+    FAST = "fast"  # Rule-based workflow (15x faster, no API cost)
+    HYBRID = "hybrid"  # Rule-based ops + LLM for analysis when issues detected
 
 import structlog
 
@@ -57,6 +71,7 @@ from atlas_town.transactions import (
     TransactionType,
     create_transaction_generator,
 )
+from atlas_town.accounting_workflow import AccountingWorkflow
 
 logger = structlog.get_logger(__name__)
 
@@ -97,21 +112,28 @@ class Orchestrator:
         self,
         event_publisher: EventPublisher | None = None,
         start_websocket: bool = True,
+        mode: SimulationMode = SimulationMode.LLM,
     ):
         settings = get_settings()
+
+        # Simulation mode
+        self._mode = mode
 
         # API client and tools
         self._api_client: AtlasAPIClient | None = None
         self._tool_executor: ToolExecutor | None = None
 
-        # LLM clients (created on demand)
+        # LLM clients (created on demand, not needed for FAST mode)
         self._claude_client: ClaudeClient | None = None
         self._openai_client: OpenAIClient | None = None
         self._gemini_client: GeminiClient | None = None
 
-        # Agents
+        # Agents (not needed for FAST mode)
         self._accountant: AccountantAgent | None = None
         self._owners: dict[str, OwnerAgent] = {}
+
+        # Rule-based workflow (for FAST and HYBRID modes)
+        self._accounting_workflow: AccountingWorkflow | None = None
 
         # Organizations
         self._organizations: dict[UUID, OrganizationContext] = {}
@@ -132,7 +154,7 @@ class Orchestrator:
         self._current_org_id: UUID | None = None
 
         # Logging
-        self._logger = logger.bind(component="orchestrator")
+        self._logger = logger.bind(component="orchestrator", mode=mode.value)
 
     async def __aenter__(self) -> "Orchestrator":
         """Initialize the orchestrator."""
@@ -161,9 +183,22 @@ class Orchestrator:
         # Create tool executor
         self._tool_executor = ToolExecutor(self._api_client)
 
+        # Create accounting workflow (for FAST and HYBRID modes)
+        if self._mode in (SimulationMode.FAST, SimulationMode.HYBRID):
+            self._accounting_workflow = AccountingWorkflow(
+                api_client=self._api_client,
+                transaction_generator=self._tx_generator,
+            )
+            self._logger.info("accounting_workflow_initialized", mode=self._mode.value)
+
         # Load organizations and create agents
         await self._setup_organizations()
-        self._create_agents()
+
+        # Only create LLM agents if not in FAST mode
+        if self._mode != SimulationMode.FAST:
+            self._create_agents()
+        else:
+            self._logger.info("skipping_agent_creation", reason="fast_mode")
 
         # Register scheduler phase handlers
         self._register_phase_handlers()
@@ -815,61 +850,45 @@ class Orchestrator:
         return results
 
     async def _handle_evening(self, time: Any, phase: DayPhase) -> list[Any]:
-        """Evening: Dinner rush for restaurants + reconciliation and reports."""
+        """Evening: Dinner rush for restaurants + reconciliation and reports.
+
+        Behavior depends on simulation mode:
+        - FAST: Uses AccountingWorkflow (rule-based, no LLM)
+        - LLM: Uses AccountantAgent (full LLM reasoning)
+        - HYBRID: Uses AccountingWorkflow + LLM for analysis if issues found
+        """
         results = []
         day = self._scheduler.current_time.day
         sim_date = self._get_simulation_date()
 
+        mode_desc = {
+            SimulationMode.FAST: "fast mode (rule-based)",
+            SimulationMode.LLM: "LLM mode (agent reasoning)",
+            SimulationMode.HYBRID: "hybrid mode (rules + LLM analysis)",
+        }
+
         self._event_publisher.publish(
-            phase_started(day, phase.value, "Evening activity and accounting")
+            phase_started(day, phase.value, f"Evening activity - {mode_desc[self._mode]}")
         )
 
         for org_id, ctx in self._organizations.items():
             await self.switch_organization(org_id)
 
             try:
-                # Generate evening transactions (dinner rush for restaurants)
-                customers = await self._api_client.list_customers() if self._api_client else []
-                vendors = await self._api_client.list_vendors() if self._api_client else []
+                if self._mode == SimulationMode.FAST:
+                    # FAST MODE: Use rule-based workflow (no LLM)
+                    result = await self._handle_evening_fast(org_id, ctx, sim_date, phase)
+                    results.append(result)
 
-                transactions = self._tx_generator.generate_daily_transactions(
-                    business_key=ctx.owner_key,
-                    current_date=sim_date,
-                    customers=customers,
-                    vendors=vendors,
-                    current_hour=self._scheduler.current_time.hour,
-                    current_phase=phase.value,
-                )
+                elif self._mode == SimulationMode.HYBRID:
+                    # HYBRID MODE: Rule-based + LLM analysis if issues
+                    result = await self._handle_evening_hybrid(org_id, ctx, sim_date, phase)
+                    results.append(result)
 
-                # Process cash sales and invoices (dinner rush)
-                invoices_created = 0
-                for tx in transactions:
-                    if tx.transaction_type in [TransactionType.INVOICE, TransactionType.CASH_SALE]:
-                        await self._create_invoice(ctx, tx, sim_date)
-                        invoices_created += 1
-
-                if invoices_created > 0:
-                    self._event_publisher.publish(
-                        agent_speaking(
-                            agent_id=self._accountant.id if self._accountant else UUID(int=0),
-                            agent_name="Sarah Chen",
-                            message=f"Created {invoices_created} evening invoice(s) for {ctx.name} (dinner rush).",
-                            org_id=org_id,
-                        )
-                    )
-
-                # End of day accounting task
-                task = f"""End of day for {ctx.name}. Please:
-                1. Run a trial balance to ensure books are balanced
-                2. Provide a quick summary of today's activity
-                3. Note any issues that need attention tomorrow"""
-
-                response = await self.run_single_task(task)
-                results.append({
-                    "org": ctx.name,
-                    "invoices_created": invoices_created,
-                    "response": response[:200],
-                })
+                else:
+                    # LLM MODE: Full agent reasoning (original behavior)
+                    result = await self._handle_evening_llm(org_id, ctx, sim_date, phase)
+                    results.append(result)
 
             except Exception as e:
                 self._logger.error("evening_task_error", org=ctx.name, error=str(e))
@@ -879,6 +898,167 @@ class Orchestrator:
 
         self._event_publisher.publish(phase_completed(day, phase.value, results))
         return results
+
+    async def _handle_evening_fast(
+        self,
+        org_id: UUID,
+        ctx: OrganizationContext,
+        sim_date: date,
+        phase: DayPhase,
+    ) -> dict[str, Any]:
+        """Evening handler for FAST mode - rule-based, no LLM calls."""
+        if not self._accounting_workflow:
+            raise RuntimeError("AccountingWorkflow not initialized for fast mode")
+
+        # Run the complete daily workflow
+        summary = await self._accounting_workflow.run_daily_workflow(
+            business_key=ctx.owner_key,
+            org_id=org_id,
+            current_date=sim_date,
+            current_hour=self._scheduler.current_time.hour,
+            current_phase=phase.value,
+        )
+
+        # Publish summary as agent speaking (for UI consistency)
+        self._event_publisher.publish(
+            agent_speaking(
+                agent_id=UUID(int=0),  # No agent in fast mode
+                agent_name="Sarah Chen (Auto)",
+                message=summary.to_text()[:500],
+                org_id=org_id,
+            )
+        )
+
+        return {
+            "org": ctx.name,
+            "mode": "fast",
+            "invoices_created": summary.invoices_created,
+            "bills_created": summary.bills_created,
+            "payments_received": summary.payments_received,
+            "trial_balance_ok": summary.trial_balance_ok,
+            "issues": summary.issues,
+        }
+
+    async def _handle_evening_hybrid(
+        self,
+        org_id: UUID,
+        ctx: OrganizationContext,
+        sim_date: date,
+        phase: DayPhase,
+    ) -> dict[str, Any]:
+        """Evening handler for HYBRID mode - rule-based ops + LLM analysis."""
+        if not self._accounting_workflow:
+            raise RuntimeError("AccountingWorkflow not initialized for hybrid mode")
+
+        # Run rule-based workflow first (fast)
+        summary = await self._accounting_workflow.run_daily_workflow(
+            business_key=ctx.owner_key,
+            org_id=org_id,
+            current_date=sim_date,
+            current_hour=self._scheduler.current_time.hour,
+            current_phase=phase.value,
+        )
+
+        result = {
+            "org": ctx.name,
+            "mode": "hybrid",
+            "invoices_created": summary.invoices_created,
+            "bills_created": summary.bills_created,
+            "payments_received": summary.payments_received,
+            "trial_balance_ok": summary.trial_balance_ok,
+            "issues": summary.issues,
+        }
+
+        # If there are issues, use LLM for analysis
+        if summary.issues and self._accountant:
+            self._logger.info(
+                "hybrid_mode_llm_analysis",
+                org=ctx.name,
+                issues_count=len(summary.issues),
+            )
+
+            task = f"""Analyze these issues for {ctx.name} and recommend actions:
+
+{summary.to_text()}
+
+Please provide specific recommendations for addressing each issue."""
+
+            analysis = await self.run_single_task(task)
+            result["llm_analysis"] = analysis[:500]
+
+            self._event_publisher.publish(
+                agent_speaking(
+                    agent_id=self._accountant.id,
+                    agent_name="Sarah Chen",
+                    message=analysis[:500],
+                    org_id=org_id,
+                )
+            )
+        else:
+            # No issues - just publish the summary
+            self._event_publisher.publish(
+                agent_speaking(
+                    agent_id=UUID(int=0),
+                    agent_name="Sarah Chen (Auto)",
+                    message=summary.to_text()[:500],
+                    org_id=org_id,
+                )
+            )
+
+        return result
+
+    async def _handle_evening_llm(
+        self,
+        org_id: UUID,
+        ctx: OrganizationContext,
+        sim_date: date,
+        phase: DayPhase,
+    ) -> dict[str, Any]:
+        """Evening handler for LLM mode - full agent reasoning (original behavior)."""
+        # Generate evening transactions (dinner rush for restaurants)
+        customers = await self._api_client.list_customers() if self._api_client else []
+        vendors = await self._api_client.list_vendors() if self._api_client else []
+
+        transactions = self._tx_generator.generate_daily_transactions(
+            business_key=ctx.owner_key,
+            current_date=sim_date,
+            customers=customers,
+            vendors=vendors,
+            current_hour=self._scheduler.current_time.hour,
+            current_phase=phase.value,
+        )
+
+        # Process cash sales and invoices (dinner rush)
+        invoices_created = 0
+        for tx in transactions:
+            if tx.transaction_type in [TransactionType.INVOICE, TransactionType.CASH_SALE]:
+                await self._create_invoice(ctx, tx, sim_date)
+                invoices_created += 1
+
+        if invoices_created > 0:
+            self._event_publisher.publish(
+                agent_speaking(
+                    agent_id=self._accountant.id if self._accountant else UUID(int=0),
+                    agent_name="Sarah Chen",
+                    message=f"Created {invoices_created} evening invoice(s) for {ctx.name} (dinner rush).",
+                    org_id=org_id,
+                )
+            )
+
+        # End of day accounting task (LLM reasoning)
+        task = f"""End of day for {ctx.name}. Please:
+        1. Run a trial balance to ensure books are balanced
+        2. Provide a quick summary of today's activity
+        3. Note any issues that need attention tomorrow"""
+
+        response = await self.run_single_task(task)
+
+        return {
+            "org": ctx.name,
+            "mode": "llm",
+            "invoices_created": invoices_created,
+            "response": response[:200],
+        }
 
     async def _handle_night(self, time: Any, phase: DayPhase) -> list[Any]:
         """Night: Late-night transactions and day transition cleanup."""
@@ -1048,33 +1228,98 @@ class Orchestrator:
 
 
 async def main() -> None:
-    """Main entry point for running the simulation."""
+    """Main entry point for running the simulation.
+
+    Usage:
+        # Run one day in LLM mode (default)
+        uv run python -m atlas_town.orchestrator
+
+        # Run multiple days
+        uv run python -m atlas_town.orchestrator --days=7
+
+        # Run in fast mode (no LLM, 15x faster)
+        uv run python -m atlas_town.orchestrator --mode=fast --days=30
+
+        # Run in hybrid mode (fast ops + LLM analysis)
+        uv run python -m atlas_town.orchestrator --mode=hybrid --days=7
+
+        # Run a single task (always uses LLM)
+        uv run python -m atlas_town.orchestrator "Run trial balance for Tony's"
+    """
+    import argparse
     import sys
 
     from atlas_town.config import configure_logging
 
     configure_logging()
 
-    logger.info("starting_atlas_town_simulation")
+    # Parse arguments
+    parser = argparse.ArgumentParser(
+        description="Atlas Town Accounting Simulation",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Modes:
+  llm     Full LLM agent reasoning (default, slower, costs money)
+  fast    Rule-based workflow (15x faster, no API cost)
+  hybrid  Rule-based operations + LLM for analysis when issues detected
+
+Examples:
+  %(prog)s                          # Run 1 day in LLM mode
+  %(prog)s --days=30                # Run 30 days in LLM mode
+  %(prog)s --mode=fast --days=365   # Run 1 year in fast mode (~12 min)
+  %(prog)s --mode=hybrid --days=7   # Run 1 week in hybrid mode
+  %(prog)s "Why is revenue down?"   # Run a single LLM task
+        """,
+    )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["llm", "fast", "hybrid"],
+        default="llm",
+        help="Simulation mode (default: llm)",
+    )
+    parser.add_argument(
+        "--days",
+        type=int,
+        default=1,
+        help="Number of days to simulate (default: 1)",
+    )
+    parser.add_argument(
+        "task",
+        nargs="*",
+        help="Optional task for Sarah to complete (uses LLM mode)",
+    )
+
+    args = parser.parse_args()
+
+    # Determine mode
+    mode = SimulationMode(args.mode)
+
+    # If a task is provided, always use LLM mode
+    task = " ".join(args.task) if args.task else None
+    if task:
+        mode = SimulationMode.LLM
+
+    logger.info(
+        "starting_atlas_town_simulation",
+        mode=mode.value,
+        days=args.days if not task else "single_task",
+    )
 
     try:
-        async with Orchestrator() as orchestrator:
-            # Parse command line arguments
-            if len(sys.argv) > 1:
-                if sys.argv[1] == "--run":
-                    # Run continuous simulation
-                    max_days = int(sys.argv[2]) if len(sys.argv) > 2 else 7
-                    await orchestrator.run_simulation(max_days=max_days)
-                else:
-                    # Run a single task
-                    task = " ".join(sys.argv[1:])
-                    response = await orchestrator.run_single_task(task)
-                    print(f"\n{'='*60}")
-                    print("Sarah's Response:")
-                    print("=" * 60)
-                    print(response)
+        async with Orchestrator(mode=mode) as orchestrator:
+            if task:
+                # Run a single task (always LLM)
+                response = await orchestrator.run_single_task(task)
+                print(f"\n{'='*60}")
+                print("Sarah's Response:")
+                print("=" * 60)
+                print(response)
+            elif args.days > 1:
+                # Run multiple days
+                await orchestrator.run_simulation(max_days=args.days)
             else:
-                # Default: run one day
+                # Run one day
                 await orchestrator.run_daily_cycle()
 
     except KeyboardInterrupt:
