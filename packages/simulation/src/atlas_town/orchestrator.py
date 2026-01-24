@@ -16,6 +16,7 @@ Supports three modes:
 
 import asyncio
 import random
+import re
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from enum import Enum
@@ -36,6 +37,7 @@ from atlas_town.agents import (
 )
 from atlas_town.clients import ClaudeClient, GeminiClient, OpenAIClient
 from atlas_town.config import get_settings
+from atlas_town.config.personas_loader import load_persona_payroll_configs
 from atlas_town.events import (
     EventPublisher,
     agent_moving,
@@ -199,6 +201,7 @@ class Orchestrator:
 
         # Load organizations and create agents
         await self._setup_organizations()
+        await self._ensure_payroll_vendors()
 
         # Only create LLM agents if not in FAST mode
         if self._mode != SimulationMode.FAST:
@@ -279,6 +282,88 @@ class Orchestrator:
             self._org_by_owner[owner_key] = org_id
 
         self._logger.info("organizations_loaded", count=len(self._organizations))
+
+    @staticmethod
+    def _normalize_vendor_name(name: str) -> str:
+        return " ".join(name.split()).strip().lower()
+
+    @staticmethod
+    def _vendor_email_from_name(name: str) -> str:
+        slug = re.sub(r"[^a-z0-9]+", "", name.lower()) or "vendor"
+        return f"{slug}@atlastown.local"
+
+    async def _ensure_vendor_present(
+        self,
+        vendors: list[dict[str, Any]],
+        vendor_name: str,
+    ) -> None:
+        if not self._api_client:
+            return
+
+        normalized = self._normalize_vendor_name(vendor_name)
+        for vendor in vendors:
+            existing_name = (
+                vendor.get("display_name")
+                or vendor.get("name", "")
+            )
+            if normalized == self._normalize_vendor_name(str(existing_name)):
+                return
+
+        payload = {
+            "display_name": vendor_name,
+            "email": self._vendor_email_from_name(vendor_name),
+            "payment_terms": "net_15",
+        }
+        try:
+            created = await self._api_client.create_vendor(payload)
+            if created:
+                vendors.append(created)
+            self._logger.info(
+                "payroll_vendor_created",
+                vendor=vendor_name,
+            )
+        except AtlasAPIError as exc:
+            self._logger.warning(
+                "payroll_vendor_create_failed",
+                vendor=vendor_name,
+                error=str(exc),
+            )
+
+    async def _ensure_payroll_vendors(self) -> None:
+        if not self._api_client:
+            return
+
+        payroll_configs = load_persona_payroll_configs()
+        if not payroll_configs:
+            return
+
+        for org_id, ctx in self._organizations.items():
+            config = payroll_configs.get(ctx.owner_key)
+            if not config:
+                continue
+
+            raw_vendor_names = [
+                config.get("payroll_vendor"),
+                config.get("tax_authority"),
+            ]
+            vendor_names: list[str] = [str(name) for name in raw_vendor_names if name]
+            if not vendor_names:
+                continue
+
+            try:
+                await self._api_client.switch_organization(org_id)
+                self._current_org_id = org_id
+                vendors = await self._api_client.list_vendors()
+            except AtlasAPIError as exc:
+                self._logger.warning(
+                    "payroll_vendor_list_failed",
+                    org=ctx.name,
+                    error=str(exc),
+                )
+                continue
+
+            for vendor_name in vendor_names:
+                await self._ensure_vendor_present(vendors, vendor_name)
 
     def _create_agents(self) -> None:
         """Create all agent instances."""
@@ -435,37 +520,92 @@ class Orchestrator:
         )
         return account
 
-    def _find_expense_account(self, accounts: list[dict[str, Any]]) -> dict[str, Any] | None:
+    def _find_expense_account(
+        self,
+        accounts: list[dict[str, Any]],
+        hint: str | None = None,
+    ) -> dict[str, Any] | None:
         """Find an expense account using multiple strategies.
 
         Tries in order:
-        1. account_type == "expense" (most correct)
-        2. account_number starting with "5" or "6" (US GAAP expense accounts)
-        3. name containing "expense" (fallback)
+        1. name matching hint (if provided)
+        2. account_type == "expense" (most correct)
+        3. account_number starting with "5" or "6" (US GAAP expense accounts)
+        4. name containing "expense" (fallback)
         """
+        if hint:
+            normalized = hint.strip().lower()
+            preferred_names = [normalized]
+            terms = [normalized]
+
+            if "payroll" in normalized:
+                if "tax" in normalized:
+                    preferred_names = [
+                        "payroll tax expense",
+                        "payroll taxes",
+                        "payroll tax",
+                        "employment taxes",
+                        "employer payroll taxes",
+                    ]
+                    terms = [
+                        "payroll tax",
+                        "payroll taxes",
+                        "employment tax",
+                        "withholding",
+                    ]
+                else:
+                    preferred_names = [
+                        "wages and salaries",
+                        "salaries and wages",
+                        "wages & salaries",
+                        "salaries & wages",
+                        "payroll expense",
+                        "wages expense",
+                        "salary expense",
+                        "compensation expense",
+                    ]
+                    terms = [
+                        "payroll",
+                        "wages",
+                        "salaries",
+                        "compensation",
+                    ]
+
+            normalized_preferred = {name.strip().lower() for name in preferred_names}
+            for account in accounts:
+                name = str(account.get("name", "")).strip().lower()
+                if name not in normalized_preferred:
+                    continue
+                account_type = account.get("account_type")
+                if account_type and account_type != "expense":
+                    continue
+                return account
+
+            for term in terms:
+                for account in accounts:
+                    name = str(account.get("name", "")).lower()
+                    if term not in name:
+                        continue
+                    account_type = account.get("account_type")
+                    if account_type and account_type != "expense":
+                        continue
+                    return account
+
         # Strategy 1: By account_type (most reliable if available)
-        account = next(
-            (a for a in accounts if a.get("account_type") == "expense"),
-            None
-        )
-        if account:
-            return account
+        for account in accounts:
+            if account.get("account_type") == "expense":
+                return account
 
         # Strategy 2: By account_number (US GAAP: 5xxx/6xxx = Expenses)
-        account = next(
-            (a for a in accounts
-             if str(a.get("account_number", "")).startswith(("5", "6"))),
-            None
-        )
-        if account:
-            return account
+        for account in accounts:
+            if str(account.get("account_number", "")).startswith(("5", "6")):
+                return account
 
         # Strategy 3: By name containing "expense" (last resort)
-        account = next(
-            (a for a in accounts if "expense" in a.get("name", "").lower()),
-            None
-        )
-        return account
+        for account in accounts:
+            if "expense" in str(account.get("name", "")).lower():
+                return account
+        return None
 
     def _get_simulation_date(self) -> date:
         """Get the current simulation date based on day number."""
@@ -560,7 +700,12 @@ class Orchestrator:
         try:
             # Get expense account - required for bill creation
             accounts = await self._api_client.list_accounts()
-            expense_account = self._find_expense_account(accounts)
+            hint = None
+            if tx.metadata:
+                hint_value = tx.metadata.get("expense_account_hint")
+                if hint_value:
+                    hint = str(hint_value)
+            expense_account = self._find_expense_account(accounts, hint=hint)
 
             if not expense_account:
                 self._logger.warning(

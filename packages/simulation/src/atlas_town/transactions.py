@@ -21,7 +21,7 @@ from atlas_town.config.personas_loader import (
     load_persona_payroll_configs,
     load_persona_recurring_transactions,
 )
-from atlas_town.scheduler import DayPhase, PHASE_TIMES
+from atlas_town.scheduler import PHASE_TIMES, DayPhase
 
 logger = structlog.get_logger(__name__)
 
@@ -235,10 +235,7 @@ class PayrollGenerator:
         return None
 
     def _last_weekday_of_month(self, year: int, month: int, weekday: int) -> date:
-        if month == 12:
-            next_month = date(year + 1, 1, 1)
-        else:
-            next_month = date(year, month + 1, 1)
+        next_month = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
         last_day = next_month - timedelta(days=1)
         offset = (last_day.weekday() - weekday) % 7
         return last_day - timedelta(days=offset)
@@ -264,7 +261,11 @@ class PayrollGenerator:
             return gap >= (14 if frequency == "bi-weekly" else 7)
 
         # Monthly
-        if last_date and last_date.year == current_date.year and last_date.month == current_date.month:
+        if (
+            last_date
+            and last_date.year == current_date.year
+            and last_date.month == current_date.month
+        ):
             return False
 
         if isinstance(config.pay_day, int):
@@ -375,6 +376,7 @@ class PayrollGenerator:
                                 "tax_social_security": str(ss),
                                 "tax_medicare": str(medicare),
                                 "tax_withholding": str(withholding),
+                                "expense_account_hint": "payroll",
                             },
                         )
                     )
@@ -401,7 +403,10 @@ class PayrollGenerator:
                         description="Payroll tax deposit",
                         amount=tax_amount.quantize(Decimal("0.01")),
                         vendor_id=tax_vendor_id,
-                        metadata={"tax_deposit": "payroll"},
+                        metadata={
+                            "tax_deposit": "payroll",
+                            "expense_account_hint": "payroll tax",
+                        },
                     )
                 )
 
@@ -1089,7 +1094,7 @@ class TransactionGenerator:
             List of transactions to create
         """
         patterns = BUSINESS_PATTERNS.get(business_key, [])
-        transactions = []
+        transactions: list[GeneratedTransaction] = []
         pending_pool = list(pending_invoices) if pending_invoices else []
 
         def pop_pending_invoice() -> dict[str, Any] | None:
@@ -1142,8 +1147,8 @@ class TransactionGenerator:
                 )
 
                 hour_transactions: list[GeneratedTransaction] = []
-                for pattern, active_hours, base_probability in pattern_hour_sets:
-                    if hour not in active_hours:
+                for pattern, active_hour_set, base_probability in pattern_hour_sets:
+                    if hour not in active_hour_set:
                         continue
                     if not self._should_generate(
                         pattern,

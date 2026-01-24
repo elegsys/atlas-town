@@ -109,7 +109,9 @@ class TestOrchestrator:
 
         with patch(
             "atlas_town.orchestrator.get_publisher", return_value=mock_publisher
-        ), patch("atlas_town.orchestrator.AtlasAPIClient") as MockClient:
+        ), patch("atlas_town.orchestrator.AtlasAPIClient") as MockClient, patch(
+            "atlas_town.orchestrator.load_persona_payroll_configs", return_value={}
+        ):
             mock_client = AsyncMock()
             mock_client.login = AsyncMock(return_value={})
             mock_client.organizations = [
@@ -155,7 +157,9 @@ class TestOrchestrator:
 
         with patch(
             "atlas_town.orchestrator.get_publisher", return_value=mock_publisher
-        ), patch("atlas_town.orchestrator.AtlasAPIClient") as MockClient:
+        ), patch("atlas_town.orchestrator.AtlasAPIClient") as MockClient, patch(
+            "atlas_town.orchestrator.load_persona_payroll_configs", return_value={}
+        ):
             mock_client = AsyncMock()
             mock_client.login = AsyncMock(return_value={})
             mock_client.organizations = []
@@ -215,6 +219,72 @@ class TestOrchestrator:
 
             with pytest.raises(ValueError, match="Unknown organization"):
                 await orch.switch_organization(uuid4())
+
+    def test_find_expense_account_prefers_payroll_names(self):
+        """Payroll hints should map to payroll-specific expense accounts."""
+        mock_publisher = MagicMock()
+
+        with patch("atlas_town.orchestrator.get_publisher", return_value=mock_publisher):
+            orch = Orchestrator(start_websocket=False)
+            accounts = [
+                {"id": "1", "name": "Office Supplies", "account_type": "expense"},
+                {"id": "2", "name": "Wages and Salaries", "account_type": "expense"},
+                {"id": "3", "name": "Payroll Taxes", "account_type": "expense"},
+            ]
+
+            payroll_account = orch._find_expense_account(accounts, hint="payroll")
+            assert payroll_account is not None
+            assert payroll_account["name"] == "Wages and Salaries"
+
+            tax_account = orch._find_expense_account(accounts, hint="payroll tax")
+            assert tax_account is not None
+            assert tax_account["name"] == "Payroll Taxes"
+
+    @pytest.mark.asyncio
+    async def test_ensure_payroll_vendors_creates_missing(self):
+        """Payroll vendors should be auto-created when missing."""
+        mock_publisher = MagicMock()
+        payroll_config = {
+            "tony": {
+                "payroll_vendor": "Atlas Payroll Services",
+                "tax_authority": "IRS Payroll Taxes",
+            }
+        }
+
+        with patch("atlas_town.orchestrator.get_publisher", return_value=mock_publisher), patch(
+            "atlas_town.orchestrator.load_persona_payroll_configs", return_value=payroll_config
+        ):
+            orch = Orchestrator(start_websocket=False)
+            org_id = uuid4()
+            orch._organizations = {
+                org_id: OrganizationContext(
+                    id=org_id,
+                    name="Test Org",
+                    industry="restaurant",
+                    owner_key="tony",
+                )
+            }
+
+            mock_client = AsyncMock()
+            mock_client.switch_organization = AsyncMock()
+            mock_client.list_vendors = AsyncMock(return_value=[])
+            mock_client.create_vendor = AsyncMock(
+                side_effect=[
+                    {"id": str(uuid4()), "display_name": "Atlas Payroll Services"},
+                    {"id": str(uuid4()), "display_name": "IRS Payroll Taxes"},
+                ]
+            )
+            orch._api_client = mock_client
+
+            await orch._ensure_payroll_vendors()
+
+            assert mock_client.create_vendor.call_count == 2
+            created_names = [
+                call.args[0]["display_name"]
+                for call in mock_client.create_vendor.call_args_list
+            ]
+            assert "Atlas Payroll Services" in created_names
+            assert "IRS Payroll Taxes" in created_names
 
     @pytest.mark.asyncio
     async def test_run_single_task_without_initialization_raises(self):
