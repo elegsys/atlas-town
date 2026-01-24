@@ -22,7 +22,7 @@ from uuid import UUID, uuid4
 
 import structlog
 
-from atlas_town.tools.atlas_api import AtlasAPIClient
+from atlas_town.tools.atlas_api import AtlasAPIClient, AtlasAPIError
 from atlas_town.transactions import (
     GeneratedTransaction,
     TransactionGenerator,
@@ -544,7 +544,15 @@ class AccountingWorkflow:
                     str(amount),
                 )
             except Exception as e:
-                self._logger.warning("payment_apply_failed", error=str(e))
+                details = e.details if isinstance(e, AtlasAPIError) else None
+                self._logger.warning(
+                    "payment_apply_failed",
+                    error=str(e),
+                    details=details,
+                    invoice_id=str(invoice_id),
+                    payment_id=str(payment.get("id")),
+                    amount=str(amount),
+                )
         return payment
 
     async def _pay_bill(

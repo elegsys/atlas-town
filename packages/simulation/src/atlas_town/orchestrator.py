@@ -53,7 +53,7 @@ from atlas_town.events import (
     transaction_created,
 )
 from atlas_town.scheduler import DayPhase, Scheduler
-from atlas_town.tools import AtlasAPIClient, ToolExecutor
+from atlas_town.tools import AtlasAPIClient, AtlasAPIError, ToolExecutor
 from atlas_town.transactions import (
     GeneratedTransaction,
     TransactionType,
@@ -679,54 +679,71 @@ class Orchestrator:
             )
             return None
 
-        try:
-            # Create payment with all required fields
-            payment_data = {
-                "customer_id": str(tx.customer_id),
-                "amount": str(tx.amount),
-                "payment_date": self._get_simulation_date().isoformat(),
-                "payment_method": "check",
-                "deposit_account_id": deposit_account_id,
-                "reference_number": (
-                    f"PMT-{random.randint(10000, 99999)}{self._run_suffix()}"
-                )[:100],
-            }
+        # Create payment with all required fields
+        payment_data = {
+            "customer_id": str(tx.customer_id),
+            "amount": str(tx.amount),
+            "payment_date": self._get_simulation_date().isoformat(),
+            "payment_method": "check",
+            "deposit_account_id": deposit_account_id,
+            "reference_number": (
+                f"PMT-{random.randint(10000, 99999)}{self._run_suffix()}"
+            )[:100],
+        }
 
+        try:
             result = await self._api_client.create_payment(
                 payment_data, ar_account_id=UUID(ar_account_id)
             )
+        except Exception as e:
+            details = e.details if isinstance(e, AtlasAPIError) else None
+            self._logger.error(
+                "payment_failed",
+                error=str(e),
+                details=details,
+                org=ctx.name,
+            )
+            return None
 
-            if result and result.get("id"):
+        if result and result.get("id"):
+            try:
                 # Apply to invoice
                 await self._api_client.apply_payment_to_invoice(
                     UUID(result["id"]),
                     UUID(invoice_id),
                     str(tx.amount),
                 )
-
-            # Publish event
-            counterparty = (
-                tx.description.split(" - ")[0]
-                if " - " in tx.description
-                else "Customer"
-            )
-            self._event_publisher.publish(
-                transaction_created(
-                    org_id=ctx.id,
-                    org_name=ctx.name,
-                    transaction_type="payment",
-                    amount=float(tx.amount),
-                    counterparty=counterparty,
-                    description=tx.description,
+            except Exception as e:
+                details = e.details if isinstance(e, AtlasAPIError) else None
+                self._logger.warning(
+                    "payment_apply_failed",
+                    error=str(e),
+                    details=details,
+                    org=ctx.name,
+                    invoice_id=str(invoice_id),
+                    payment_id=str(result.get("id")),
+                    amount=str(tx.amount),
                 )
+
+        # Publish event
+        counterparty = (
+            tx.description.split(" - ")[0]
+            if " - " in tx.description
+            else "Customer"
+        )
+        self._event_publisher.publish(
+            transaction_created(
+                org_id=ctx.id,
+                org_name=ctx.name,
+                transaction_type="payment",
+                amount=float(tx.amount),
+                counterparty=counterparty,
+                description=tx.description,
             )
+        )
 
-            self._logger.info("payment_received", org=ctx.name, amount=str(tx.amount))
-            return result
-
-        except Exception as e:
-            self._logger.error("payment_failed", error=str(e))
-            return None
+        self._logger.info("payment_received", org=ctx.name, amount=str(tx.amount))
+        return result
 
     # === Task Execution ===
 

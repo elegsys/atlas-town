@@ -110,7 +110,9 @@ class RecurringTransactionScheduler:
     ) -> UUID | None:
         normalized = vendor_name.strip().lower()
         for vendor in vendors:
-            name = str(vendor.get("name", "")).strip().lower()
+            name = str(
+                vendor.get("display_name") or vendor.get("name", "")
+            ).strip().lower()
             if name == normalized:
                 try:
                     return UUID(vendor["id"])
@@ -313,7 +315,9 @@ class PayrollGenerator:
         if vendor_name:
             normalized = vendor_name.strip().lower()
             for vendor in vendors:
-                name = str(vendor.get("name", "")).strip().lower()
+                name = str(
+                    vendor.get("display_name") or vendor.get("name", "")
+                ).strip().lower()
                 if name == normalized:
                     try:
                         return UUID(vendor["id"])
@@ -1086,6 +1090,24 @@ class TransactionGenerator:
         """
         patterns = BUSINESS_PATTERNS.get(business_key, [])
         transactions = []
+        pending_pool = list(pending_invoices) if pending_invoices else []
+
+        def pop_pending_invoice() -> dict[str, Any] | None:
+            if not pending_pool:
+                return None
+            idx = self._rng.randrange(len(pending_pool))
+            return pending_pool.pop(idx)
+
+        def invoice_amount(invoice: dict[str, Any]) -> Decimal | None:
+            for key in ("amount_due", "balance", "total_amount", "total"):
+                if key in invoice and invoice.get(key) is not None:
+                    try:
+                        amount = Decimal(str(invoice[key]))
+                    except (ValueError, TypeError):
+                        continue
+                    if amount > 0:
+                        return amount
+            return None
 
         if hourly:
             hours = self._get_phase_hours(current_phase)
@@ -1135,26 +1157,26 @@ class TransactionGenerator:
 
                     # Handle payment transactions specially
                     if pattern.transaction_type == TransactionType.PAYMENT_RECEIVED:
-                        if pending_invoices:
-                            invoice = self._rng.choice(pending_invoices)
-                            amount = Decimal(
-                                str(invoice.get("balance", invoice.get("total", "100.00")))
-                            )
-                            invoice_number = invoice.get("invoice_number", "N/A")
-                            customer_id_value = (
-                                UUID(invoice["customer_id"])
-                                if invoice.get("customer_id")
-                                else None
-                            )
-                            hour_transactions.append(
-                                GeneratedTransaction(
-                                    transaction_type=pattern.transaction_type,
-                                    description=f"Payment received - Invoice #{invoice_number}",
-                                    amount=amount,
-                                    customer_id=customer_id_value,
-                                    metadata={"invoice_id": invoice.get("id")},
+                        invoice = pop_pending_invoice()
+                        if invoice:
+                            amount = invoice_amount(invoice)
+                            invoice_id = invoice.get("id")
+                            if amount and invoice_id:
+                                invoice_number = invoice.get("invoice_number", "N/A")
+                                customer_id_value = (
+                                    UUID(invoice["customer_id"])
+                                    if invoice.get("customer_id")
+                                    else None
                                 )
-                            )
+                                hour_transactions.append(
+                                    GeneratedTransaction(
+                                        transaction_type=pattern.transaction_type,
+                                        description=f"Payment received - Invoice #{invoice_number}",
+                                        amount=amount,
+                                        customer_id=customer_id_value,
+                                        metadata={"invoice_id": invoice_id},
+                                    )
+                                )
                         continue
 
                     # Generate regular transaction
@@ -1214,27 +1236,26 @@ class TransactionGenerator:
 
             # Handle payment transactions specially
             if pattern.transaction_type == TransactionType.PAYMENT_RECEIVED:
-                if pending_invoices:
-                    # Pick a random invoice to pay
-                    invoice = self._rng.choice(pending_invoices)
-                    amount = Decimal(
-                        str(invoice.get("balance", invoice.get("total", "100.00")))
-                    )
-                    invoice_number = invoice.get("invoice_number", "N/A")
-                    customer_id_value = (
-                        UUID(invoice["customer_id"])
-                        if invoice.get("customer_id")
-                        else None
-                    )
-                    transactions.append(
-                        GeneratedTransaction(
-                            transaction_type=pattern.transaction_type,
-                            description=f"Payment received - Invoice #{invoice_number}",
-                            amount=amount,
-                            customer_id=customer_id_value,
-                            metadata={"invoice_id": invoice.get("id")},
+                invoice = pop_pending_invoice()
+                if invoice:
+                    amount = invoice_amount(invoice)
+                    invoice_id = invoice.get("id")
+                    if amount and invoice_id:
+                        invoice_number = invoice.get("invoice_number", "N/A")
+                        customer_id_value = (
+                            UUID(invoice["customer_id"])
+                            if invoice.get("customer_id")
+                            else None
                         )
-                    )
+                        transactions.append(
+                            GeneratedTransaction(
+                                transaction_type=pattern.transaction_type,
+                                description=f"Payment received - Invoice #{invoice_number}",
+                                amount=amount,
+                                customer_id=customer_id_value,
+                                metadata={"invoice_id": invoice_id},
+                            )
+                        )
                 continue
 
             # Generate regular transaction
