@@ -313,3 +313,76 @@ def load_persona_tax_configs() -> dict[str, dict[str, Any]]:
         }
 
     return tax_by_persona
+
+
+@lru_cache
+def load_persona_b2b_configs() -> dict[str, dict[str, Any]]:
+    """Load B2B pairing configs from persona YAML files.
+
+    Returns:
+        Mapping of persona key (filename stem) to B2B config dict.
+    """
+    personas_dir = Path(__file__).resolve().parent / "personas"
+    if not personas_dir.exists():
+        return {}
+
+    b2b_by_persona: dict[str, dict[str, Any]] = {}
+
+    for path in sorted(personas_dir.glob("*.yaml")):
+        raw = path.read_text(encoding="utf-8")
+        data = yaml.safe_load(raw) or {}
+        b2b_config = data.get("b2b_config")
+
+        if b2b_config is None:
+            continue
+        if not isinstance(b2b_config, dict):
+            raise ValueError(f"{path.name}: b2b_config must be a mapping")
+
+        enabled = bool(b2b_config.get("enabled", True))
+        counterparties = b2b_config.get("counterparties", [])
+        if counterparties is None:
+            counterparties = []
+        if not isinstance(counterparties, list):
+            raise ValueError(f"{path.name}: b2b_config.counterparties must be a list")
+
+        normalized: list[dict[str, Any]] = []
+        for idx, item in enumerate(counterparties):
+            if not isinstance(item, dict):
+                raise ValueError(
+                    f"{path.name}: b2b_config.counterparties[{idx}] must be a mapping"
+                )
+            org_key = item.get("org_key")
+            if not org_key:
+                raise ValueError(
+                    f"{path.name}: b2b_config.counterparties[{idx}] missing org_key"
+                )
+
+            day_of_month = item.get("day_of_month")
+            if day_of_month is not None and (
+                not isinstance(day_of_month, int) or not (1 <= day_of_month <= 31)
+            ):
+                raise ValueError(
+                    f"{path.name}: b2b_config.counterparties[{idx}] day_of_month must be 1-31"
+                )
+
+            normalized.append(
+                {
+                    "org_key": str(org_key),
+                    "relationship": str(item.get("relationship", "auto")),
+                    "frequency": str(item.get("frequency", "monthly")),
+                    "day_of_month": day_of_month,
+                    "amount_min": item.get("amount_min"),
+                    "amount_max": item.get("amount_max"),
+                    "amount": item.get("amount"),
+                    "description": item.get("description"),
+                    "invoice_terms_days": item.get("invoice_terms_days", 30),
+                    "payment_flow": item.get("payment_flow", "same_day"),
+                }
+            )
+
+        b2b_by_persona[path.stem] = {
+            "enabled": enabled,
+            "counterparties": normalized,
+        }
+
+    return b2b_by_persona

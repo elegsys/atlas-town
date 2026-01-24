@@ -37,6 +37,7 @@ from atlas_town.agents import (
     create_customers_for_industry,
     create_vendors_for_industry,
 )
+from atlas_town.b2b import B2BCoordinator, B2BPlannedPair, build_b2b_note
 from atlas_town.clients import ClaudeClient, GeminiClient, OpenAIClient
 from atlas_town.config import get_settings
 from atlas_town.config.personas_loader import (
@@ -167,6 +168,10 @@ class Orchestrator:
         # Quarterly tax tracking per org (estimate_id, bill_id)
         self._quarterly_tax_records: dict[tuple[UUID, int, int], dict[str, str]] = {}
 
+        # B2B paired transaction coordinator
+        self._b2b_coordinator: B2BCoordinator | None = None
+        self._b2b_pairs_created: set[str] = set()
+
         # Logging
         self._logger = logger.bind(
             component="orchestrator", mode=mode.value, sim_run_id=self._run_id
@@ -210,6 +215,7 @@ class Orchestrator:
 
         # Load organizations and create agents
         await self._setup_organizations()
+        self._initialize_b2b()
         await self._ensure_payroll_vendors()
         await self._ensure_tax_vendors()
 
@@ -293,6 +299,12 @@ class Orchestrator:
 
         self._logger.info("organizations_loaded", count=len(self._organizations))
 
+    def _initialize_b2b(self) -> None:
+        orgs_by_key = {ctx.owner_key: ctx for ctx in self._organizations.values()}
+        if not orgs_by_key:
+            return
+        self._b2b_coordinator = B2BCoordinator(orgs_by_key)
+
     @staticmethod
     def _normalize_vendor_name(name: str) -> str:
         return " ".join(name.split()).strip().lower()
@@ -301,6 +313,35 @@ class Orchestrator:
     def _vendor_email_from_name(name: str) -> str:
         slug = re.sub(r"[^a-z0-9]+", "", name.lower()) or "vendor"
         return f"{slug}@atlastown.example.com"
+
+    @staticmethod
+    def _normalize_customer_name(name: str) -> str:
+        return " ".join(name.split()).strip().lower()
+
+    @staticmethod
+    def _customer_email_from_name(name: str) -> str:
+        slug = re.sub(r"[^a-z0-9]+", "", name.lower()) or "customer"
+        return f"{slug}@atlastown.example.com"
+
+    @staticmethod
+    def _find_customer_id_by_name(
+        customer_name: str | None,
+        customers: list[dict[str, Any]],
+    ) -> UUID | None:
+        if not customers:
+            return None
+        if customer_name:
+            normalized = Orchestrator._normalize_customer_name(customer_name)
+            for customer in customers:
+                name = str(
+                    customer.get("display_name") or customer.get("name", "")
+                ).strip().lower()
+                if name == normalized or name in normalized or normalized in name:
+                    try:
+                        return UUID(customer["id"])
+                    except (KeyError, ValueError, TypeError):
+                        continue
+        return None
 
     async def _ensure_vendor_present(
         self,
@@ -350,6 +391,57 @@ class Orchestrator:
             self._logger.warning(
                 "payroll_vendor_create_failed",
                 vendor=vendor_name,
+                error=str(exc),
+            )
+
+    async def _ensure_customer_present(
+        self,
+        customers: list[dict[str, Any]],
+        customer_name: str,
+    ) -> None:
+        if not self._api_client:
+            return
+
+        normalized = self._normalize_customer_name(customer_name)
+        for customer in customers:
+            existing_name = (
+                customer.get("display_name")
+                or customer.get("name", "")
+            )
+            if normalized == self._normalize_customer_name(str(existing_name)):
+                return
+
+        payload = {
+            "display_name": customer_name,
+            "email": self._customer_email_from_name(customer_name),
+            "payment_terms": "net_30",
+        }
+        try:
+            created = await self._api_client.create_customer(payload)
+            if created:
+                customers.append(created)
+            self._logger.info(
+                "b2b_customer_created",
+                customer=customer_name,
+            )
+        except AtlasAPIError as exc:
+            if exc.status_code == 422:
+                fallback_payload = payload.copy()
+                fallback_payload.pop("email", None)
+                try:
+                    created = await self._api_client.create_customer(fallback_payload)
+                    if created:
+                        customers.append(created)
+                    self._logger.info(
+                        "b2b_customer_created",
+                        customer=customer_name,
+                    )
+                    return
+                except AtlasAPIError:
+                    pass
+            self._logger.warning(
+                "b2b_customer_create_failed",
+                customer=customer_name,
                 error=str(exc),
             )
 
@@ -693,6 +785,13 @@ class Orchestrator:
         return f"-R{self._run_id_short}"
 
     @staticmethod
+    def _merge_notes(primary: str | None, extra: str | None) -> str | None:
+        parts = [value.strip() for value in (primary, extra) if value and value.strip()]
+        if not parts:
+            return None
+        return "\n".join(parts)
+
+    @staticmethod
     def _quarterly_tax_key(
         org_id: UUID,
         tax_year: int,
@@ -866,10 +965,21 @@ class Orchestrator:
                 )
                 return None
 
+            due_date = sim_date + timedelta(days=30)
+            notes: str | None = None
+            if tx.metadata:
+                due_value = tx.metadata.get("due_date")
+                if isinstance(due_value, str):
+                    with suppress(ValueError):
+                        due_date = date.fromisoformat(due_value)
+                notes_value = tx.metadata.get("notes")
+                if isinstance(notes_value, str) and notes_value.strip():
+                    notes = notes_value.strip()
+
             invoice_data = {
                 "customer_id": str(tx.customer_id),
                 "invoice_date": sim_date.isoformat(),
-                "due_date": (sim_date + timedelta(days=30)).isoformat(),
+                "due_date": due_date.isoformat(),
                 "lines": [{
                     "description": tx.description,
                     "quantity": "1",
@@ -878,8 +988,9 @@ class Orchestrator:
                 }],
             }
             run_note = self._run_note()
-            if run_note:
-                invoice_data["notes"] = run_note
+            merged_notes = self._merge_notes(run_note, notes)
+            if merged_notes:
+                invoice_data["notes"] = merged_notes
 
             result = await self._api_client.create_invoice(invoice_data)
 
@@ -938,6 +1049,7 @@ class Orchestrator:
 
             due_date = sim_date + timedelta(days=30)
             notes: str | None = None
+            vendor_bill_number: str | None = None
             if tx.metadata:
                 due_value = tx.metadata.get("due_date")
                 if isinstance(due_value, str):
@@ -946,6 +1058,9 @@ class Orchestrator:
                 notes_value = tx.metadata.get("notes")
                 if isinstance(notes_value, str) and notes_value.strip():
                     notes = notes_value.strip()
+                vendor_bill_value = tx.metadata.get("vendor_bill_number")
+                if isinstance(vendor_bill_value, str) and vendor_bill_value.strip():
+                    vendor_bill_number = vendor_bill_value.strip()
 
             bill_data = {
                 "vendor_id": str(tx.vendor_id),
@@ -964,7 +1079,9 @@ class Orchestrator:
             }
             if notes:
                 bill_data["notes"] = notes
-            if self._run_id:
+            if vendor_bill_number:
+                bill_data["vendor_bill_number"] = vendor_bill_number[:50]
+            elif self._run_id:
                 bill_data["vendor_bill_number"] = f"SIMRUN-{self._run_id}"[:50]
 
             result = await self._api_client.create_bill(bill_data)
@@ -1122,6 +1239,195 @@ class Orchestrator:
 
         self._logger.info("payment_received", org=ctx.name, amount=str(tx.amount))
         return result
+
+    async def _b2b_pair_already_recorded(self, pair_id: str) -> bool:
+        if not self._api_client:
+            return False
+
+        try:
+            invoices = await self._api_client.list_invoices(limit=200)
+        except AtlasAPIError as exc:
+            self._logger.warning("b2b_invoice_list_failed", error=str(exc))
+            invoices = []
+
+        for invoice in invoices:
+            notes = str(invoice.get("notes", ""))
+            if pair_id in notes:
+                return True
+
+        try:
+            bills = await self._api_client.list_bills(limit=200)
+        except AtlasAPIError as exc:
+            self._logger.warning("b2b_bill_list_failed", error=str(exc))
+            bills = []
+
+        for bill in bills:
+            notes = str(bill.get("notes", ""))
+            vendor_ref = str(bill.get("vendor_bill_number", ""))
+            if pair_id in notes or pair_id in vendor_ref:
+                return True
+
+        return False
+
+    async def _execute_b2b_pair(
+        self,
+        pair: B2BPlannedPair,
+        sim_date: date,
+        customers_by_key: dict[str, list[dict[str, Any]]],
+        vendors_by_key: dict[str, list[dict[str, Any]]],
+    ) -> bool:
+        if not self._api_client:
+            return False
+
+        seller_ctx = self._organizations.get(pair.seller_org_id)
+        buyer_ctx = self._organizations.get(pair.buyer_org_id)
+        if not seller_ctx or not buyer_ctx:
+            return False
+
+        if pair.pair_id in self._b2b_pairs_created:
+            return False
+
+        await self.switch_organization(seller_ctx.id)
+        if await self._b2b_pair_already_recorded(pair.pair_id):
+            self._b2b_pairs_created.add(pair.pair_id)
+            if self._b2b_coordinator:
+                self._b2b_coordinator.mark_pair_seen(pair.pair_id)
+            return False
+
+        seller_customers = customers_by_key.get(pair.seller_key, [])
+        customer_id = self._find_customer_id_by_name(buyer_ctx.name, seller_customers)
+        if not customer_id:
+            await self._ensure_customer_present(seller_customers, buyer_ctx.name)
+            customer_id = self._find_customer_id_by_name(buyer_ctx.name, seller_customers)
+        if not customer_id:
+            self._logger.warning(
+                "b2b_missing_customer",
+                seller=seller_ctx.name,
+                buyer=buyer_ctx.name,
+            )
+            return False
+
+        seller_note = build_b2b_note(pair.pair_id, buyer_ctx.id)
+        invoice_tx = GeneratedTransaction(
+            transaction_type=TransactionType.INVOICE,
+            description=pair.description,
+            amount=pair.amount,
+            customer_id=customer_id,
+            metadata={
+                "notes": seller_note,
+                "due_date": pair.due_date.isoformat(),
+            },
+        )
+        invoice = await self._create_invoice(seller_ctx, invoice_tx, sim_date)
+        if not invoice or not invoice.get("id"):
+            return False
+        invoice_id = str(invoice["id"])
+
+        await self.switch_organization(buyer_ctx.id)
+        if await self._b2b_pair_already_recorded(pair.pair_id):
+            self._b2b_pairs_created.add(pair.pair_id)
+            if self._b2b_coordinator:
+                self._b2b_coordinator.mark_pair_seen(pair.pair_id)
+            return False
+
+        buyer_vendors = vendors_by_key.get(pair.buyer_key, [])
+        vendor_id = self._find_vendor_id_by_name(seller_ctx.name, buyer_vendors)
+        if not vendor_id:
+            await self._ensure_vendor_present(buyer_vendors, seller_ctx.name)
+            vendor_id = self._find_vendor_id_by_name(seller_ctx.name, buyer_vendors)
+        if not vendor_id:
+            self._logger.warning(
+                "b2b_missing_vendor",
+                seller=seller_ctx.name,
+                buyer=buyer_ctx.name,
+            )
+            return False
+
+        buyer_note = build_b2b_note(pair.pair_id, seller_ctx.id, invoice_id)
+        vendor_bill_number = f"B2B-{pair.pair_id.split('-')[0]}-{sim_date.strftime('%Y%m%d')}"
+        bill_tx = GeneratedTransaction(
+            transaction_type=TransactionType.BILL,
+            description=pair.description,
+            amount=pair.amount,
+            vendor_id=vendor_id,
+            metadata={
+                "notes": buyer_note,
+                "due_date": pair.due_date.isoformat(),
+                "vendor_bill_number": vendor_bill_number,
+            },
+        )
+        bill = await self._create_bill(buyer_ctx, bill_tx, sim_date)
+        if not bill or not bill.get("id"):
+            return False
+        bill_id = str(bill["id"])
+
+        if pair.payment_flow != "none":
+            try:
+                await self._api_client.create_bill_payment(
+                    {
+                        "bill_id": bill_id,
+                        "amount": str(pair.amount),
+                        "payment_date": sim_date.isoformat(),
+                        "payment_method": "check",
+                    }
+                )
+            except AtlasAPIError as exc:
+                self._logger.warning(
+                    "b2b_bill_payment_failed",
+                    seller=seller_ctx.name,
+                    buyer=buyer_ctx.name,
+                    error=str(exc),
+                )
+            else:
+                await self.switch_organization(seller_ctx.id)
+                payment_tx = GeneratedTransaction(
+                    transaction_type=TransactionType.PAYMENT_RECEIVED,
+                    description=f"B2B payment - {pair.description}",
+                    amount=pair.amount,
+                    customer_id=customer_id,
+                    metadata={"invoice_id": invoice_id},
+                )
+                await self._record_payment(seller_ctx, payment_tx)
+
+        self._b2b_pairs_created.add(pair.pair_id)
+        if self._b2b_coordinator:
+            self._b2b_coordinator.mark_pair_seen(pair.pair_id)
+        return True
+
+    async def _process_b2b_transactions(self, sim_date: date) -> list[dict[str, Any]]:
+        if not self._api_client or not self._b2b_coordinator:
+            return []
+
+        orgs_by_key = {ctx.owner_key: ctx for ctx in self._organizations.values()}
+        if not orgs_by_key:
+            return []
+
+        customers_by_key: dict[str, list[dict[str, Any]]] = {}
+        vendors_by_key: dict[str, list[dict[str, Any]]] = {}
+
+        for owner_key, ctx in orgs_by_key.items():
+            await self.switch_organization(ctx.id)
+            customers_by_key[owner_key] = await self._api_client.list_customers()
+            vendors_by_key[owner_key] = await self._api_client.list_vendors()
+
+        planned_pairs = self._b2b_coordinator.plan_pairs(sim_date, customers_by_key)
+        results: list[dict[str, Any]] = []
+
+        for pair in planned_pairs:
+            created = await self._execute_b2b_pair(
+                pair, sim_date, customers_by_key, vendors_by_key
+            )
+            if created:
+                results.append(
+                    {
+                        "pair_id": pair.pair_id,
+                        "seller": pair.seller_name,
+                        "buyer": pair.buyer_name,
+                        "amount": str(pair.amount),
+                    }
+                )
+
+        return results
 
     async def _find_quarterly_tax_bill(
         self,
@@ -1536,6 +1842,22 @@ class Orchestrator:
                     org=ctx.name,
                     error=str(exc),
                 )
+
+        b2b_results = await self._process_b2b_transactions(sim_date)
+        if b2b_results:
+            self._event_publisher.publish(
+                agent_speaking(
+                    agent_id=self._accountant.id if self._accountant else UUID(int=0),
+                    agent_name="Sarah Chen",
+                    message=f"Recorded {len(b2b_results)} B2B paired transaction(s).",
+                    org_id=None,
+                )
+            )
+            results.append(
+                {
+                    "b2b_pairs": len(b2b_results),
+                }
+            )
 
         self._event_publisher.publish(phase_completed(day, phase.value, results))
         return results
