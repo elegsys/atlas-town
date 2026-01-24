@@ -111,6 +111,8 @@ class TestOrchestrator:
             "atlas_town.orchestrator.get_publisher", return_value=mock_publisher
         ), patch("atlas_town.orchestrator.AtlasAPIClient") as MockClient, patch(
             "atlas_town.orchestrator.load_persona_payroll_configs", return_value={}
+        ), patch(
+            "atlas_town.orchestrator.load_persona_tax_configs", return_value={}
         ):
             mock_client = AsyncMock()
             mock_client.login = AsyncMock(return_value={})
@@ -159,6 +161,8 @@ class TestOrchestrator:
             "atlas_town.orchestrator.get_publisher", return_value=mock_publisher
         ), patch("atlas_town.orchestrator.AtlasAPIClient") as MockClient, patch(
             "atlas_town.orchestrator.load_persona_payroll_configs", return_value={}
+        ), patch(
+            "atlas_town.orchestrator.load_persona_tax_configs", return_value={}
         ):
             mock_client = AsyncMock()
             mock_client.login = AsyncMock(return_value={})
@@ -285,6 +289,44 @@ class TestOrchestrator:
             ]
             assert "Atlas Payroll Services" in created_names
             assert "IRS Payroll Taxes" in created_names
+
+    @pytest.mark.asyncio
+    async def test_ensure_tax_vendors_creates_missing(self):
+        """Quarterly tax vendors should be auto-created when missing."""
+        mock_publisher = MagicMock()
+        tax_config = {
+            "maya": {
+                "tax_vendor": "IRS Estimated Taxes",
+            }
+        }
+
+        with patch("atlas_town.orchestrator.get_publisher", return_value=mock_publisher), patch(
+            "atlas_town.orchestrator.load_persona_tax_configs", return_value=tax_config
+        ):
+            orch = Orchestrator(start_websocket=False)
+            org_id = uuid4()
+            orch._organizations = {
+                org_id: OrganizationContext(
+                    id=org_id,
+                    name="Test Org",
+                    industry="consulting",
+                    owner_key="maya",
+                )
+            }
+
+            mock_client = AsyncMock()
+            mock_client.switch_organization = AsyncMock()
+            mock_client.list_vendors = AsyncMock(return_value=[])
+            mock_client.create_vendor = AsyncMock(
+                return_value={"id": str(uuid4()), "display_name": "IRS Estimated Taxes"}
+            )
+            orch._api_client = mock_client
+
+            await orch._ensure_tax_vendors()
+
+            mock_client.create_vendor.assert_called_once()
+            created_name = mock_client.create_vendor.call_args[0][0]["display_name"]
+            assert created_name == "IRS Estimated Taxes"
 
     @pytest.mark.asyncio
     async def test_run_single_task_without_initialization_raises(self):

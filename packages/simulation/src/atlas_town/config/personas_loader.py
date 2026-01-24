@@ -280,3 +280,36 @@ def load_persona_payroll_configs() -> dict[str, dict[str, Any]]:
         }
 
     return payroll_by_persona
+
+
+@lru_cache
+def load_persona_tax_configs() -> dict[str, dict[str, Any]]:
+    """Load quarterly tax configs from persona YAML files.
+
+    Returns:
+        Mapping of persona key (filename stem) to tax config dict.
+    """
+    personas_dir = Path(__file__).resolve().parent / "personas"
+    if not personas_dir.exists():
+        return {}
+
+    tax_by_persona: dict[str, dict[str, Any]] = {}
+
+    for path in sorted(personas_dir.glob("*.yaml")):
+        raw = path.read_text(encoding="utf-8")
+        data = yaml.safe_load(raw) or {}
+        tax_config = data.get("tax_config")
+
+        if tax_config is None:
+            continue
+        if not isinstance(tax_config, dict):
+            raise ValueError(f"{path.name}: tax_config must be a mapping")
+
+        tax_by_persona[path.stem] = {
+            "entity_type": str(tax_config.get("entity_type", "sole_proprietor")),
+            "estimated_annual_income": tax_config.get("estimated_annual_income"),
+            "estimated_tax_rate": tax_config.get("estimated_tax_rate"),
+            "tax_vendor": tax_config.get("tax_vendor"),
+        }
+
+    return tax_by_persona

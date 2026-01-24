@@ -72,6 +72,12 @@ payroll:
   payroll_vendor: "Harbor Payroll Services"
   tax_authority: "IRS Payroll Taxes"
 
+tax_config:
+  entity_type: "sole_proprietor"
+  estimated_annual_income: 250000
+  estimated_tax_rate: 0.27
+  tax_vendor: "IRS Estimated Taxes"
+
 recurring_transactions:
   - name: "Office Rent"
     vendor: "Office Space Partners"

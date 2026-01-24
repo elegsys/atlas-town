@@ -20,6 +20,7 @@ from atlas_town.config.personas_loader import (
     load_persona_employees,
     load_persona_payroll_configs,
     load_persona_recurring_transactions,
+    load_persona_tax_configs,
 )
 from atlas_town.scheduler import PHASE_TIMES, DayPhase
 
@@ -411,6 +412,117 @@ class PayrollGenerator:
                 )
 
         return transactions
+
+
+@dataclass(frozen=True)
+class QuarterlyTaxConfig:
+    """Quarterly estimated tax configuration."""
+
+    entity_type: str
+    estimated_annual_income: Decimal
+    estimated_tax_rate: Decimal
+    tax_vendor: str | None
+
+
+@dataclass(frozen=True)
+class QuarterlyTaxAction:
+    """Action for quarterly estimated tax workflow."""
+
+    action: str  # "create" or "pay"
+    tax_year: int
+    quarter: int
+    due_date: date
+    estimated_income: Decimal
+    estimated_tax: Decimal
+    tax_vendor: str | None
+
+
+class QuarterlyTaxScheduler:
+    """Schedule quarterly estimated tax actions."""
+
+    def __init__(self, tax_by_business: dict[str, QuarterlyTaxConfig]) -> None:
+        self._tax_by_business = tax_by_business
+        self._created: set[tuple[str, int, int]] = set()
+        self._paid: set[tuple[str, int, int]] = set()
+        self._logger = logger.bind(component="quarterly_tax_scheduler")
+
+    @staticmethod
+    def _due_dates_for_tax_year(tax_year: int) -> dict[int, date]:
+        return {
+            1: date(tax_year, 4, 15),
+            2: date(tax_year, 6, 15),
+            3: date(tax_year, 9, 15),
+            4: date(tax_year + 1, 1, 15),
+        }
+
+    @staticmethod
+    def _quarter_amounts(config: QuarterlyTaxConfig) -> tuple[Decimal, Decimal]:
+        quarter_income = (config.estimated_annual_income / Decimal("4")).quantize(
+            Decimal("0.01")
+        )
+        quarter_tax = (quarter_income * config.estimated_tax_rate).quantize(
+            Decimal("0.01")
+        )
+        return quarter_income, quarter_tax
+
+    def mark_created(self, business_key: str, tax_year: int, quarter: int) -> None:
+        self._created.add((business_key, tax_year, quarter))
+
+    def mark_paid(self, business_key: str, tax_year: int, quarter: int) -> None:
+        self._paid.add((business_key, tax_year, quarter))
+
+    def get_actions(
+        self,
+        business_key: str,
+        current_date: date,
+    ) -> list[QuarterlyTaxAction]:
+        config = self._tax_by_business.get(business_key)
+        if not config:
+            return []
+
+        actions: list[QuarterlyTaxAction] = []
+        quarter_income, quarter_tax = self._quarter_amounts(config)
+
+        for tax_year in (current_date.year - 1, current_date.year):
+            for quarter, due_date in self._due_dates_for_tax_year(tax_year).items():
+                create_date = due_date - timedelta(days=14)
+                key = (business_key, tax_year, quarter)
+
+                if current_date == create_date and key not in self._created:
+                    actions.append(
+                        QuarterlyTaxAction(
+                            action="create",
+                            tax_year=tax_year,
+                            quarter=quarter,
+                            due_date=due_date,
+                            estimated_income=quarter_income,
+                            estimated_tax=quarter_tax,
+                            tax_vendor=config.tax_vendor,
+                        )
+                    )
+
+                if current_date == due_date and key not in self._paid:
+                    actions.append(
+                        QuarterlyTaxAction(
+                            action="pay",
+                            tax_year=tax_year,
+                            quarter=quarter,
+                            due_date=due_date,
+                            estimated_income=quarter_income,
+                            estimated_tax=quarter_tax,
+                            tax_vendor=config.tax_vendor,
+                        )
+                    )
+
+        if actions:
+            self._logger.info(
+                "quarterly_tax_actions",
+                business=business_key,
+                date=current_date.isoformat(),
+                actions=len(actions),
+            )
+
+        return actions
 
 
 # ============================================================================
@@ -805,6 +917,9 @@ class TransactionGenerator:
             self._load_employee_configs(),
             self._load_payroll_configs(),
         )
+        self._quarterly_tax_scheduler = QuarterlyTaxScheduler(
+            self._load_tax_configs()
+        )
 
     def _load_recurring_transactions(
         self,
@@ -897,6 +1012,32 @@ class TransactionGenerator:
 
         return payroll_by_business
 
+    def _load_tax_configs(self) -> dict[str, QuarterlyTaxConfig]:
+        """Load quarterly tax configs from persona files."""
+        raw = load_persona_tax_configs()
+        tax_by_business: dict[str, QuarterlyTaxConfig] = {}
+
+        for business_key, config in raw.items():
+            try:
+                annual_income = Decimal(str(config["estimated_annual_income"]))
+                tax_rate = Decimal(str(config["estimated_tax_rate"]))
+            except (KeyError, ValueError, TypeError) as exc:
+                raise ValueError(
+                    f"Tax config invalid for {business_key}: {config!r}"
+                ) from exc
+
+            entity_type = str(config.get("entity_type", "sole_proprietor"))
+            tax_vendor = config.get("tax_vendor") or "IRS Estimated Taxes"
+
+            tax_by_business[business_key] = QuarterlyTaxConfig(
+                entity_type=entity_type,
+                estimated_annual_income=annual_income,
+                estimated_tax_rate=tax_rate,
+                tax_vendor=str(tax_vendor) if tax_vendor is not None else None,
+            )
+
+        return tax_by_business
+
     def generate_recurring_transactions(
         self,
         business_key: str,
@@ -922,6 +1063,35 @@ class TransactionGenerator:
             current_date=current_date,
             vendors=vendors,
         )
+
+    def generate_quarterly_tax_actions(
+        self,
+        business_key: str,
+        current_date: date,
+    ) -> list[QuarterlyTaxAction]:
+        """Generate quarterly estimated tax actions for a business."""
+        return self._quarterly_tax_scheduler.get_actions(
+            business_key=business_key,
+            current_date=current_date,
+        )
+
+    def mark_quarterly_tax_created(
+        self,
+        business_key: str,
+        tax_year: int,
+        quarter: int,
+    ) -> None:
+        """Mark a quarterly tax estimate as created."""
+        self._quarterly_tax_scheduler.mark_created(business_key, tax_year, quarter)
+
+    def mark_quarterly_tax_paid(
+        self,
+        business_key: str,
+        tax_year: int,
+        quarter: int,
+    ) -> None:
+        """Mark a quarterly tax estimate as paid."""
+        self._quarterly_tax_scheduler.mark_paid(business_key, tax_year, quarter)
 
     def _fill_template(self, template: str) -> str:
         """Fill in template placeholders with random data."""

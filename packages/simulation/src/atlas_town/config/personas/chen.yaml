@@ -79,6 +79,12 @@ payroll:
   payroll_vendor: "Dental Payroll Co"
   tax_authority: "IRS Payroll Taxes"
 
+tax_config:
+  entity_type: "llc"
+  estimated_annual_income: 400000
+  estimated_tax_rate: 0.30
+  tax_vendor: "IRS Estimated Taxes"
+
 recurring_transactions:
   - name: "Office Rent"
     vendor: "Medical Plaza Properties"

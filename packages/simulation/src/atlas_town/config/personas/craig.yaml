@@ -76,6 +76,12 @@ payroll:
   payroll_vendor: "Atlas Payroll Services"
   tax_authority: "IRS Payroll Taxes"
 
+tax_config:
+  entity_type: "sole_proprietor"
+  estimated_annual_income: 180000
+  estimated_tax_rate: 0.25
+  tax_vendor: "IRS Estimated Taxes"
+
 recurring_transactions:
   - name: "Equipment Yard Lease"
     vendor: "Equipment Yard Lease"

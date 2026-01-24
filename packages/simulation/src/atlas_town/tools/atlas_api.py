@@ -1,7 +1,7 @@
 """Atlas API client with JWT authentication and automatic token refresh."""
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID
 
@@ -636,6 +636,115 @@ class AtlasAPIClient:
     async def get_ap_aging(self) -> dict[str, Any]:
         """Get accounts payable aging report."""
         result = await self.get("/api/v1/reports/ap-aging")
+        return result if isinstance(result, dict) else {}
+
+    # === Tax Form Endpoints ===
+
+    async def list_tax_years(
+        self,
+        company_id: UUID,
+        status_filter: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """List tax years for a company."""
+        params: dict[str, Any] = {"company_id": str(company_id)}
+        if status_filter:
+            params["status_filter"] = status_filter
+        result = await self.get("/api/v1/tax-forms/tax-years/", params=params)
+        return self._extract_items(result)
+
+    async def create_tax_year(
+        self,
+        company_id: UUID,
+        year: int,
+        threshold_override: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a tax year for a company."""
+        payload: dict[str, Any] = {"company_id": str(company_id), "year": year}
+        if threshold_override is not None:
+            payload["threshold_override"] = threshold_override
+        result = await self.post("/api/v1/tax-forms/tax-years/", json=payload)
+        return result if isinstance(result, dict) else {}
+
+    async def get_tax_year(self, tax_year_id: UUID) -> dict[str, Any]:
+        """Get tax year details by ID."""
+        result = await self.get(f"/api/v1/tax-forms/tax-years/{tax_year_id}")
+        return result if isinstance(result, dict) else {}
+
+    async def list_quarterly_estimates(
+        self,
+        tax_year_id: UUID,
+        status_filter: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """List quarterly estimates for a tax year."""
+        params: dict[str, Any] = {"tax_year_id": str(tax_year_id)}
+        if status_filter:
+            params["status_filter"] = status_filter
+        result = await self.get(
+            "/api/v1/tax-forms/quarterly-estimates/",
+            params=params,
+        )
+        return self._extract_items(result)
+
+    async def create_quarterly_estimate(
+        self,
+        tax_year_id: UUID,
+        quarter: int,
+        estimated_income: str,
+        prior_year_tax: str | None = None,
+        prior_year_agi: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a quarterly estimate for a tax year."""
+        payload: dict[str, Any] = {
+            "tax_year_id": str(tax_year_id),
+            "quarter": quarter,
+            "estimated_income": estimated_income,
+        }
+        if prior_year_tax is not None:
+            payload["prior_year_tax"] = prior_year_tax
+        if prior_year_agi is not None:
+            payload["prior_year_agi"] = prior_year_agi
+        result = await self.post(
+            "/api/v1/tax-forms/quarterly-estimates/calculate",
+            json=payload,
+        )
+        return result if isinstance(result, dict) else {}
+
+    async def update_quarterly_estimate(
+        self,
+        estimate_id: UUID,
+        estimated_income: str | None = None,
+        status: str | None = None,
+    ) -> dict[str, Any]:
+        """Update a quarterly estimate."""
+        payload: dict[str, Any] = {}
+        if estimated_income is not None:
+            payload["estimated_income"] = estimated_income
+        if status is not None:
+            payload["status"] = status
+        result = await self.put(
+            f"/api/v1/tax-forms/quarterly-estimates/{estimate_id}",
+            json=payload,
+        )
+        return result if isinstance(result, dict) else {}
+
+    async def record_quarterly_estimate_payment(
+        self,
+        estimate_id: UUID,
+        amount: str,
+        payment_date: date,
+        payment_method: str | None = None,
+    ) -> dict[str, Any]:
+        """Record a quarterly estimate payment."""
+        payload: dict[str, Any] = {
+            "amount": amount,
+            "payment_date": payment_date.isoformat(),
+        }
+        if payment_method is not None:
+            payload["payment_method"] = payment_method
+        result = await self.post(
+            f"/api/v1/tax-forms/quarterly-estimates/{estimate_id}/pay",
+            json=payload,
+        )
         return result if isinstance(result, dict) else {}
 
     # === Bank Transaction Endpoints ===

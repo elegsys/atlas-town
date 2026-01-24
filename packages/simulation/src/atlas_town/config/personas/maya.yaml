@@ -80,6 +80,12 @@ payroll:
   payroll_vendor: "Nexus Payroll Services"
   tax_authority: "IRS Payroll Taxes"
 
+tax_config:
+  entity_type: "s_corp"
+  estimated_annual_income: 300000
+  estimated_tax_rate: 0.28
+  tax_vendor: "IRS Estimated Taxes"
+
 recurring_transactions:
   - name: "Office Rent"
     vendor: "Coworking Space LLC"

@@ -1,5 +1,6 @@
 """Tool executor that bridges LLM tool calls to Atlas API."""
 
+from datetime import date
 from typing import Any
 from uuid import UUID
 
@@ -67,6 +68,12 @@ class ToolExecutor:
             "list_bank_transactions": self._list_bank_transactions,
             "categorize_bank_transaction": self._categorize_bank_transaction,
             "match_bank_transaction": self._match_bank_transaction,
+            # Tax Forms
+            "list_tax_years": self._list_tax_years,
+            "create_tax_year": self._create_tax_year,
+            "list_quarterly_estimates": self._list_quarterly_estimates,
+            "create_quarterly_estimate": self._create_quarterly_estimate,
+            "record_quarterly_estimate_payment": self._record_quarterly_estimate_payment,
         }
 
     async def execute(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -266,4 +273,78 @@ class ToolExecutor:
     ) -> dict[str, Any]:
         return await self.client.match_bank_transaction(
             UUID(transaction_id), UUID(match_id), match_type
+        )
+
+    # === Tax Form Handlers ===
+
+    async def _list_tax_years(
+        self, company_id: str | None = None, status_filter: str | None = None
+    ) -> list[dict[str, Any]]:
+        company = UUID(company_id) if company_id else self.client.current_company_id
+        if not company:
+            raise ToolExecutionError("list_tax_years", "No company_id available")
+        return await self.client.list_tax_years(company_id=company, status_filter=status_filter)
+
+    async def _create_tax_year(
+        self,
+        company_id: str | None = None,
+        year: int | None = None,
+        threshold_override: str | None = None,
+    ) -> dict[str, Any]:
+        if year is None:
+            raise ToolExecutionError("create_tax_year", "Missing required year")
+        company = UUID(company_id) if company_id else self.client.current_company_id
+        if not company:
+            raise ToolExecutionError("create_tax_year", "No company_id available")
+        return await self.client.create_tax_year(
+            company_id=company,
+            year=year,
+            threshold_override=threshold_override,
+        )
+
+    async def _list_quarterly_estimates(
+        self,
+        tax_year_id: str,
+        status_filter: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return await self.client.list_quarterly_estimates(
+            tax_year_id=UUID(tax_year_id),
+            status_filter=status_filter,
+        )
+
+    async def _create_quarterly_estimate(
+        self,
+        tax_year_id: str,
+        quarter: int,
+        estimated_income: str,
+        prior_year_tax: str | None = None,
+        prior_year_agi: str | None = None,
+    ) -> dict[str, Any]:
+        return await self.client.create_quarterly_estimate(
+            tax_year_id=UUID(tax_year_id),
+            quarter=quarter,
+            estimated_income=estimated_income,
+            prior_year_tax=prior_year_tax,
+            prior_year_agi=prior_year_agi,
+        )
+
+    async def _record_quarterly_estimate_payment(
+        self,
+        estimate_id: str,
+        amount: str,
+        payment_date: str,
+        payment_method: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            payment_dt = date.fromisoformat(payment_date)
+        except ValueError as exc:
+            raise ToolExecutionError(
+                "record_quarterly_estimate_payment",
+                f"Invalid payment_date: {payment_date}",
+            ) from exc
+        return await self.client.record_quarterly_estimate_payment(
+            estimate_id=UUID(estimate_id),
+            amount=amount,
+            payment_date=payment_dt,
+            payment_method=payment_method,
         )

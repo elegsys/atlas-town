@@ -17,8 +17,10 @@ Supports three modes:
 import asyncio
 import random
 import re
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from decimal import Decimal
 from enum import Enum
 from typing import Any
 from uuid import UUID, uuid4
@@ -37,7 +39,10 @@ from atlas_town.agents import (
 )
 from atlas_town.clients import ClaudeClient, GeminiClient, OpenAIClient
 from atlas_town.config import get_settings
-from atlas_town.config.personas_loader import load_persona_payroll_configs
+from atlas_town.config.personas_loader import (
+    load_persona_payroll_configs,
+    load_persona_tax_configs,
+)
 from atlas_town.events import (
     EventPublisher,
     agent_moving,
@@ -58,6 +63,7 @@ from atlas_town.scheduler import DayPhase, Scheduler
 from atlas_town.tools import AtlasAPIClient, AtlasAPIError, ToolExecutor
 from atlas_town.transactions import (
     GeneratedTransaction,
+    QuarterlyTaxAction,
     TransactionType,
     create_transaction_generator,
 )
@@ -158,6 +164,9 @@ class Orchestrator:
         # Account cache per org (for payment endpoints that need AR, AP, deposit accounts)
         self._account_cache: dict[UUID, dict[str, Any]] = {}
 
+        # Quarterly tax tracking per org (estimate_id, bill_id)
+        self._quarterly_tax_records: dict[tuple[UUID, int, int], dict[str, str]] = {}
+
         # Logging
         self._logger = logger.bind(
             component="orchestrator", mode=mode.value, sim_run_id=self._run_id
@@ -202,6 +211,7 @@ class Orchestrator:
         # Load organizations and create agents
         await self._setup_organizations()
         await self._ensure_payroll_vendors()
+        await self._ensure_tax_vendors()
 
         # Only create LLM agents if not in FAST mode
         if self._mode != SimulationMode.FAST:
@@ -290,7 +300,7 @@ class Orchestrator:
     @staticmethod
     def _vendor_email_from_name(name: str) -> str:
         slug = re.sub(r"[^a-z0-9]+", "", name.lower()) or "vendor"
-        return f"{slug}@atlastown.local"
+        return f"{slug}@atlastown.example.com"
 
     async def _ensure_vendor_present(
         self,
@@ -323,6 +333,20 @@ class Orchestrator:
                 vendor=vendor_name,
             )
         except AtlasAPIError as exc:
+            if exc.status_code == 422:
+                fallback_payload = payload.copy()
+                fallback_payload.pop("email", None)
+                try:
+                    created = await self._api_client.create_vendor(fallback_payload)
+                    if created:
+                        vendors.append(created)
+                    self._logger.info(
+                        "payroll_vendor_created",
+                        vendor=vendor_name,
+                    )
+                    return
+                except AtlasAPIError:
+                    pass
             self._logger.warning(
                 "payroll_vendor_create_failed",
                 vendor=vendor_name,
@@ -364,6 +388,38 @@ class Orchestrator:
 
             for vendor_name in vendor_names:
                 await self._ensure_vendor_present(vendors, vendor_name)
+
+    async def _ensure_tax_vendors(self) -> None:
+        if not self._api_client:
+            return
+
+        tax_configs = load_persona_tax_configs()
+        if not tax_configs:
+            return
+
+        for org_id, ctx in self._organizations.items():
+            config = tax_configs.get(ctx.owner_key)
+            if not config:
+                continue
+
+            tax_vendor = config.get("tax_vendor")
+            vendor_name = str(tax_vendor) if tax_vendor else None
+            if not vendor_name:
+                continue
+
+            try:
+                await self._api_client.switch_organization(org_id)
+                self._current_org_id = org_id
+                vendors = await self._api_client.list_vendors()
+            except AtlasAPIError as exc:
+                self._logger.warning(
+                    "tax_vendor_list_failed",
+                    org=ctx.name,
+                    error=str(exc),
+                )
+                continue
+
+            await self._ensure_vendor_present(vendors, vendor_name)
 
     def _create_agents(self) -> None:
         """Create all agent instances."""
@@ -570,6 +626,20 @@ class Orchestrator:
                         "salaries",
                         "compensation",
                     ]
+            elif "tax" in normalized:
+                preferred_names = [
+                    "income tax expense",
+                    "income taxes",
+                    "tax expense",
+                    "estimated taxes",
+                    "taxes and licenses",
+                    "taxes & licenses",
+                ]
+                terms = [
+                    "income tax",
+                    "estimated tax",
+                    "taxes",
+                ]
 
             normalized_preferred = {name.strip().lower() for name in preferred_names}
             for account in accounts:
@@ -621,6 +691,156 @@ class Orchestrator:
         if not self._run_id_short:
             return ""
         return f"-R{self._run_id_short}"
+
+    @staticmethod
+    def _quarterly_tax_key(
+        org_id: UUID,
+        tax_year: int,
+        quarter: int,
+    ) -> tuple[UUID, int, int]:
+        return (org_id, tax_year, quarter)
+
+    def _get_quarterly_tax_record(
+        self,
+        org_id: UUID,
+        tax_year: int,
+        quarter: int,
+    ) -> dict[str, str]:
+        return self._quarterly_tax_records.get(
+            self._quarterly_tax_key(org_id, tax_year, quarter),
+            {},
+        )
+
+    def _set_quarterly_tax_record(
+        self,
+        org_id: UUID,
+        tax_year: int,
+        quarter: int,
+        estimate_id: str | None = None,
+        bill_id: str | None = None,
+    ) -> None:
+        key = self._quarterly_tax_key(org_id, tax_year, quarter)
+        record = self._quarterly_tax_records.get(key, {})
+        if estimate_id:
+            record["estimate_id"] = estimate_id
+        if bill_id:
+            record["bill_id"] = bill_id
+        if record:
+            self._quarterly_tax_records[key] = record
+
+    @staticmethod
+    def _find_vendor_id_by_name(
+        vendor_name: str | None,
+        vendors: list[dict[str, Any]],
+    ) -> UUID | None:
+        if not vendors:
+            return None
+        if vendor_name:
+            normalized = vendor_name.strip().lower()
+            for vendor in vendors:
+                name = str(
+                    vendor.get("display_name") or vendor.get("name", "")
+                ).strip().lower()
+                if name == normalized:
+                    try:
+                        return UUID(vendor["id"])
+                    except (KeyError, ValueError, TypeError):
+                        continue
+        return None
+
+    async def _ensure_tax_year_id(self, tax_year: int) -> UUID | None:
+        if not self._api_client:
+            return None
+
+        company_id = self._api_client.current_company_id
+        if not company_id:
+            self._logger.warning(
+                "tax_year_missing_company",
+                tax_year=tax_year,
+            )
+            return None
+
+        try:
+            tax_years = await self._api_client.list_tax_years(company_id=company_id)
+        except AtlasAPIError as exc:
+            self._logger.warning(
+                "tax_year_list_failed",
+                tax_year=tax_year,
+                error=str(exc),
+            )
+            return None
+
+        for item in tax_years:
+            try:
+                if int(item.get("year", 0)) == tax_year:
+                    return UUID(item["id"])
+            except (KeyError, ValueError, TypeError):
+                continue
+
+        try:
+            created = await self._api_client.create_tax_year(
+                company_id=company_id,
+                year=tax_year,
+            )
+        except AtlasAPIError as exc:
+            self._logger.warning(
+                "tax_year_create_failed",
+                tax_year=tax_year,
+                error=str(exc),
+            )
+            return None
+
+        created_id = created.get("id") if isinstance(created, dict) else None
+        if created_id:
+            return UUID(created_id)
+        return None
+
+    async def _ensure_quarterly_estimate(
+        self,
+        tax_year_id: UUID,
+        tax_year: int,
+        quarter: int,
+        estimated_income: Decimal,
+    ) -> dict[str, Any] | None:
+        if not self._api_client:
+            return None
+
+        try:
+            estimates = await self._api_client.list_quarterly_estimates(
+                tax_year_id=tax_year_id
+            )
+        except AtlasAPIError as exc:
+            self._logger.warning(
+                "quarterly_estimate_list_failed",
+                tax_year=tax_year,
+                quarter=quarter,
+                error=str(exc),
+            )
+            return None
+
+        for estimate in estimates:
+            try:
+                if int(estimate.get("quarter", 0)) == quarter:
+                    return estimate
+            except (ValueError, TypeError):
+                continue
+
+        try:
+            created = await self._api_client.create_quarterly_estimate(
+                tax_year_id=tax_year_id,
+                quarter=quarter,
+                estimated_income=str(estimated_income),
+            )
+        except AtlasAPIError as exc:
+            self._logger.warning(
+                "quarterly_estimate_create_failed",
+                tax_year=tax_year,
+                quarter=quarter,
+                error=str(exc),
+            )
+            return None
+
+        return created if isinstance(created, dict) else None
 
     async def _create_invoice(
         self,
@@ -716,10 +936,21 @@ class Orchestrator:
                 )
                 return None
 
+            due_date = sim_date + timedelta(days=30)
+            notes: str | None = None
+            if tx.metadata:
+                due_value = tx.metadata.get("due_date")
+                if isinstance(due_value, str):
+                    with suppress(ValueError):
+                        due_date = date.fromisoformat(due_value)
+                notes_value = tx.metadata.get("notes")
+                if isinstance(notes_value, str) and notes_value.strip():
+                    notes = notes_value.strip()
+
             bill_data = {
                 "vendor_id": str(tx.vendor_id),
                 "bill_date": sim_date.isoformat(),
-                "due_date": (sim_date + timedelta(days=30)).isoformat(),
+                "due_date": due_date.isoformat(),
                 "bill_number": (
                     f"BILL-{sim_date.strftime('%Y%m%d')}-"
                     f"{random.randint(100, 999)}{self._run_suffix()}"
@@ -731,6 +962,8 @@ class Orchestrator:
                     "expense_account_id": expense_account["id"],
                 }],
             }
+            if notes:
+                bill_data["notes"] = notes
             if self._run_id:
                 bill_data["vendor_bill_number"] = f"SIMRUN-{self._run_id}"[:50]
 
@@ -890,6 +1123,279 @@ class Orchestrator:
         self._logger.info("payment_received", org=ctx.name, amount=str(tx.amount))
         return result
 
+    async def _find_quarterly_tax_bill(
+        self,
+        vendor_id: UUID,
+        action: QuarterlyTaxAction,
+    ) -> dict[str, Any] | None:
+        if not self._api_client:
+            return None
+
+        description = (
+            f"Quarterly estimated tax payment Q{action.quarter} {action.tax_year}"
+        )
+        try:
+            bills = await self._api_client.list_bills(status="pending")
+        except AtlasAPIError as exc:
+            self._logger.warning(
+                "quarterly_tax_bill_list_failed",
+                error=str(exc),
+            )
+            return None
+
+        for bill in bills:
+            if bill.get("vendor_id") != str(vendor_id):
+                continue
+            if bill.get("due_date") != action.due_date.isoformat():
+                continue
+            for line in bill.get("lines", []):
+                line_desc = str(line.get("description", ""))
+                if description in line_desc:
+                    return bill
+        return None
+
+    async def _create_quarterly_tax_bill(
+        self,
+        ctx: OrganizationContext,
+        sim_date: date,
+        vendors: list[dict[str, Any]],
+        action: QuarterlyTaxAction,
+    ) -> bool:
+        if not self._api_client:
+            return False
+
+        tax_year_id = await self._ensure_tax_year_id(action.tax_year)
+        if not tax_year_id:
+            return False
+
+        estimate = await self._ensure_quarterly_estimate(
+            tax_year_id=tax_year_id,
+            tax_year=action.tax_year,
+            quarter=action.quarter,
+            estimated_income=action.estimated_income,
+        )
+        if not estimate:
+            return False
+
+        estimate_id = estimate.get("id")
+        if isinstance(estimate_id, str):
+            self._set_quarterly_tax_record(
+                ctx.id, action.tax_year, action.quarter, estimate_id=estimate_id
+            )
+
+        vendor_id = self._find_vendor_id_by_name(action.tax_vendor, vendors)
+        if not vendor_id:
+            self._logger.warning(
+                "quarterly_tax_vendor_missing",
+                org=ctx.name,
+                vendor=action.tax_vendor,
+            )
+            return False
+
+        record = self._get_quarterly_tax_record(ctx.id, action.tax_year, action.quarter)
+        if record.get("bill_id"):
+            self._tx_generator.mark_quarterly_tax_created(
+                ctx.owner_key, action.tax_year, action.quarter
+            )
+            return False
+
+        existing = await self._find_quarterly_tax_bill(vendor_id, action)
+        if existing and existing.get("id"):
+            self._set_quarterly_tax_record(
+                ctx.id,
+                action.tax_year,
+                action.quarter,
+                bill_id=str(existing["id"]),
+            )
+            self._tx_generator.mark_quarterly_tax_created(
+                ctx.owner_key, action.tax_year, action.quarter
+            )
+            return False
+
+        amount_raw = (
+            estimate.get("amount_due")
+            or estimate.get("remaining_due")
+            or estimate.get("total_estimated_tax")
+            or str(action.estimated_tax)
+        )
+        try:
+            amount = Decimal(str(amount_raw)).quantize(Decimal("0.01"))
+        except (ValueError, TypeError):
+            amount = action.estimated_tax
+
+        description = (
+            f"Quarterly estimated tax payment Q{action.quarter} {action.tax_year}"
+        )
+        notes = None
+        if isinstance(estimate_id, str):
+            notes = f"quarterly_estimate_id={estimate_id}"
+
+        tx = GeneratedTransaction(
+            transaction_type=TransactionType.BILL,
+            description=description,
+            amount=amount,
+            vendor_id=vendor_id,
+            metadata={
+                "expense_account_hint": "income tax",
+                "due_date": action.due_date.isoformat(),
+                "notes": notes,
+            },
+        )
+        created = await self._create_bill(ctx, tx, sim_date)
+        if created and created.get("id"):
+            self._set_quarterly_tax_record(
+                ctx.id,
+                action.tax_year,
+                action.quarter,
+                bill_id=str(created["id"]),
+            )
+            self._tx_generator.mark_quarterly_tax_created(
+                ctx.owner_key, action.tax_year, action.quarter
+            )
+            return True
+        return False
+
+    async def _pay_quarterly_tax_bill(
+        self,
+        ctx: OrganizationContext,
+        sim_date: date,
+        vendors: list[dict[str, Any]],
+        action: QuarterlyTaxAction,
+    ) -> bool:
+        if not self._api_client:
+            return False
+
+        tax_year_id = await self._ensure_tax_year_id(action.tax_year)
+        if not tax_year_id:
+            return False
+
+        estimate: dict[str, Any] | None = None
+        record = self._get_quarterly_tax_record(ctx.id, action.tax_year, action.quarter)
+        estimate_id = record.get("estimate_id")
+
+        try:
+            estimates = await self._api_client.list_quarterly_estimates(
+                tax_year_id=tax_year_id
+            )
+        except AtlasAPIError as exc:
+            self._logger.warning(
+                "quarterly_estimate_list_failed",
+                tax_year=action.tax_year,
+                quarter=action.quarter,
+                error=str(exc),
+            )
+            return False
+
+        for item in estimates:
+            try:
+                if int(item.get("quarter", 0)) == action.quarter:
+                    estimate = item
+                    break
+            except (ValueError, TypeError):
+                continue
+
+        if estimate and isinstance(estimate.get("id"), str):
+            estimate_id = estimate["id"]
+            self._set_quarterly_tax_record(
+                ctx.id, action.tax_year, action.quarter, estimate_id=estimate_id
+            )
+
+        if not estimate_id:
+            self._logger.warning(
+                "quarterly_estimate_missing",
+                org=ctx.name,
+                tax_year=action.tax_year,
+                quarter=action.quarter,
+            )
+            return False
+
+        vendor_id = self._find_vendor_id_by_name(action.tax_vendor, vendors)
+        if not vendor_id:
+            self._logger.warning(
+                "quarterly_tax_vendor_missing",
+                org=ctx.name,
+                vendor=action.tax_vendor,
+            )
+            return False
+
+        bill_id = record.get("bill_id")
+        bill = None
+        if bill_id:
+            try:
+                bill = await self._api_client.get_bill(UUID(bill_id))
+            except AtlasAPIError:
+                bill = None
+
+        if not bill:
+            bill = await self._find_quarterly_tax_bill(vendor_id, action)
+            if bill and bill.get("id"):
+                bill_id = str(bill["id"])
+                self._set_quarterly_tax_record(
+                    ctx.id, action.tax_year, action.quarter, bill_id=bill_id
+                )
+
+        if not bill_id:
+            self._logger.warning(
+                "quarterly_tax_bill_missing",
+                org=ctx.name,
+                tax_year=action.tax_year,
+                quarter=action.quarter,
+            )
+            return False
+
+        amount_raw = None
+        if estimate:
+            amount_raw = estimate.get("remaining_due") or estimate.get("amount_due")
+        if amount_raw is None and bill:
+            amount_raw = bill.get("balance") or bill.get("total_amount")
+        if amount_raw is None:
+            amount_raw = str(action.estimated_tax)
+        try:
+            amount = Decimal(str(amount_raw)).quantize(Decimal("0.01"))
+        except (ValueError, TypeError):
+            amount = action.estimated_tax
+
+        try:
+            await self._api_client.create_bill_payment(
+                {
+                    "bill_id": bill_id,
+                    "amount": str(amount),
+                    "payment_date": sim_date.isoformat(),
+                    "payment_method": "check",
+                }
+            )
+        except AtlasAPIError as exc:
+            self._logger.warning(
+                "quarterly_tax_bill_payment_failed",
+                org=ctx.name,
+                tax_year=action.tax_year,
+                quarter=action.quarter,
+                error=str(exc),
+            )
+            return False
+
+        try:
+            await self._api_client.record_quarterly_estimate_payment(
+                estimate_id=UUID(estimate_id),
+                amount=str(amount),
+                payment_date=sim_date,
+                payment_method="check",
+            )
+        except AtlasAPIError as exc:
+            self._logger.warning(
+                "quarterly_estimate_payment_failed",
+                org=ctx.name,
+                tax_year=action.tax_year,
+                quarter=action.quarter,
+                error=str(exc),
+            )
+            return False
+
+        self._tx_generator.mark_quarterly_tax_paid(
+            ctx.owner_key, action.tax_year, action.quarter
+        )
+        return True
+
     # === Task Execution ===
 
     async def run_single_task(self, task: str, org_id: UUID | None = None) -> str:
@@ -976,21 +1482,40 @@ class Orchestrator:
                     current_date=sim_date,
                     vendors=vendors,
                 )
+                quarterly_actions = self._tx_generator.generate_quarterly_tax_actions(
+                    business_key=ctx.owner_key,
+                    current_date=sim_date,
+                )
 
                 bills_created = 0
+                quarterly_created = 0
+                quarterly_paid = 0
                 for tx in recurring + payroll:
                     if tx.transaction_type == TransactionType.BILL:
                         created = await self._create_bill(ctx, tx, sim_date)
                         if created:
                             bills_created += 1
 
-                if bills_created > 0:
+                for action in quarterly_actions:
+                    if action.action == "create":
+                        if await self._create_quarterly_tax_bill(
+                            ctx, sim_date, vendors, action
+                        ):
+                            quarterly_created += 1
+                    elif action.action == "pay" and await self._pay_quarterly_tax_bill(
+                        ctx, sim_date, vendors, action
+                    ):
+                        quarterly_paid += 1
+
+                if bills_created > 0 or quarterly_created > 0 or quarterly_paid > 0:
                     self._event_publisher.publish(
                         agent_speaking(
                             agent_id=self._accountant.id if self._accountant else UUID(int=0),
                             agent_name="Sarah Chen",
                             message=(
-                                f"{ctx.name}: Recorded {bills_created} scheduled bill(s)."
+                                f"{ctx.name}: Recorded {bills_created} scheduled bill(s), "
+                                f"{quarterly_created} quarterly tax bill(s), "
+                                f"{quarterly_paid} quarterly tax payment(s)."
                             ),
                             org_id=org_id,
                         )
@@ -1000,6 +1525,8 @@ class Orchestrator:
                     {
                         "org": ctx.name,
                         "recurring_bills": bills_created,
+                        "quarterly_tax_bills": quarterly_created,
+                        "quarterly_tax_payments": quarterly_paid,
                     }
                 )
 

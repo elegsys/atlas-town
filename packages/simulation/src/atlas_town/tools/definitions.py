@@ -716,6 +716,133 @@ GET_AP_AGING_TOOL: dict[str, Any] = {
     },
 }
 
+# === Tax Form Tools ===
+
+LIST_TAX_YEARS_TOOL: dict[str, Any] = {
+    "name": "list_tax_years",
+    "description": "List tax years for the current company.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "company_id": {
+                "type": "string",
+                "format": "uuid",
+                "description": "Company ID (defaults to current company if omitted)",
+            },
+            "status_filter": {
+                "type": "string",
+                "description": "Optional status filter for tax years",
+            },
+        },
+        "required": [],
+    },
+}
+
+CREATE_TAX_YEAR_TOOL: dict[str, Any] = {
+    "name": "create_tax_year",
+    "description": "Create a tax year for the current company.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "company_id": {
+                "type": "string",
+                "format": "uuid",
+                "description": "Company ID (defaults to current company if omitted)",
+            },
+            "year": {
+                "type": "integer",
+                "description": "Tax year (e.g., 2025)",
+            },
+            "threshold_override": {
+                "type": "string",
+                "description": "Optional threshold override",
+            },
+        },
+        "required": ["year"],
+    },
+}
+
+LIST_QUARTERLY_ESTIMATES_TOOL: dict[str, Any] = {
+    "name": "list_quarterly_estimates",
+    "description": "List quarterly estimated taxes for a tax year.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "tax_year_id": {
+                "type": "string",
+                "format": "uuid",
+                "description": "Tax year ID",
+            },
+            "status_filter": {
+                "type": "string",
+                "description": "Optional status filter for estimates",
+            },
+        },
+        "required": ["tax_year_id"],
+    },
+}
+
+CREATE_QUARTERLY_ESTIMATE_TOOL: dict[str, Any] = {
+    "name": "create_quarterly_estimate",
+    "description": "Create a quarterly estimated tax record.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "tax_year_id": {
+                "type": "string",
+                "format": "uuid",
+                "description": "Tax year ID",
+            },
+            "quarter": {
+                "type": "integer",
+                "description": "Quarter number (1-4)",
+            },
+            "estimated_income": {
+                "type": "string",
+                "description": "Estimated income for the quarter",
+            },
+            "prior_year_tax": {
+                "type": "string",
+                "description": "Optional prior year tax amount",
+            },
+            "prior_year_agi": {
+                "type": "string",
+                "description": "Optional prior year AGI",
+            },
+        },
+        "required": ["tax_year_id", "quarter", "estimated_income"],
+    },
+}
+
+RECORD_QUARTERLY_ESTIMATE_PAYMENT_TOOL: dict[str, Any] = {
+    "name": "record_quarterly_estimate_payment",
+    "description": "Record a payment against a quarterly estimate.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "estimate_id": {
+                "type": "string",
+                "format": "uuid",
+                "description": "Quarterly estimate ID",
+            },
+            "amount": {
+                "type": "string",
+                "description": "Payment amount",
+            },
+            "payment_date": {
+                "type": "string",
+                "format": "date",
+                "description": "Payment date (YYYY-MM-DD)",
+            },
+            "payment_method": {
+                "type": "string",
+                "description": "Payment method (optional)",
+            },
+        },
+        "required": ["estimate_id", "amount", "payment_date"],
+    },
+}
+
 # === Bank Transaction Tools ===
 
 LIST_BANK_TRANSACTIONS_TOOL: dict[str, Any] = {
@@ -837,6 +964,12 @@ ACCOUNTANT_TOOLS: list[dict[str, Any]] = [
     GET_BALANCE_SHEET_TOOL,
     GET_AR_AGING_TOOL,
     GET_AP_AGING_TOOL,
+    # Tax Forms
+    LIST_TAX_YEARS_TOOL,
+    CREATE_TAX_YEAR_TOOL,
+    LIST_QUARTERLY_ESTIMATES_TOOL,
+    CREATE_QUARTERLY_ESTIMATE_TOOL,
+    RECORD_QUARTERLY_ESTIMATE_PAYMENT_TOOL,
     # Bank Transactions
     LIST_BANK_TRANSACTIONS_TOOL,
     CATEGORIZE_BANK_TRANSACTION_TOOL,
