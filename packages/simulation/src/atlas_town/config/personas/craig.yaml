@@ -56,6 +56,26 @@ day_patterns:
   saturday: 0.4
   sunday: 0.3
 
+employees:
+  - role: "Crew Member"
+    count: 4
+    pay_rate: 20.00
+    hours_per_week: 40
+  - role: "Crew Lead"
+    count: 1
+    pay_rate: 26.00
+    hours_per_week: 40
+  - role: "Office Admin"
+    count: 1
+    pay_rate: 19.00
+    hours_per_week: 20
+
+payroll:
+  frequency: "bi-weekly"
+  pay_day: "friday"
+  payroll_vendor: "Atlas Payroll Services"
+  tax_authority: "IRS Payroll Taxes"
+
 recurring_transactions:
   - name: "Equipment Yard Lease"
     vendor: "Equipment Yard Lease"

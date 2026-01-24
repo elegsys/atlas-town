@@ -60,6 +60,26 @@ day_patterns:
   saturday: 0.2
   sunday: 0.1
 
+employees:
+  - role: "Senior Consultant"
+    count: 2
+    pay_rate: 65.00
+    hours_per_week: 30
+  - role: "Junior Consultant"
+    count: 1
+    pay_rate: 45.00
+    hours_per_week: 30
+  - role: "Operations Admin"
+    count: 1
+    pay_rate: 28.00
+    hours_per_week: 20
+
+payroll:
+  frequency: "monthly"
+  pay_day: "friday"
+  payroll_vendor: "Nexus Payroll Services"
+  tax_authority: "IRS Payroll Taxes"
+
 recurring_transactions:
   - name: "Office Rent"
     vendor: "Coworking Space LLC"

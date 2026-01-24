@@ -181,3 +181,102 @@ def load_persona_recurring_transactions() -> dict[str, list[dict[str, Any]]]:
             recurring_by_persona[path.stem] = normalized
 
     return recurring_by_persona
+
+
+@lru_cache
+def load_persona_employees() -> dict[str, list[dict[str, Any]]]:
+    """Load employee configs from persona YAML files.
+
+    Returns:
+        Mapping of persona key (filename stem) to employee config list.
+    """
+    personas_dir = Path(__file__).resolve().parent / "personas"
+    if not personas_dir.exists():
+        return {}
+
+    employees_by_persona: dict[str, list[dict[str, Any]]] = {}
+
+    for path in sorted(personas_dir.glob("*.yaml")):
+        raw = path.read_text(encoding="utf-8")
+        data = yaml.safe_load(raw) or {}
+        employees = data.get("employees")
+
+        if employees is None:
+            continue
+        if not isinstance(employees, list):
+            raise ValueError(f"{path.name}: employees must be a list")
+
+        normalized: list[dict[str, Any]] = []
+        for idx, item in enumerate(employees):
+            if not isinstance(item, dict):
+                raise ValueError(f"{path.name}: employees[{idx}] must be a mapping")
+
+            role = item.get("role")
+            count = item.get("count", 1)
+            pay_rate = item.get("pay_rate")
+            hours = item.get("hours_per_week")
+
+            if not role:
+                raise ValueError(f"{path.name}: employees[{idx}] missing role")
+            if pay_rate is None or hours is None:
+                raise ValueError(
+                    f"{path.name}: employees[{idx}] missing pay_rate/hours_per_week"
+                )
+            if not isinstance(count, int) or count < 1:
+                raise ValueError(
+                    f"{path.name}: employees[{idx}] count must be >= 1"
+                )
+
+            normalized.append(
+                {
+                    "role": str(role),
+                    "count": count,
+                    "pay_rate": pay_rate,
+                    "hours_per_week": hours,
+                }
+            )
+
+        if normalized:
+            employees_by_persona[path.stem] = normalized
+
+    return employees_by_persona
+
+
+@lru_cache
+def load_persona_payroll_configs() -> dict[str, dict[str, Any]]:
+    """Load payroll configs from persona YAML files.
+
+    Returns:
+        Mapping of persona key (filename stem) to payroll config dict.
+    """
+    personas_dir = Path(__file__).resolve().parent / "personas"
+    if not personas_dir.exists():
+        return {}
+
+    payroll_by_persona: dict[str, dict[str, Any]] = {}
+
+    for path in sorted(personas_dir.glob("*.yaml")):
+        raw = path.read_text(encoding="utf-8")
+        data = yaml.safe_load(raw) or {}
+        payroll = data.get("payroll")
+
+        if payroll is None:
+            continue
+        if not isinstance(payroll, dict):
+            raise ValueError(f"{path.name}: payroll must be a mapping")
+
+        frequency = payroll.get("frequency", "bi-weekly")
+        pay_day = payroll.get("pay_day", "friday")
+        payroll_vendor = payroll.get("payroll_vendor")
+        tax_authority = payroll.get("tax_authority")
+
+        payroll_by_persona[path.stem] = {
+            "frequency": str(frequency),
+            "pay_day": pay_day,
+            "payroll_vendor": str(payroll_vendor)
+            if payroll_vendor is not None
+            else None,
+            "tax_authority": str(tax_authority) if tax_authority is not None else None,
+        }
+
+    return payroll_by_persona

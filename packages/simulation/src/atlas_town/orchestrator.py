@@ -809,9 +809,14 @@ class Orchestrator:
                     current_date=sim_date,
                     vendors=vendors,
                 )
+                payroll = self._tx_generator.generate_payroll_transactions(
+                    business_key=ctx.owner_key,
+                    current_date=sim_date,
+                    vendors=vendors,
+                )
 
                 bills_created = 0
-                for tx in recurring:
+                for tx in recurring + payroll:
                     if tx.transaction_type == TransactionType.BILL:
                         created = await self._create_bill(ctx, tx, sim_date)
                         if created:
@@ -823,7 +828,7 @@ class Orchestrator:
                             agent_id=self._accountant.id if self._accountant else UUID(int=0),
                             agent_name="Sarah Chen",
                             message=(
-                                f"{ctx.name}: Recorded {bills_created} recurring bill(s)."
+                                f"{ctx.name}: Recorded {bills_created} scheduled bill(s)."
                             ),
                             org_id=org_id,
                         )

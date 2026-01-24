@@ -6,7 +6,7 @@ day of week, and seasonal patterns.
 
 import random
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from enum import Enum
 from typing import Any
@@ -15,7 +15,10 @@ from uuid import UUID
 import structlog
 
 from atlas_town.config.personas_loader import (
+    WEEKDAY_NAME_TO_INDEX,
     load_persona_day_patterns,
+    load_persona_employees,
+    load_persona_payroll_configs,
     load_persona_recurring_transactions,
 )
 from atlas_town.scheduler import DayPhase, PHASE_TIMES
@@ -172,6 +175,233 @@ class RecurringTransactionScheduler:
             self._last_generated[key] = current_date
 
         return results
+
+
+@dataclass(frozen=True)
+class EmployeeSpec:
+    """Employee configuration for payroll simulation."""
+
+    role: str
+    count: int
+    pay_rate: Decimal
+    hours_per_week: Decimal
+
+
+@dataclass(frozen=True)
+class PayrollConfig:
+    """Payroll scheduling configuration."""
+
+    frequency: str  # weekly, bi-weekly, monthly
+    pay_day: str | int
+    payroll_vendor: str | None
+    tax_authority: str | None
+
+
+class PayrollGenerator:
+    """Generate payroll expense and tax deposit bills."""
+
+    _SOCIAL_SECURITY = Decimal("0.062")
+    _MEDICARE = Decimal("0.0145")
+    _WITHHOLDING = Decimal("0.12")
+    _SEMI_WEEKLY_THRESHOLD = Decimal("5000")
+
+    def __init__(
+        self,
+        employees_by_business: dict[str, list[EmployeeSpec]],
+        payroll_by_business: dict[str, PayrollConfig],
+    ) -> None:
+        self._employees_by_business = employees_by_business
+        self._payroll_by_business = payroll_by_business
+        self._last_pay_date: dict[str, date] = {}
+        self._tax_due_by_date: dict[str, dict[date, Decimal]] = {}
+        self._logger = logger.bind(component="payroll_generator")
+
+    def _normalize_frequency(self, frequency: str) -> str:
+        normalized = frequency.strip().lower().replace("_", "-")
+        if normalized == "biweekly":
+            normalized = "bi-weekly"
+        if normalized not in {"weekly", "bi-weekly", "monthly"}:
+            self._logger.warning("payroll_invalid_frequency", frequency=frequency)
+            return "bi-weekly"
+        return normalized
+
+    def _weekday_index(self, pay_day: Any) -> int | None:
+        if isinstance(pay_day, int):
+            return None
+        if isinstance(pay_day, str):
+            return WEEKDAY_NAME_TO_INDEX.get(pay_day.strip().lower())
+        return None
+
+    def _last_weekday_of_month(self, year: int, month: int, weekday: int) -> date:
+        if month == 12:
+            next_month = date(year + 1, 1, 1)
+        else:
+            next_month = date(year, month + 1, 1)
+        last_day = next_month - timedelta(days=1)
+        offset = (last_day.weekday() - weekday) % 7
+        return last_day - timedelta(days=offset)
+
+    def _payroll_due(self, business_key: str, current_date: date) -> bool:
+        employees = self._employees_by_business.get(business_key)
+        config = self._payroll_by_business.get(business_key)
+        if not employees or not config:
+            return False
+
+        frequency = self._normalize_frequency(config.frequency)
+        last_date = self._last_pay_date.get(business_key)
+
+        if frequency in {"weekly", "bi-weekly"}:
+            weekday = self._weekday_index(config.pay_day)
+            if weekday is None:
+                return False
+            if current_date.weekday() != weekday:
+                return False
+            if last_date is None:
+                return True
+            gap = (current_date - last_date).days
+            return gap >= (14 if frequency == "bi-weekly" else 7)
+
+        # Monthly
+        if last_date and last_date.year == current_date.year and last_date.month == current_date.month:
+            return False
+
+        if isinstance(config.pay_day, int):
+            return current_date.day == config.pay_day
+
+        weekday = self._weekday_index(config.pay_day)
+        if weekday is None:
+            return False
+        return current_date == self._last_weekday_of_month(
+            current_date.year, current_date.month, weekday
+        )
+
+    def _calculate_gross_pay(self, employees: list[EmployeeSpec], frequency: str) -> Decimal:
+        weeks = Decimal("1")
+        if frequency == "bi-weekly":
+            weeks = Decimal("2")
+        elif frequency == "monthly":
+            weeks = Decimal("4")
+
+        total = Decimal("0")
+        for emp in employees:
+            total += emp.pay_rate * emp.hours_per_week * weeks * Decimal(emp.count)
+        return total.quantize(Decimal("0.01"))
+
+    def _schedule_tax_deposit(
+        self, business_key: str, pay_date: date, tax_amount: Decimal, gross: Decimal
+    ) -> None:
+        if tax_amount <= 0:
+            return
+        if gross >= self._SEMI_WEEKLY_THRESHOLD:
+            due_date = pay_date + timedelta(days=3)
+        else:
+            month = pay_date.month + 1
+            year = pay_date.year
+            if month > 12:
+                month = 1
+                year += 1
+            due_date = date(year, month, 15)
+
+        business_due = self._tax_due_by_date.setdefault(business_key, {})
+        business_due[due_date] = business_due.get(due_date, Decimal("0")) + tax_amount
+
+    def _find_vendor_id(
+        self, vendor_name: str | None, vendors: list[dict[str, Any]]
+    ) -> UUID | None:
+        if not vendors:
+            return None
+        if vendor_name:
+            normalized = vendor_name.strip().lower()
+            for vendor in vendors:
+                name = str(vendor.get("name", "")).strip().lower()
+                if name == normalized:
+                    try:
+                        return UUID(vendor["id"])
+                    except (KeyError, ValueError, TypeError):
+                        continue
+        try:
+            return UUID(vendors[0]["id"])
+        except (KeyError, ValueError, TypeError):
+            return None
+
+    def get_due_transactions(
+        self,
+        business_key: str,
+        current_date: date,
+        vendors: list[dict[str, Any]],
+    ) -> list[GeneratedTransaction]:
+        """Return payroll and tax deposit transactions due on the given date."""
+        transactions: list[GeneratedTransaction] = []
+        employees = self._employees_by_business.get(business_key, [])
+        config = self._payroll_by_business.get(business_key)
+        if not employees or not config:
+            return transactions
+
+        frequency = self._normalize_frequency(config.frequency)
+
+        # Payroll run
+        if self._payroll_due(business_key, current_date):
+            gross = self._calculate_gross_pay(employees, frequency)
+            if gross > 0:
+                ss = (gross * self._SOCIAL_SECURITY).quantize(Decimal("0.01"))
+                medicare = (gross * self._MEDICARE).quantize(Decimal("0.01"))
+                withholding = (gross * self._WITHHOLDING).quantize(Decimal("0.01"))
+                taxes = ss + medicare + withholding
+
+                vendor_id = self._find_vendor_id(config.payroll_vendor, vendors)
+                if vendor_id is None and vendors:
+                    self._logger.warning(
+                        "payroll_vendor_fallback",
+                        business=business_key,
+                        vendor=config.payroll_vendor,
+                    )
+
+                if vendor_id:
+                    role_summary = ", ".join(
+                        f"{emp.count} {emp.role}" for emp in employees
+                    )
+                    transactions.append(
+                        GeneratedTransaction(
+                            transaction_type=TransactionType.BILL,
+                            description=f"Payroll ({frequency}) - {role_summary}",
+                            amount=gross,
+                            vendor_id=vendor_id,
+                            metadata={
+                                "payroll_gross": str(gross),
+                                "tax_social_security": str(ss),
+                                "tax_medicare": str(medicare),
+                                "tax_withholding": str(withholding),
+                            },
+                        )
+                    )
+
+                self._schedule_tax_deposit(business_key, current_date, taxes, gross)
+                self._last_pay_date[business_key] = current_date
+
+        # Tax deposit due today
+        due_map = self._tax_due_by_date.get(business_key, {})
+        tax_amount = due_map.pop(current_date, None)
+        if tax_amount and tax_amount > 0:
+            tax_vendor_id = self._find_vendor_id(config.tax_authority, vendors)
+            if tax_vendor_id is None and vendors:
+                self._logger.warning(
+                    "payroll_tax_vendor_fallback",
+                    business=business_key,
+                    vendor=config.tax_authority,
+                )
+
+            if tax_vendor_id:
+                transactions.append(
+                    GeneratedTransaction(
+                        transaction_type=TransactionType.BILL,
+                        description="Payroll tax deposit",
+                        amount=tax_amount.quantize(Decimal("0.01")),
+                        vendor_id=tax_vendor_id,
+                        metadata={"tax_deposit": "payroll"},
+                    )
+                )
+
+        return transactions
 
 
 # ============================================================================
@@ -562,6 +792,10 @@ class TransactionGenerator:
         self._recurring_scheduler = RecurringTransactionScheduler(
             self._load_recurring_transactions()
         )
+        self._payroll_generator = PayrollGenerator(
+            self._load_employee_configs(),
+            self._load_payroll_configs(),
+        )
 
     def _load_recurring_transactions(
         self,
@@ -601,6 +835,59 @@ class TransactionGenerator:
 
         return recurring
 
+    def _load_employee_configs(self) -> dict[str, list[EmployeeSpec]]:
+        """Load and normalize employee configs from persona files."""
+        raw = load_persona_employees()
+        employees_by_business: dict[str, list[EmployeeSpec]] = {}
+
+        for business_key, items in raw.items():
+            specs: list[EmployeeSpec] = []
+            for item in items:
+                try:
+                    pay_rate = Decimal(str(item["pay_rate"]))
+                    hours = Decimal(str(item["hours_per_week"]))
+                    count = int(item["count"])
+                except (KeyError, ValueError, TypeError) as exc:
+                    raise ValueError(
+                        f"Employee config invalid for {business_key}: {item!r}"
+                    ) from exc
+
+                specs.append(
+                    EmployeeSpec(
+                        role=str(item["role"]),
+                        count=count,
+                        pay_rate=pay_rate,
+                        hours_per_week=hours,
+                    )
+                )
+
+            if specs:
+                employees_by_business[business_key] = specs
+
+        return employees_by_business
+
+    def _load_payroll_configs(self) -> dict[str, PayrollConfig]:
+        """Load payroll configs, defaulting where employees exist."""
+        raw = load_persona_payroll_configs()
+        employees = load_persona_employees()
+        payroll_by_business: dict[str, PayrollConfig] = {}
+
+        for business_key in set(employees.keys()) | set(raw.keys()):
+            config = raw.get(business_key, {})
+            frequency = str(config.get("frequency", "bi-weekly"))
+            pay_day = config.get("pay_day", "friday")
+            payroll_vendor = config.get("payroll_vendor")
+            tax_authority = config.get("tax_authority")
+
+            payroll_by_business[business_key] = PayrollConfig(
+                frequency=frequency,
+                pay_day=pay_day,
+                payroll_vendor=str(payroll_vendor) if payroll_vendor is not None else None,
+                tax_authority=str(tax_authority) if tax_authority is not None else None,
+            )
+
+        return payroll_by_business
+
     def generate_recurring_transactions(
         self,
         business_key: str,
@@ -609,6 +896,19 @@ class TransactionGenerator:
     ) -> list[GeneratedTransaction]:
         """Generate recurring transactions for a business on the given date."""
         return self._recurring_scheduler.get_due_transactions(
+            business_key=business_key,
+            current_date=current_date,
+            vendors=vendors,
+        )
+
+    def generate_payroll_transactions(
+        self,
+        business_key: str,
+        current_date: date,
+        vendors: list[dict[str, Any]],
+    ) -> list[GeneratedTransaction]:
+        """Generate payroll and tax deposit transactions for a business."""
+        return self._payroll_generator.get_due_transactions(
             business_key=business_key,
             current_date=current_date,
             vendors=vendors,

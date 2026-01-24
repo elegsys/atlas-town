@@ -147,6 +147,8 @@ VENDORS = {
         {"display_name": "Home Depot Pro", "email": "pro@homedepotpro.com", "payment_terms": "net_30"},
         {"display_name": "Irrigation Supply Co", "email": "sales@irrigationsupply.com", "payment_terms": "net_30"},
         {"display_name": "Workers Comp Insurance", "email": "billing@workerscomp.com", "payment_terms": "net_30"},
+        {"display_name": "Atlas Payroll Services", "email": "payroll@atlaspayroll.com", "payment_terms": "net_15"},
+        {"display_name": "IRS Payroll Taxes", "email": "payroll@irs.gov", "payment_terms": "net_15"},
     ],
     "tony": [
         {"display_name": "Sysco Food Services", "email": "orders@syscofood.com", "payment_terms": "net_15"},
@@ -155,6 +157,8 @@ VENDORS = {
         {"display_name": "Restaurant Depot", "email": "orders@restaurantdepot.com", "payment_terms": "due_on_receipt"},
         {"display_name": "Atlas Gas Electric", "email": "business@atlasge.com", "payment_terms": "net_30"},
         {"display_name": "POS Systems Inc", "email": "support@possystems.com", "payment_terms": "net_30"},
+        {"display_name": "Atlas Payroll Services", "email": "payroll@atlaspayroll.com", "payment_terms": "net_15"},
+        {"display_name": "IRS Payroll Taxes", "email": "payroll@irs.gov", "payment_terms": "net_15"},
     ],
     "maya": [
         {"display_name": "Amazon Web Services", "email": "billing@awscloud.com", "payment_terms": "due_on_receipt"},
@@ -163,6 +167,8 @@ VENDORS = {
         {"display_name": "GitHub Enterprise", "email": "billing@githubenterprise.com", "payment_terms": "due_on_receipt"},
         {"display_name": "WeWork Office Space", "email": "billing@weworkspace.com", "payment_terms": "net_30"},
         {"display_name": "E&O Insurance", "email": "billing@eoinsurance.com", "payment_terms": "net_30"},
+        {"display_name": "Nexus Payroll Services", "email": "payroll@nexuspayroll.com", "payment_terms": "net_15"},
+        {"display_name": "IRS Payroll Taxes", "email": "payroll@irs.gov", "payment_terms": "net_15"},
     ],
     "chen": [
         {"display_name": "Henry Schein Dental", "email": "orders@henryschein.com", "payment_terms": "net_30"},
@@ -171,6 +177,8 @@ VENDORS = {
         {"display_name": "Sterilization Services", "email": "service@sterilize.com", "payment_terms": "net_30"},
         {"display_name": "Medical Waste Solutions", "email": "pickup@medwaste.com", "payment_terms": "net_30"},
         {"display_name": "Dental Malpractice Ins", "email": "billing@dentalmalpractice.com", "payment_terms": "net_30"},
+        {"display_name": "Dental Payroll Co", "email": "payroll@dentalpayroll.com", "payment_terms": "net_15"},
+        {"display_name": "IRS Payroll Taxes", "email": "payroll@irs.gov", "payment_terms": "net_15"},
     ],
     "marcus": [
         {"display_name": "MLS Listing Service", "email": "billing@mlslisting.com", "payment_terms": "due_on_receipt"},
@@ -179,6 +187,8 @@ VENDORS = {
         {"display_name": "Professional Photos", "email": "booking@prophotos.com", "payment_terms": "due_on_receipt"},
         {"display_name": "Atlas Title Company", "email": "closings@atlastitle.com", "payment_terms": "net_30"},
         {"display_name": "E&O Insurance Brokers", "email": "billing@eobrokers.com", "payment_terms": "net_30"},
+        {"display_name": "Harbor Payroll Services", "email": "payroll@harborpayroll.com", "payment_terms": "net_15"},
+        {"display_name": "IRS Payroll Taxes", "email": "payroll@irs.gov", "payment_terms": "net_15"},
     ],
 }
 

@@ -59,6 +59,26 @@ day_patterns:
   saturday: 0.3
   sunday: 0.0
 
+employees:
+  - role: "Dental Hygienist"
+    count: 2
+    pay_rate: 32.00
+    hours_per_week: 32
+  - role: "Dental Assistant"
+    count: 2
+    pay_rate: 20.00
+    hours_per_week: 32
+  - role: "Front Desk"
+    count: 1
+    pay_rate: 19.00
+    hours_per_week: 35
+
+payroll:
+  frequency: "bi-weekly"
+  pay_day: "friday"
+  payroll_vendor: "Dental Payroll Co"
+  tax_authority: "IRS Payroll Taxes"
+
 recurring_transactions:
   - name: "Office Rent"
     vendor: "Medical Plaza Properties"

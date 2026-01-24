@@ -64,6 +64,26 @@ day_patterns:
   saturday: 1.5
   sunday: 0.9
 
+employees:
+  - role: "Kitchen Staff"
+    count: 3
+    pay_rate: 18.00
+    hours_per_week: 35
+  - role: "Server"
+    count: 2
+    pay_rate: 15.00
+    hours_per_week: 25
+  - role: "Shift Manager"
+    count: 1
+    pay_rate: 22.00
+    hours_per_week: 40
+
+payroll:
+  frequency: "bi-weekly"
+  pay_day: "friday"
+  payroll_vendor: "Atlas Payroll Services"
+  tax_authority: "IRS Payroll Taxes"
+
 recurring_transactions:
   - name: "Restaurant Rent"
     vendor: "Downtown Properties LLC"

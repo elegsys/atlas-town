@@ -56,6 +56,22 @@ day_patterns:
   saturday: 1.4
   sunday: 1.2
 
+employees:
+  - role: "Office Manager"
+    count: 1
+    pay_rate: 24.00
+    hours_per_week: 35
+  - role: "Marketing Assistant"
+    count: 1
+    pay_rate: 22.00
+    hours_per_week: 30
+
+payroll:
+  frequency: "bi-weekly"
+  pay_day: "friday"
+  payroll_vendor: "Harbor Payroll Services"
+  tax_authority: "IRS Payroll Taxes"
+
 recurring_transactions:
   - name: "Office Rent"
     vendor: "Office Space Partners"
