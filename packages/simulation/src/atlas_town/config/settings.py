@@ -159,6 +159,9 @@ class FlatSettings(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = Field(
         default="INFO", validation_alias="LOG_LEVEL"
     )
+    simulation_run_id: str | None = Field(
+        default=None, validation_alias="SIMULATION_RUN_ID"
+    )
 
 
 @lru_cache

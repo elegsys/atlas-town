@@ -31,6 +31,10 @@ Thumbs.db
 *.log
 npm-debug.log*
 
+# Simulation outputs
+packages/simulation/simulation_*.csv
+packages/simulation/simulation_run_id.txt
+
 # Testing
 .coverage
 htmlcov/

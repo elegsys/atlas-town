@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from enum import Enum
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import structlog
 
@@ -150,12 +150,16 @@ class Orchestrator:
         # State
         self._is_initialized = False
         self._current_org_id: UUID | None = None
+        self._run_id = settings.simulation_run_id or str(uuid4())
+        self._run_id_short = self._run_id.split("-")[0]
 
         # Account cache per org (for payment endpoints that need AR, AP, deposit accounts)
         self._account_cache: dict[UUID, dict[str, Any]] = {}
 
         # Logging
-        self._logger = logger.bind(component="orchestrator", mode=mode.value)
+        self._logger = logger.bind(
+            component="orchestrator", mode=mode.value, sim_run_id=self._run_id
+        )
 
     async def __aenter__(self) -> "Orchestrator":
         """Initialize the orchestrator."""
@@ -189,6 +193,7 @@ class Orchestrator:
             self._accounting_workflow = AccountingWorkflow(
                 api_client=self._api_client,
                 transaction_generator=self._tx_generator,
+                run_id=self._run_id,
             )
             self._logger.info("accounting_workflow_initialized", mode=self._mode.value)
 
@@ -467,6 +472,16 @@ class Orchestrator:
         base_date = date.today() - timedelta(days=30)  # Start 30 days ago
         return base_date + timedelta(days=self._scheduler.current_time.day - 1)
 
+    def _run_note(self) -> str | None:
+        if not self._run_id:
+            return None
+        return f"sim_run_id={self._run_id}"
+
+    def _run_suffix(self) -> str:
+        if not self._run_id_short:
+            return ""
+        return f"-R{self._run_id_short}"
+
     async def _create_invoice(
         self,
         ctx: OrganizationContext,
@@ -502,6 +517,9 @@ class Orchestrator:
                     "revenue_account_id": revenue_account["id"],
                 }],
             }
+            run_note = self._run_note()
+            if run_note:
+                invoice_data["notes"] = run_note
 
             result = await self._api_client.create_invoice(invoice_data)
 
@@ -557,7 +575,10 @@ class Orchestrator:
                 "vendor_id": str(tx.vendor_id),
                 "bill_date": sim_date.isoformat(),
                 "due_date": (sim_date + timedelta(days=30)).isoformat(),
-                "bill_number": f"BILL-{sim_date.strftime('%Y%m%d')}-{random.randint(100, 999)}",
+                "bill_number": (
+                    f"BILL-{sim_date.strftime('%Y%m%d')}-"
+                    f"{random.randint(100, 999)}{self._run_suffix()}"
+                )[:30],
                 "lines": [{
                     "description": tx.description,
                     "quantity": "1",
@@ -565,6 +586,8 @@ class Orchestrator:
                     "expense_account_id": expense_account["id"],
                 }],
             }
+            if self._run_id:
+                bill_data["vendor_bill_number"] = f"SIMRUN-{self._run_id}"[:50]
 
             result = await self._api_client.create_bill(bill_data)
 
@@ -664,7 +687,9 @@ class Orchestrator:
                 "payment_date": self._get_simulation_date().isoformat(),
                 "payment_method": "check",
                 "deposit_account_id": deposit_account_id,
-                "reference_number": f"PMT-{random.randint(10000, 99999)}",
+                "reference_number": (
+                    f"PMT-{random.randint(10000, 99999)}{self._run_suffix()}"
+                )[:100],
             }
 
             result = await self._api_client.create_payment(
@@ -847,6 +872,7 @@ class Orchestrator:
                     vendors=vendors,
                     current_hour=self._scheduler.current_time.hour,
                     current_phase=phase.value,
+                    hourly=True,
                 )
 
                 # Process invoices and sales
@@ -940,6 +966,7 @@ class Orchestrator:
                     pending_invoices=pending_invoices,
                     current_hour=self._scheduler.current_time.hour,
                     current_phase=phase.value,
+                    hourly=True,
                 )
 
                 bills_created = 0
@@ -1163,6 +1190,7 @@ Please provide specific recommendations for addressing each issue."""
             vendors=vendors,
             current_hour=self._scheduler.current_time.hour,
             current_phase=phase.value,
+            hourly=True,
         )
 
         # Process cash sales and invoices (dinner rush)
@@ -1225,6 +1253,7 @@ Please provide specific recommendations for addressing each issue."""
                     vendors=vendors,
                     current_hour=self._scheduler.current_time.hour,
                     current_phase=phase.value,
+                    hourly=True,
                 )
 
                 # Process late-night cash sales

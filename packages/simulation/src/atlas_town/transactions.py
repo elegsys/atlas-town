@@ -18,6 +18,7 @@ from atlas_town.config.personas_loader import (
     load_persona_day_patterns,
     load_persona_recurring_transactions,
 )
+from atlas_town.scheduler import DayPhase, PHASE_TIMES
 
 logger = structlog.get_logger(__name__)
 
@@ -667,6 +668,7 @@ class TransactionGenerator:
         current_hour: int | None = None,
         current_phase: str | None = None,
         business_key: str | None = None,
+        base_probability: float | None = None,
     ) -> bool:
         """Determine if a transaction should be generated based on probability.
 
@@ -697,7 +699,7 @@ class TransactionGenerator:
                     return False
 
         # Calculate probability with modifiers
-        probability = pattern.probability
+        probability = base_probability if base_probability is not None else pattern.probability
 
         # Apply day-of-week multiplier (business-wide pattern)
         if business_key:
@@ -719,6 +721,26 @@ class TransactionGenerator:
             probability *= seasonal_mult
 
         return self._rng.random() < probability
+
+    @staticmethod
+    def _is_hour_active(hour: int, active_hours: tuple[int, int]) -> bool:
+        start_h, end_h = active_hours
+        if start_h <= end_h:
+            return start_h <= hour < end_h
+        return hour >= start_h or hour < end_h
+
+    @staticmethod
+    def _get_phase_hours(phase_name: str | None) -> list[int]:
+        if not phase_name:
+            return []
+        try:
+            phase = DayPhase(phase_name)
+        except ValueError:
+            return []
+        start_h, end_h = PHASE_TIMES[phase]
+        if start_h <= end_h:
+            return list(range(start_h, end_h))
+        return list(range(start_h, 24)) + list(range(0, end_h))
 
     def _generate_amount(self, pattern: TransactionPattern) -> Decimal:
         """Generate a random amount within the pattern's range."""
@@ -745,6 +767,7 @@ class TransactionGenerator:
         pending_invoices: list[dict[str, Any]] | None = None,
         current_hour: int | None = None,
         current_phase: str | None = None,
+        hourly: bool = False,
     ) -> list[GeneratedTransaction]:
         """Generate transactions for a business for one day.
 
@@ -756,12 +779,123 @@ class TransactionGenerator:
             pending_invoices: Optional list of unpaid invoices for payment generation
             current_hour: Optional hour (0-23) for time-based transaction patterns
             current_phase: Optional phase name (e.g., "evening") for phase multipliers
+            hourly: If true, generate transactions per hour across the phase
 
         Returns:
             List of transactions to create
         """
         patterns = BUSINESS_PATTERNS.get(business_key, [])
         transactions = []
+
+        if hourly:
+            hours = self._get_phase_hours(current_phase)
+            if not hours and current_hour is not None:
+                hours = [current_hour]
+            if not hours:
+                return transactions
+
+            pattern_hour_sets: list[tuple[TransactionPattern, set[int], float]] = []
+            for pattern in patterns:
+                if pattern.active_hours:
+                    active_hours = [
+                        hour
+                        for hour in hours
+                        if self._is_hour_active(hour, pattern.active_hours)
+                    ]
+                else:
+                    active_hours = hours
+                if not active_hours:
+                    continue
+                base_probability = pattern.probability / len(active_hours)
+                pattern_hour_sets.append((pattern, set(active_hours), base_probability))
+
+            for hour in hours:
+                self._logger.debug(
+                    "generating_transactions",
+                    business=business_key,
+                    date=current_date.isoformat(),
+                    pattern_count=len(patterns),
+                    hour=hour,
+                    phase=current_phase,
+                )
+
+                hour_transactions: list[GeneratedTransaction] = []
+                for pattern, active_hours, base_probability in pattern_hour_sets:
+                    if hour not in active_hours:
+                        continue
+                    if not self._should_generate(
+                        pattern,
+                        current_date,
+                        hour,
+                        current_phase,
+                        business_key,
+                        base_probability=base_probability,
+                    ):
+                        continue
+
+                    # Handle payment transactions specially
+                    if pattern.transaction_type == TransactionType.PAYMENT_RECEIVED:
+                        if pending_invoices:
+                            invoice = self._rng.choice(pending_invoices)
+                            amount = Decimal(
+                                str(invoice.get("balance", invoice.get("total", "100.00")))
+                            )
+                            invoice_number = invoice.get("invoice_number", "N/A")
+                            customer_id_value = (
+                                UUID(invoice["customer_id"])
+                                if invoice.get("customer_id")
+                                else None
+                            )
+                            hour_transactions.append(
+                                GeneratedTransaction(
+                                    transaction_type=pattern.transaction_type,
+                                    description=f"Payment received - Invoice #{invoice_number}",
+                                    amount=amount,
+                                    customer_id=customer_id_value,
+                                    metadata={"invoice_id": invoice.get("id")},
+                                )
+                            )
+                        continue
+
+                    # Generate regular transaction
+                    description = self._fill_template(pattern.description_template)
+                    amount = self._generate_amount(pattern)
+
+                    # Assign customer or vendor
+                    customer_id = None
+                    vendor_id = None
+
+                    if pattern.transaction_type in [
+                        TransactionType.INVOICE,
+                        TransactionType.CASH_SALE,
+                    ]:
+                        if customers:
+                            customer = self._rng.choice(customers)
+                            customer_id = UUID(customer["id"])
+                    elif pattern.transaction_type == TransactionType.BILL and vendors:
+                        vendor = self._rng.choice(vendors)
+                        vendor_id = UUID(vendor["id"])
+
+                    hour_transactions.append(
+                        GeneratedTransaction(
+                            transaction_type=pattern.transaction_type,
+                            description=description,
+                            amount=amount,
+                            customer_id=customer_id,
+                            vendor_id=vendor_id,
+                        )
+                    )
+
+                self._logger.info(
+                    "transactions_generated",
+                    business=business_key,
+                    count=len(hour_transactions),
+                    hour=hour,
+                    phase=current_phase,
+                )
+                transactions.extend(hour_transactions)
+
+            return transactions
 
         self._logger.debug(
             "generating_transactions",

@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any, TypedDict
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import structlog
 
@@ -111,12 +111,25 @@ class AccountingWorkflow:
         self,
         api_client: AtlasAPIClient,
         transaction_generator: TransactionGenerator | None = None,
+        run_id: str | None = None,
     ):
         self._api = api_client
         self._tx_gen = transaction_generator or TransactionGenerator()
         self._logger = logger.bind(component="accounting_workflow")
         # Cache accounts per org to avoid repeated API calls
         self._account_cache: dict[UUID, dict[str, Any]] = {}
+        self._run_id = run_id
+        self._run_id_short = run_id.split("-")[0] if run_id else None
+
+    def _run_note(self) -> str | None:
+        if not self._run_id:
+            return None
+        return f"sim_run_id={self._run_id}"
+
+    def _run_suffix(self) -> str:
+        if not self._run_id_short:
+            return ""
+        return f"-R{self._run_id_short}"
 
     async def _get_accounts_for_org(self, org_id: UUID) -> dict[str, Any]:
         """Get cached account info for an organization."""
@@ -243,6 +256,7 @@ class AccountingWorkflow:
             pending_invoices=pending_invoices,
             current_hour=current_hour,
             current_phase=current_phase,
+            hourly=True,
         )
         recurring_transactions = self._tx_gen.generate_recurring_transactions(
             business_key=business_key,
@@ -411,7 +425,7 @@ class AccountingWorkflow:
 
         due_date = invoice_date + timedelta(days=30)  # Net 30 terms
 
-        invoice = await self._api.create_invoice({
+        invoice_payload = {
             "customer_id": str(tx.customer_id),
             "invoice_date": invoice_date.isoformat(),
             "due_date": due_date.isoformat(),
@@ -423,7 +437,12 @@ class AccountingWorkflow:
                     "revenue_account_id": revenue_account_id,
                 }
             ],
-        })
+        }
+        run_note = self._run_note()
+        if run_note:
+            invoice_payload["notes"] = run_note
+
+        invoice = await self._api.create_invoice(invoice_payload)
 
         # Auto-send the invoice (creates AR journal entry)
         if invoice and invoice.get("id"):
@@ -456,10 +475,15 @@ class AccountingWorkflow:
 
         due_date = bill_date + timedelta(days=30)  # Net 30 terms
 
-        bill = await self._api.create_bill({
+        bill_number = f"BILL-{bill_date.strftime('%Y%m%d')}-{uuid4().hex[:4]}{self._run_suffix()}"
+        vendor_bill_number = (
+            f"SIMRUN-{self._run_id}"[:50] if self._run_id else None
+        )
+        bill_payload = {
             "vendor_id": str(tx.vendor_id),
             "bill_date": bill_date.isoformat(),
             "due_date": due_date.isoformat(),
+            "bill_number": bill_number[:30],
             "lines": [
                 {
                     "description": tx.description,
@@ -468,7 +492,11 @@ class AccountingWorkflow:
                     "expense_account_id": expense_account_id,
                 }
             ],
-        })
+        }
+        if vendor_bill_number:
+            bill_payload["vendor_bill_number"] = vendor_bill_number
+
+        bill = await self._api.create_bill(bill_payload)
 
         return bill
 
@@ -495,12 +523,14 @@ class AccountingWorkflow:
             )
             return None
 
+        reference_number = f"PMT-{uuid4().hex[:6]}{self._run_suffix()}"
         payment = await self._api.create_payment(
             {
                 "customer_id": str(customer_id),
                 "amount": str(amount),
                 "payment_date": payment_date.isoformat(),
                 "payment_method": "check",
+                "reference_number": reference_number[:100],
                 "deposit_account_id": deposit_account_id,
             },
             ar_account_id=UUID(ar_account_id),
