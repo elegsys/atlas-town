@@ -146,15 +146,19 @@ class TransactionEvent(SimulationEvent):
     amount: float = 0.0
     counterparty: str = ""  # customer or vendor name
     description: str = ""
+    metadata: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         base = super().to_dict()
-        base["transaction"] = {
+        transaction = {
             "type": self.transaction_type,
             "amount": self.amount,
             "counterparty": self.counterparty,
             "description": self.description,
         }
+        if self.metadata:
+            transaction["metadata"] = self.metadata
+        base["transaction"] = transaction
         base["org"] = {
             "id": str(self.org_id) if self.org_id else None,
             "name": self.org_name,
@@ -347,6 +351,7 @@ def transaction_created(
     amount: float,
     counterparty: str,
     description: str = "",
+    metadata: dict[str, Any] | None = None,
 ) -> TransactionEvent:
     """Create a transaction event."""
     event_type_map = {
@@ -363,6 +368,7 @@ def transaction_created(
         amount=amount,
         counterparty=counterparty,
         description=description,
+        metadata=metadata,
     )
 
 

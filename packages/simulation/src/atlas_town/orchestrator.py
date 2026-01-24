@@ -15,6 +15,8 @@ Supports three modes:
 """
 
 import asyncio
+import json
+import os
 import random
 import re
 from contextlib import suppress
@@ -22,6 +24,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
 from enum import Enum
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -138,10 +141,13 @@ class Orchestrator:
 
         # Rule-based workflow (for FAST and HYBRID modes)
         self._accounting_workflow: AccountingWorkflow | None = None
+        self._accounting_workflows: dict[UUID, AccountingWorkflow] = {}
 
         # Organizations
         self._organizations: dict[UUID, OrganizationContext] = {}
         self._org_by_owner: dict[str, UUID] = {}  # owner_key -> org_id
+        self._org_clients_by_id: dict[UUID, AtlasAPIClient] = {}
+        self._multi_org_enabled = False
 
         # Scheduler - use very high speed for fast mode (effectively no delays)
         speed = settings.simulation_speed
@@ -197,24 +203,44 @@ class Orchestrator:
         if self._start_websocket and not self._event_publisher.is_running:
             await self._event_publisher.start()
 
-        # Create and authenticate API client
-        self._api_client = AtlasAPIClient()
-        await self._api_client.login()
+        # Create and authenticate API client(s)
+        self._multi_org_enabled = self._should_use_multi_org()
+        if self._multi_org_enabled:
+            await self._setup_multi_orgs_from_credentials()
+            if not self._organizations:
+                self._logger.warning("multi_org_fallback_to_single")
+                self._multi_org_enabled = False
+        if not self._multi_org_enabled:
+            self._api_client = AtlasAPIClient()
+            await self._api_client.login()
+            await self._setup_organizations()
+
+        if self._multi_org_enabled and not self._api_client:
+            raise RuntimeError("Multi-org setup failed: no API client available")
 
         # Create tool executor
-        self._tool_executor = ToolExecutor(self._api_client)
+        if self._api_client:
+            self._tool_executor = ToolExecutor(self._api_client)
 
-        # Create accounting workflow (for FAST and HYBRID modes)
+        # Create accounting workflow(s) (for FAST and HYBRID modes)
         if self._mode in (SimulationMode.FAST, SimulationMode.HYBRID):
-            self._accounting_workflow = AccountingWorkflow(
-                api_client=self._api_client,
-                transaction_generator=self._tx_generator,
-                run_id=self._run_id,
-            )
+            if self._multi_org_enabled:
+                for org_id, client in self._org_clients_by_id.items():
+                    self._accounting_workflows[org_id] = AccountingWorkflow(
+                        api_client=client,
+                        transaction_generator=self._tx_generator,
+                        run_id=self._run_id,
+                    )
+            else:
+                assert self._api_client is not None
+                self._accounting_workflow = AccountingWorkflow(
+                    api_client=self._api_client,
+                    transaction_generator=self._tx_generator,
+                    run_id=self._run_id,
+                )
             self._logger.info("accounting_workflow_initialized", mode=self._mode.value)
 
-        # Load organizations and create agents
-        await self._setup_organizations()
+        # Initialize B2B coordinator and seed vendors
         self._initialize_b2b()
         await self._ensure_payroll_vendors()
         await self._ensure_tax_vendors()
@@ -242,13 +268,124 @@ class Orchestrator:
 
         self._scheduler.stop()
 
-        if self._api_client:
+        if self._org_clients_by_id:
+            for client in self._org_clients_by_id.values():
+                await client.close()
+        elif self._api_client:
             await self._api_client.close()
 
         if self._start_websocket and self._event_publisher.is_running:
             await self._event_publisher.stop()
 
         self._is_initialized = False
+
+    @staticmethod
+    def _parse_bool(value: str | None) -> bool | None:
+        if value is None:
+            return None
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        return None
+
+    def _multi_org_credentials_path(self) -> Path:
+        override = os.getenv("SIM_MULTI_ORG_CREDENTIALS")
+        if override:
+            return Path(override).expanduser()
+        return Path(__file__).resolve().parents[2] / "business_credentials.json"
+
+    def _should_use_multi_org(self) -> bool:
+        flag = self._parse_bool(os.getenv("SIM_MULTI_ORG"))
+        if flag is not None:
+            return flag
+        return self._multi_org_credentials_path().exists()
+
+    async def _setup_multi_orgs_from_credentials(self) -> None:
+        """Load organizations using per-org credentials (multi-org mode)."""
+        path = self._multi_org_credentials_path()
+        if not path.exists():
+            self._logger.warning("multi_org_credentials_missing", path=str(path))
+            return
+
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            self._logger.warning("multi_org_credentials_invalid", path=str(path))
+            return
+
+        if not isinstance(raw, dict):
+            self._logger.warning("multi_org_credentials_not_mapping", path=str(path))
+            return
+
+        for owner_key, info in raw.items():
+            if not isinstance(info, dict):
+                continue
+            email = info.get("email")
+            password = info.get("password")
+            if not email or not password:
+                self._logger.warning(
+                    "multi_org_credentials_incomplete",
+                    owner_key=owner_key,
+                )
+                continue
+
+            client = AtlasAPIClient(username=str(email), password=str(password))
+            try:
+                await client.login()
+            except AtlasAPIError as exc:
+                self._logger.warning(
+                    "multi_org_login_failed",
+                    owner_key=owner_key,
+                    error=str(exc),
+                )
+                continue
+
+            org_data = client.organizations[0] if client.organizations else {}
+            org_id_raw = org_data.get("id") or info.get("organization_id")
+            if not org_id_raw:
+                self._logger.warning(
+                    "multi_org_missing_org_id",
+                    owner_key=owner_key,
+                )
+                continue
+
+            try:
+                org_id = UUID(str(org_id_raw))
+            except ValueError:
+                self._logger.warning(
+                    "multi_org_invalid_org_id",
+                    owner_key=owner_key,
+                    org_id=str(org_id_raw),
+                )
+                continue
+
+            name = (
+                org_data.get("name")
+                or info.get("organization_name")
+                or owner_key
+            )
+            industry = org_data.get("industry", "general")
+
+            ctx = OrganizationContext(
+                id=org_id,
+                name=str(name),
+                industry=str(industry),
+                owner_key=str(owner_key),
+            )
+            self._organizations[org_id] = ctx
+            self._org_by_owner[str(owner_key)] = org_id
+            self._org_clients_by_id[org_id] = client
+
+            if self._api_client is None:
+                self._api_client = client
+                self._current_org_id = org_id
+
+        self._logger.info(
+            "multi_orgs_loaded",
+            count=len(self._organizations),
+        )
 
     async def _setup_organizations(self) -> None:
         """Load organizations from API and map to owner personas."""
@@ -467,8 +604,7 @@ class Orchestrator:
                 continue
 
             try:
-                await self._api_client.switch_organization(org_id)
-                self._current_org_id = org_id
+                await self.switch_organization(org_id)
                 vendors = await self._api_client.list_vendors()
             except AtlasAPIError as exc:
                 self._logger.warning(
@@ -500,8 +636,7 @@ class Orchestrator:
                 continue
 
             try:
-                await self._api_client.switch_organization(org_id)
-                self._current_org_id = org_id
+                await self.switch_organization(org_id)
                 vendors = await self._api_client.list_vendors()
             except AtlasAPIError as exc:
                 self._logger.warning(
@@ -603,7 +738,17 @@ class Orchestrator:
         previous_org = self.current_org
 
         # Switch API context
-        await self._api_client.switch_organization(org_id)
+        if self._org_clients_by_id:
+            client = self._org_clients_by_id.get(org_id)
+            if not client:
+                raise RuntimeError(f"No API client for org {org_id}")
+            self._api_client = client
+            if self._tool_executor:
+                self._tool_executor.client = client
+            if client.current_org_id != org_id:
+                await client.switch_organization(org_id)
+        else:
+            await self._api_client.switch_organization(org_id)
         self._current_org_id = org_id
 
         # Update accountant context
@@ -790,6 +935,20 @@ class Orchestrator:
         if not parts:
             return None
         return "\n".join(parts)
+
+    @staticmethod
+    def _extract_event_metadata(
+        metadata: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if not metadata:
+            return None
+        keys = ("b2b_pair_id", "counterparty_org_id", "counterparty_doc_id")
+        event_meta = {
+            key: metadata.get(key)
+            for key in keys
+            if metadata.get(key) is not None
+        }
+        return event_meta or None
 
     @staticmethod
     def _quarterly_tax_key(
@@ -1000,6 +1159,7 @@ class Orchestrator:
                 if " - " in tx.description
                 else "Customer"
             )
+            event_metadata = self._extract_event_metadata(tx.metadata if tx.metadata else None)
             self._event_publisher.publish(
                 transaction_created(
                     org_id=ctx.id,
@@ -1008,6 +1168,7 @@ class Orchestrator:
                     amount=float(tx.amount),
                     counterparty=counterparty,
                     description=tx.description,
+                    metadata=event_metadata,
                 )
             )
 
@@ -1092,6 +1253,7 @@ class Orchestrator:
                 if " - " in tx.description
                 else "Vendor"
             )
+            event_metadata = self._extract_event_metadata(tx.metadata if tx.metadata else None)
             self._event_publisher.publish(
                 transaction_created(
                     org_id=ctx.id,
@@ -1100,6 +1262,7 @@ class Orchestrator:
                     amount=float(tx.amount),
                     counterparty=counterparty,
                     description=tx.description,
+                    metadata=event_metadata,
                 )
             )
 
@@ -1226,14 +1389,16 @@ class Orchestrator:
             if " - " in tx.description
             else "Customer"
         )
+        event_metadata = self._extract_event_metadata(tx.metadata if tx.metadata else None)
         self._event_publisher.publish(
             transaction_created(
                 org_id=ctx.id,
                 org_name=ctx.name,
-                transaction_type="payment",
+                transaction_type="payment_received",
                 amount=float(tx.amount),
                 counterparty=counterparty,
                 description=tx.description,
+                metadata=event_metadata,
             )
         )
 
@@ -1314,6 +1479,8 @@ class Orchestrator:
             amount=pair.amount,
             customer_id=customer_id,
             metadata={
+                "b2b_pair_id": pair.pair_id,
+                "counterparty_org_id": str(buyer_ctx.id),
                 "notes": seller_note,
                 "due_date": pair.due_date.isoformat(),
             },
@@ -1351,6 +1518,9 @@ class Orchestrator:
             amount=pair.amount,
             vendor_id=vendor_id,
             metadata={
+                "b2b_pair_id": pair.pair_id,
+                "counterparty_org_id": str(seller_ctx.id),
+                "counterparty_doc_id": invoice_id,
                 "notes": buyer_note,
                 "due_date": pair.due_date.isoformat(),
                 "vendor_bill_number": vendor_bill_number,
@@ -1379,13 +1549,33 @@ class Orchestrator:
                     error=str(exc),
                 )
             else:
+                self._event_publisher.publish(
+                    transaction_created(
+                        org_id=buyer_ctx.id,
+                        org_name=buyer_ctx.name,
+                        transaction_type="payment_sent",
+                        amount=float(pair.amount),
+                        counterparty=seller_ctx.name,
+                        description=f"B2B payment - {pair.description}",
+                        metadata={
+                            "b2b_pair_id": pair.pair_id,
+                            "counterparty_org_id": str(seller_ctx.id),
+                            "counterparty_doc_id": invoice_id,
+                        },
+                    )
+                )
                 await self.switch_organization(seller_ctx.id)
                 payment_tx = GeneratedTransaction(
                     transaction_type=TransactionType.PAYMENT_RECEIVED,
                     description=f"B2B payment - {pair.description}",
                     amount=pair.amount,
                     customer_id=customer_id,
-                    metadata={"invoice_id": invoice_id},
+                    metadata={
+                        "invoice_id": invoice_id,
+                        "b2b_pair_id": pair.pair_id,
+                        "counterparty_org_id": str(buyer_ctx.id),
+                        "counterparty_doc_id": bill_id,
+                    },
                 )
                 await self._record_payment(seller_ctx, payment_tx)
 
@@ -2079,6 +2269,14 @@ class Orchestrator:
         self._event_publisher.publish(phase_completed(day, phase.value, results))
         return results
 
+    def _get_accounting_workflow(self, org_id: UUID) -> AccountingWorkflow:
+        if self._accounting_workflow:
+            return self._accounting_workflow
+        workflow = self._accounting_workflows.get(org_id)
+        if workflow:
+            return workflow
+        raise RuntimeError("AccountingWorkflow not initialized")
+
     async def _handle_evening_fast(
         self,
         org_id: UUID,
@@ -2087,11 +2285,10 @@ class Orchestrator:
         phase: DayPhase,
     ) -> dict[str, Any]:
         """Evening handler for FAST mode - rule-based, no LLM calls."""
-        if not self._accounting_workflow:
-            raise RuntimeError("AccountingWorkflow not initialized for fast mode")
+        workflow = self._get_accounting_workflow(org_id)
 
         # Run the complete daily workflow
-        summary = await self._accounting_workflow.run_daily_workflow(
+        summary = await workflow.run_daily_workflow(
             business_key=ctx.owner_key,
             org_id=org_id,
             current_date=sim_date,
@@ -2127,11 +2324,10 @@ class Orchestrator:
         phase: DayPhase,
     ) -> dict[str, Any]:
         """Evening handler for HYBRID mode - rule-based ops + LLM analysis."""
-        if not self._accounting_workflow:
-            raise RuntimeError("AccountingWorkflow not initialized for hybrid mode")
+        workflow = self._get_accounting_workflow(org_id)
 
         # Run rule-based workflow first (fast)
-        summary = await self._accounting_workflow.run_daily_workflow(
+        summary = await workflow.run_daily_workflow(
             business_key=ctx.owner_key,
             org_id=org_id,
             current_date=sim_date,
