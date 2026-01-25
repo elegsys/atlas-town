@@ -14,10 +14,12 @@ from uuid import UUID
 
 import structlog
 
+from atlas_town.agents.vendor import VENDOR_ARCHETYPES, VendorType
 from atlas_town.config.personas_loader import (
     WEEKDAY_NAME_TO_INDEX,
     load_persona_day_patterns,
     load_persona_employees,
+    load_persona_industries,
     load_persona_payroll_configs,
     load_persona_recurring_transactions,
     load_persona_tax_configs,
@@ -206,17 +208,33 @@ class PayrollGenerator:
     _SOCIAL_SECURITY = Decimal("0.062")
     _MEDICARE = Decimal("0.0145")
     _WITHHOLDING = Decimal("0.12")
-    _SEMI_WEEKLY_THRESHOLD = Decimal("5000")
+    _QUARTERLY_DEPOSIT_THRESHOLD = Decimal("2500")
+    _SEMI_WEEKLY_THRESHOLD = Decimal("50000")
+    _FUTA_RATE = Decimal("0.006")
+    _FUTA_DEPOSIT_THRESHOLD = Decimal("500")
 
     def __init__(
         self,
         employees_by_business: dict[str, list[EmployeeSpec]],
         payroll_by_business: dict[str, PayrollConfig],
+        industries_by_business: dict[str, str] | None = None,
     ) -> None:
         self._employees_by_business = employees_by_business
         self._payroll_by_business = payroll_by_business
+        self._industries_by_business = industries_by_business or {}
         self._last_pay_date: dict[str, date] = {}
         self._tax_due_by_date: dict[str, dict[date, Decimal]] = {}
+        self._quarter_tax_liability: dict[tuple[str, int, int], Decimal] = {}
+        self._quarter_tax_deposited: dict[tuple[str, int, int], Decimal] = {}
+        self._form_941_filed: set[tuple[str, int, int]] = set()
+        self._futa_liability_by_quarter: dict[tuple[str, int, int], Decimal] = {}
+        self._futa_liability_by_year: dict[tuple[str, int], Decimal] = {}
+        self._futa_deposited_by_year: dict[tuple[str, int], Decimal] = {}
+        self._futa_deposit_recorded: set[tuple[str, int, int]] = set()
+        self._form_940_filed: set[tuple[str, int]] = set()
+        self._year_end_processed: set[tuple[str, int]] = set()
+        self._form_1099_filed: set[tuple[str, int, UUID]] = set()
+        self._eligible_1099_names = self._build_1099_eligible_names()
         self._logger = logger.bind(component="payroll_generator")
 
     def _normalize_frequency(self, frequency: str) -> str:
@@ -291,23 +309,81 @@ class PayrollGenerator:
             total += emp.pay_rate * emp.hours_per_week * weeks * Decimal(emp.count)
         return total.quantize(Decimal("0.01"))
 
+    @staticmethod
+    def _quarter_for_date(current_date: date) -> tuple[int, int]:
+        quarter = ((current_date.month - 1) // 3) + 1
+        return current_date.year, quarter
+
+    @staticmethod
+    def _form_941_due_quarters_for_date(current_date: date) -> list[tuple[int, int]]:
+        if current_date.month == 4 and current_date.day == 30:
+            return [(current_date.year, 1)]
+        if current_date.month == 7 and current_date.day == 31:
+            return [(current_date.year, 2)]
+        if current_date.month == 10 and current_date.day == 31:
+            return [(current_date.year, 3)]
+        if current_date.month == 1 and current_date.day == 31:
+            return [(current_date.year - 1, 4)]
+        return []
+
+    @staticmethod
+    def _next_monthly_deposit_date(pay_date: date) -> date:
+        month = pay_date.month + 1
+        year = pay_date.year
+        if month > 12:
+            month = 1
+            year += 1
+        return date(year, month, 15)
+
+    def _build_1099_eligible_names(self) -> dict[str, set[str]]:
+        eligible: dict[str, set[str]] = {}
+        for business_key, industry in self._industries_by_business.items():
+            profiles = VENDOR_ARCHETYPES.get(industry, [])
+            names = {
+                profile.name.strip().lower()
+                for profile in profiles
+                if profile.vendor_type == VendorType.SERVICE
+            }
+            if names:
+                eligible[business_key] = names
+        return eligible
+
+    def _determine_deposit_schedule(self, quarter_total: Decimal) -> str:
+        if quarter_total < self._QUARTERLY_DEPOSIT_THRESHOLD:
+            return "quarterly"
+        if quarter_total <= self._SEMI_WEEKLY_THRESHOLD:
+            return "monthly"
+        return "semi-weekly"
+
     def _schedule_tax_deposit(
-        self, business_key: str, pay_date: date, tax_amount: Decimal, gross: Decimal
+        self, business_key: str, pay_date: date, tax_amount: Decimal
     ) -> None:
         if tax_amount <= 0:
             return
-        if gross >= self._SEMI_WEEKLY_THRESHOLD:
-            due_date = pay_date + timedelta(days=3)
-        else:
-            month = pay_date.month + 1
-            year = pay_date.year
-            if month > 12:
-                month = 1
-                year += 1
-            due_date = date(year, month, 15)
+        tax_year, quarter = self._quarter_for_date(pay_date)
+        key = (business_key, tax_year, quarter)
+
+        quarter_total = self._quarter_tax_liability.get(key, Decimal("0")) + tax_amount
+        self._quarter_tax_liability[key] = quarter_total
+
+        schedule = self._determine_deposit_schedule(quarter_total)
+        if schedule == "quarterly":
+            return
+
+        due_date = (
+            pay_date + timedelta(days=3)
+            if schedule == "semi-weekly"
+            else self._next_monthly_deposit_date(pay_date)
+        )
+
+        deposited = self._quarter_tax_deposited.get(key, Decimal("0"))
+        outstanding = quarter_total - deposited
+        if outstanding <= 0:
+            return
 
         business_due = self._tax_due_by_date.setdefault(business_key, {})
-        business_due[due_date] = business_due.get(due_date, Decimal("0")) + tax_amount
+        business_due[due_date] = business_due.get(due_date, Decimal("0")) + outstanding
+        self._quarter_tax_deposited[key] = quarter_total
 
     def _find_vendor_id(
         self, vendor_name: str | None, vendors: list[dict[str, Any]]
@@ -329,6 +405,22 @@ class PayrollGenerator:
             return UUID(vendors[0]["id"])
         except (KeyError, ValueError, TypeError):
             return None
+
+    def _eligible_1099_vendors(
+        self, business_key: str, vendors: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        eligible_names = self._eligible_1099_names.get(business_key)
+        if not eligible_names:
+            return []
+
+        matches: list[dict[str, Any]] = []
+        for vendor in vendors:
+            name = str(
+                vendor.get("display_name") or vendor.get("name", "")
+            ).strip().lower()
+            if name in eligible_names:
+                matches.append(vendor)
+        return matches
 
     def get_due_transactions(
         self,
@@ -382,8 +474,21 @@ class PayrollGenerator:
                         )
                     )
 
-                self._schedule_tax_deposit(business_key, current_date, taxes, gross)
+                self._schedule_tax_deposit(business_key, current_date, taxes)
                 self._last_pay_date[business_key] = current_date
+
+                futa_tax = (gross * self._FUTA_RATE).quantize(Decimal("0.01"))
+                tax_year, quarter = self._quarter_for_date(current_date)
+                futa_key = (business_key, tax_year, quarter)
+                year_key = (business_key, tax_year)
+                self._futa_liability_by_quarter[futa_key] = (
+                    self._futa_liability_by_quarter.get(futa_key, Decimal("0"))
+                    + futa_tax
+                )
+                self._futa_liability_by_year[year_key] = (
+                    self._futa_liability_by_year.get(year_key, Decimal("0"))
+                    + futa_tax
+                )
 
         # Tax deposit due today
         due_map = self._tax_due_by_date.get(business_key, {})
@@ -410,6 +515,175 @@ class PayrollGenerator:
                         },
                     )
                 )
+
+        for tax_year, quarter in self._form_941_due_quarters_for_date(current_date):
+            key = (business_key, tax_year, quarter)
+            if key in self._form_941_filed:
+                continue
+
+            filing_vendor_id = self._find_vendor_id(
+                config.payroll_vendor or config.tax_authority, vendors
+            )
+            if filing_vendor_id:
+                transactions.append(
+                    GeneratedTransaction(
+                        transaction_type=TransactionType.BILL,
+                        description=f"Form 941 filing Q{quarter} {tax_year}",
+                        amount=Decimal("75.00"),
+                        vendor_id=filing_vendor_id,
+                        metadata={
+                            "compliance_filing": "form_941",
+                            "tax_year": str(tax_year),
+                            "quarter": str(quarter),
+                            "expense_account_hint": "payroll tax",
+                        },
+                    )
+                )
+
+            remaining = (
+                self._quarter_tax_liability.get(key, Decimal("0"))
+                - self._quarter_tax_deposited.get(key, Decimal("0"))
+            )
+            if remaining > 0:
+                tax_vendor_id = self._find_vendor_id(config.tax_authority, vendors)
+                if tax_vendor_id:
+                    transactions.append(
+                        GeneratedTransaction(
+                            transaction_type=TransactionType.BILL,
+                            description="Payroll tax deposit",
+                            amount=remaining.quantize(Decimal("0.01")),
+                            vendor_id=tax_vendor_id,
+                            metadata={
+                                "tax_deposit": "payroll",
+                                "expense_account_hint": "payroll tax",
+                                "form_941": "true",
+                                "tax_year": str(tax_year),
+                                "quarter": str(quarter),
+                            },
+                        )
+                    )
+                self._quarter_tax_deposited[key] = self._quarter_tax_liability.get(
+                    key, Decimal("0")
+                )
+
+            self._form_941_filed.add(key)
+
+        for tax_year, quarter in self._form_941_due_quarters_for_date(current_date):
+            futa_key = (business_key, tax_year, quarter)
+            year_key = (business_key, tax_year)
+            remaining = (
+                self._futa_liability_by_year.get(year_key, Decimal("0"))
+                - self._futa_deposited_by_year.get(year_key, Decimal("0"))
+            )
+            if remaining <= 0:
+                continue
+            if remaining < self._FUTA_DEPOSIT_THRESHOLD and quarter != 4:
+                continue
+            if futa_key in self._futa_deposit_recorded:
+                continue
+
+            tax_vendor_id = self._find_vendor_id(config.tax_authority, vendors)
+            if tax_vendor_id:
+                transactions.append(
+                    GeneratedTransaction(
+                        transaction_type=TransactionType.BILL,
+                        description=f"FUTA tax deposit Q{quarter} {tax_year}",
+                        amount=remaining.quantize(Decimal("0.01")),
+                        vendor_id=tax_vendor_id,
+                        metadata={
+                            "tax_deposit": "futa",
+                            "expense_account_hint": "payroll tax",
+                            "tax_year": str(tax_year),
+                            "quarter": str(quarter),
+                        },
+                    )
+                )
+                self._futa_deposited_by_year[year_key] = (
+                    self._futa_deposited_by_year.get(year_key, Decimal("0"))
+                    + remaining
+                )
+                self._futa_deposit_recorded.add(futa_key)
+
+        if current_date.month == 1 and current_date.day == 31:
+            tax_year = current_date.year - 1
+            year_key = (business_key, tax_year)
+            if year_key not in self._form_940_filed:
+                filing_vendor_id = self._find_vendor_id(
+                    config.payroll_vendor or config.tax_authority, vendors
+                )
+                if filing_vendor_id:
+                    transactions.append(
+                        GeneratedTransaction(
+                            transaction_type=TransactionType.BILL,
+                            description=f"Form 940 filing {tax_year}",
+                            amount=Decimal("50.00"),
+                            vendor_id=filing_vendor_id,
+                            metadata={
+                                "compliance_filing": "form_940",
+                                "tax_year": str(tax_year),
+                                "expense_account_hint": "payroll tax",
+                            },
+                        )
+                    )
+                self._form_940_filed.add(year_key)
+
+            if year_key not in self._year_end_processed:
+                filing_vendor_id = self._find_vendor_id(
+                    config.payroll_vendor or config.tax_authority, vendors
+                )
+                if filing_vendor_id:
+                    transactions.append(
+                        GeneratedTransaction(
+                            transaction_type=TransactionType.BILL,
+                            description=f"Year-end W-2 processing {tax_year}",
+                            amount=Decimal("85.00"),
+                            vendor_id=filing_vendor_id,
+                            metadata={
+                                "compliance_filing": "w2",
+                                "tax_year": str(tax_year),
+                                "expense_account_hint": "payroll",
+                            },
+                        )
+                    )
+                self._year_end_processed.add(year_key)
+
+            eligible_vendors = self._eligible_1099_vendors(business_key, vendors)
+            if eligible_vendors:
+                provider_id = self._find_vendor_id(
+                    config.payroll_vendor or config.tax_authority, vendors
+                )
+                for vendor in eligible_vendors:
+                    vendor_id_raw = vendor.get("id")
+                    try:
+                        vendor_id = UUID(str(vendor_id_raw))
+                    except (TypeError, ValueError):
+                        continue
+                    filing_key = (business_key, tax_year, vendor_id)
+                    if filing_key in self._form_1099_filed:
+                        continue
+                    filing_vendor_id = provider_id or vendor_id
+                    vendor_name = (
+                        vendor.get("display_name") or vendor.get("name", "")
+                    )
+                    if filing_vendor_id:
+                        transactions.append(
+                            GeneratedTransaction(
+                                transaction_type=TransactionType.BILL,
+                                description=(
+                                    f"1099-NEC processing - {vendor_name} {tax_year}"
+                                ),
+                                amount=Decimal("7.50"),
+                                vendor_id=filing_vendor_id,
+                                metadata={
+                                    "compliance_filing": "1099_nec",
+                                    "tax_year": str(tax_year),
+                                    "recipient_vendor_id": str(vendor_id),
+                                    "recipient_vendor_name": str(vendor_name),
+                                    "expense_account_hint": "payroll",
+                                },
+                            )
+                        )
+                        self._form_1099_filed.add(filing_key)
 
         return transactions
 
@@ -916,6 +1190,7 @@ class TransactionGenerator:
         self._payroll_generator = PayrollGenerator(
             self._load_employee_configs(),
             self._load_payroll_configs(),
+            self._load_industries(),
         )
         self._quarterly_tax_scheduler = QuarterlyTaxScheduler(
             self._load_tax_configs()
@@ -1011,6 +1286,10 @@ class TransactionGenerator:
             )
 
         return payroll_by_business
+
+    def _load_industries(self) -> dict[str, str]:
+        """Load industries from persona files."""
+        return load_persona_industries()
 
     def _load_tax_configs(self) -> dict[str, QuarterlyTaxConfig]:
         """Load quarterly tax configs from persona files."""

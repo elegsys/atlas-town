@@ -52,9 +52,9 @@ def test_payroll_tax_deposit_semiweekly_schedule():
     employees = [
         EmployeeSpec(
             role="Crew",
-            count=2,
-            pay_rate=Decimal("50.00"),
-            hours_per_week=Decimal("60"),
+            count=70,
+            pay_rate=Decimal("100.00"),
+            hours_per_week=Decimal("40"),
         )
     ]
     payroll_vendor = "Acme Payroll"
@@ -69,7 +69,7 @@ def test_payroll_tax_deposit_semiweekly_schedule():
 
     generator = PayrollGenerator({"biz": employees}, {"biz": config})
     pay_date = date(2024, 1, 5)  # Friday
-    gross = Decimal("6000.00")
+    gross = Decimal("280000.00")
     taxes = (gross * Decimal("0.1965")).quantize(Decimal("0.01"))
 
     payroll_txs = generator.get_due_transactions("biz", pay_date, vendors)
@@ -92,9 +92,9 @@ def test_payroll_tax_deposit_monthly_schedule():
     employees = [
         EmployeeSpec(
             role="Assistant",
-            count=1,
-            pay_rate=Decimal("20.00"),
-            hours_per_week=Decimal("20"),
+            count=7,
+            pay_rate=Decimal("50.00"),
+            hours_per_week=Decimal("40"),
         )
     ]
     payroll_vendor = "Acme Payroll"
@@ -121,3 +121,72 @@ def test_payroll_tax_deposit_monthly_schedule():
     assert tax_tx.description == "Payroll tax deposit"
     assert tax_tx.metadata is not None
     assert tax_tx.metadata["expense_account_hint"] == "payroll tax"
+
+
+def test_payroll_tax_deposit_quarterly_with_form_941():
+    employees = [
+        EmployeeSpec(
+            role="Clerk",
+            count=1,
+            pay_rate=Decimal("25.00"),
+            hours_per_week=Decimal("30"),
+        )
+    ]
+    payroll_vendor = "Acme Payroll"
+    tax_vendor = "IRS Payroll Taxes"
+    config = PayrollConfig(
+        frequency="monthly",
+        pay_day=5,
+        payroll_vendor=payroll_vendor,
+        tax_authority=tax_vendor,
+    )
+    vendors = [_vendor(payroll_vendor), _vendor(tax_vendor)]
+
+    generator = PayrollGenerator({"biz": employees}, {"biz": config})
+    pay_date = date(2024, 1, 5)
+    payroll_txs = generator.get_due_transactions("biz", pay_date, vendors)
+    assert any(tx.description.startswith("Payroll") for tx in payroll_txs)
+
+    due_date = date(2024, 4, 30)
+    compliance_txs = generator.get_due_transactions("biz", due_date, vendors)
+    descriptions = {tx.description for tx in compliance_txs}
+    assert "Form 941 filing Q1 2024" in descriptions
+    assert "Payroll tax deposit" in descriptions
+
+
+def test_1099_processing_generated_for_eligible_vendors():
+    employees = [
+        EmployeeSpec(
+            role="Engineer",
+            count=1,
+            pay_rate=Decimal("60.00"),
+            hours_per_week=Decimal("40"),
+        )
+    ]
+    payroll_vendor = "Acme Payroll"
+    tax_vendor = "IRS Payroll Taxes"
+    config = PayrollConfig(
+        frequency="monthly",
+        pay_day=5,
+        payroll_vendor=payroll_vendor,
+        tax_authority=tax_vendor,
+    )
+    vendors = [
+        _vendor(payroll_vendor),
+        _vendor(tax_vendor),
+        _vendor("TechPro Contractors"),
+        _vendor("AWS Cloud Services"),
+    ]
+
+    generator = PayrollGenerator(
+        {"biz": employees},
+        {"biz": config},
+        industries_by_business={"biz": "technology"},
+    )
+
+    year_end_date = date(2025, 1, 31)
+    transactions = generator.get_due_transactions("biz", year_end_date, vendors)
+    descriptions = {tx.description for tx in transactions}
+
+    assert "1099-NEC processing - TechPro Contractors 2024" in descriptions
+    assert "1099-NEC processing - AWS Cloud Services 2024" not in descriptions

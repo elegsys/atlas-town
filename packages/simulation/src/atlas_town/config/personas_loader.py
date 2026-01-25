@@ -243,6 +243,30 @@ def load_persona_employees() -> dict[str, list[dict[str, Any]]]:
 
 
 @lru_cache
+def load_persona_industries() -> dict[str, str]:
+    """Load persona industries from YAML files.
+
+    Returns:
+        Mapping of persona key (filename stem) to industry.
+    """
+    personas_dir = Path(__file__).resolve().parent / "personas"
+    if not personas_dir.exists():
+        return {}
+
+    industries_by_persona: dict[str, str] = {}
+
+    for path in sorted(personas_dir.glob("*.yaml")):
+        raw = path.read_text(encoding="utf-8")
+        data = yaml.safe_load(raw) or {}
+        industry = data.get("industry")
+        if not industry:
+            continue
+        industries_by_persona[path.stem] = str(industry)
+
+    return industries_by_persona
+
+
+@lru_cache
 def load_persona_payroll_configs() -> dict[str, dict[str, Any]]:
     """Load payroll configs from persona YAML files.
 

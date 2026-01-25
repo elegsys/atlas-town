@@ -101,8 +101,9 @@ class TestOrchestrator:
             assert orch.current_org == ctx
 
     @pytest.mark.asyncio
-    async def test_initialize_creates_components(self):
+    async def test_initialize_creates_components(self, monkeypatch: pytest.MonkeyPatch):
         """Test that initialize creates API client and agents."""
+        monkeypatch.setenv("SIM_MULTI_ORG", "0")
         mock_publisher = MagicMock()
         mock_publisher.is_running = False
         mock_publisher.start = AsyncMock()
@@ -150,8 +151,9 @@ class TestOrchestrator:
             assert orch._is_initialized is False
 
     @pytest.mark.asyncio
-    async def test_context_manager(self):
+    async def test_context_manager(self, monkeypatch: pytest.MonkeyPatch):
         """Test orchestrator as async context manager."""
+        monkeypatch.setenv("SIM_MULTI_ORG", "0")
         mock_publisher = MagicMock()
         mock_publisher.is_running = False
         mock_publisher.start = AsyncMock()
