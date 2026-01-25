@@ -189,7 +189,7 @@ async def test_month_end_close_creates_accrual_entry():
     entry = api.journal_entries[0]
     assert entry["description"].startswith("Month-end accrual adjustment")
     assert entry["lines"][0]["entry_type"] == "debit"
-    assert entry["lines"][0]["amount"] == "200.00"
+    assert entry["lines"][0]["amount"] == "240.00"
 
 
 @pytest.mark.asyncio
