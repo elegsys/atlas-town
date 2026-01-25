@@ -40,6 +40,7 @@ from atlas_town.agents import (
     create_customers_for_industry,
     create_vendors_for_industry,
 )
+from atlas_town.agents.vendor import VENDOR_ARCHETYPES, VendorType
 from atlas_town.b2b import B2BCoordinator, B2BPlannedPair, build_b2b_note
 from atlas_town.clients import ClaudeClient, GeminiClient, OpenAIClient
 from atlas_town.config import get_settings
@@ -244,6 +245,7 @@ class Orchestrator:
         self._initialize_b2b()
         await self._ensure_payroll_vendors()
         await self._ensure_tax_vendors()
+        await self._ensure_1099_vendors()
 
         # Only create LLM agents if not in FAST mode
         if self._mode != SimulationMode.FAST:
@@ -647,6 +649,34 @@ class Orchestrator:
                 continue
 
             await self._ensure_vendor_present(vendors, vendor_name)
+
+    async def _ensure_1099_vendors(self) -> None:
+        if not self._api_client:
+            return
+
+        for org_id, ctx in self._organizations.items():
+            profiles = VENDOR_ARCHETYPES.get(ctx.industry, [])
+            vendor_names = [
+                profile.name
+                for profile in profiles
+                if profile.vendor_type == VendorType.SERVICE
+            ]
+            if not vendor_names:
+                continue
+
+            try:
+                await self.switch_organization(org_id)
+                vendors = await self._api_client.list_vendors()
+            except AtlasAPIError as exc:
+                self._logger.warning(
+                    "vendor_list_failed",
+                    org=ctx.name,
+                    error=str(exc),
+                )
+                continue
+
+            for vendor_name in vendor_names:
+                await self._ensure_vendor_present(vendors, vendor_name)
 
     def _create_agents(self) -> None:
         """Create all agent instances."""

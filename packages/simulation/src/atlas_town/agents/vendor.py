@@ -112,6 +112,15 @@ VENDOR_ARCHETYPES: dict[str, list[VendorProfile]] = {
             payment_terms=30,
             description="Point of sale system subscription",
         ),
+        VendorProfile(
+            name="Kitchen Repair Pros",
+            vendor_type=VendorType.SERVICE,
+            category="equipment_maintenance",
+            typical_amount=850.0,
+            billing_frequency="as_needed",
+            payment_terms=15,
+            description="Commercial kitchen equipment repairs and maintenance",
+        ),
     ],
     "technology": [
         VendorProfile(

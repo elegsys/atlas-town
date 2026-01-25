@@ -280,6 +280,7 @@ class AtlasAPIClient:
         "/api/v1/invoices",
         "/api/v1/bills",
         "/api/v1/payments",
+        "/api/v1/payments-made",
         "/api/v1/accounts",
         "/api/v1/journal-entries",
         "/api/v1/bank-transactions",
@@ -559,8 +560,107 @@ class AtlasAPIClient:
 
     async def create_bill_payment(self, data: dict[str, Any]) -> dict[str, Any]:
         """Create a bill payment (pay vendor)."""
-        result = await self.post("/api/v1/bill-payments/", json=data)
+        bill_id = data.get("bill_id")
+        vendor_id = data.get("vendor_id")
+        payment_account_id = data.get("payment_account_id")
+        ap_account_id = data.get("ap_account_id")
+        bill_applications = data.get("bill_applications") or data.get("applications")
+
+        if bill_id and not vendor_id:
+            try:
+                bill = await self.get_bill(UUID(str(bill_id)))
+                vendor_id = bill.get("vendor_id")
+            except (ValueError, AtlasAPIError):
+                vendor_id = None
+
+        if not vendor_id:
+            raise AtlasAPIError("Vendor ID required for bill payment")
+
+        if not payment_account_id or not ap_account_id:
+            accounts = await self.list_accounts(limit=200)
+            if not payment_account_id:
+                payment_account_id = self._find_payment_account_id(accounts)
+            if not ap_account_id:
+                ap_account_id = self._find_ap_account_id(accounts)
+
+        if not payment_account_id or not ap_account_id:
+            raise AtlasAPIError("Missing payment or AP account for bill payment")
+
+        payment_method = str(data.get("payment_method") or "check").lower()
+        if payment_method == "bank_transfer":
+            payment_method = "ach"
+        if payment_method not in {"cash", "check", "credit_card", "ach", "wire", "other"}:
+            payment_method = "other"
+
+        applications: list[dict[str, Any]] | None = None
+        if bill_applications:
+            applications = []
+            for item in bill_applications:
+                bill_ref = item.get("bill_id") or bill_id
+                amount = item.get("amount") or item.get("amount_applied")
+                if bill_ref and amount:
+                    applications.append(
+                        {
+                            "bill_id": str(bill_ref),
+                            "amount_applied": str(amount),
+                        }
+                    )
+        elif bill_id:
+            applications = [{"bill_id": str(bill_id), "amount_applied": str(data.get("amount"))}]
+
+        payload = {
+            "vendor_id": str(vendor_id),
+            "payment_date": data.get("payment_date"),
+            "amount": str(data.get("amount")),
+            "payment_method": payment_method,
+            "payment_account_id": str(payment_account_id),
+        }
+        if applications:
+            payload["applications"] = applications
+        if data.get("reference_number"):
+            payload["reference_number"] = str(data["reference_number"])
+        if data.get("notes"):
+            payload["notes"] = str(data["notes"])
+
+        result = await self.post(
+            "/api/v1/payments-made/",
+            json=payload,
+            params={"ap_account_id": str(ap_account_id)},
+        )
         return result if isinstance(result, dict) else {}
+
+    @staticmethod
+    def _find_ap_account_id(accounts: list[dict[str, Any]]) -> str | None:
+        ap_accounts = [
+            a for a in accounts if a.get("account_type") == "accounts_payable"
+        ]
+        if not ap_accounts:
+            ap_accounts = [
+                a
+                for a in accounts
+                if a.get("account_type") == "liability"
+                and "payable" in a.get("name", "").lower()
+            ]
+        if ap_accounts:
+            return str(ap_accounts[0].get("id"))
+        return None
+
+    @staticmethod
+    def _find_payment_account_id(accounts: list[dict[str, Any]]) -> str | None:
+        bank_accounts = [a for a in accounts if a.get("account_type") == "bank"]
+        if not bank_accounts:
+            bank_accounts = [
+                a
+                for a in accounts
+                if a.get("account_type") == "asset"
+                and (
+                    "cash" in a.get("name", "").lower()
+                    or "checking" in a.get("name", "").lower()
+                )
+            ]
+        if bank_accounts:
+            return str(bank_accounts[0].get("id"))
+        return None
 
     # === Account Endpoints ===
 
