@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
-from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -138,17 +137,61 @@ class FakeAPI:
 
 def _accounts() -> list[dict[str, Any]]:
     return [
-        {"id": "11111111-1111-1111-1111-111111111111", "name": "Supplies Expense", "account_type": "expense"},
-        {"id": "22222222-2222-2222-2222-222222222222", "name": "Accrued Expenses", "account_type": "liability"},
-        {"id": "33333333-3333-3333-3333-333333333333", "name": "Income Tax Expense", "account_type": "expense"},
-        {"id": "44444444-4444-4444-4444-444444444444", "name": "Income Tax Payable", "account_type": "liability"},
-        {"id": "55555555-5555-5555-5555-555555555555", "name": "Kitchen Equipment", "account_type": "asset"},
-        {"id": "66666666-6666-6666-6666-666666666666", "name": "Accumulated Depreciation", "account_type": "asset"},
-        {"id": "77777777-7777-7777-7777-777777777777", "name": "Depreciation Expense", "account_type": "expense"},
-        {"id": "88888888-8888-8888-8888-888888888888", "name": "Food Inventory", "account_type": "asset"},
-        {"id": "99999999-9999-9999-9999-999999999999", "name": "Cost of Goods Sold", "account_type": "expense"},
-        {"id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "name": "Income Summary", "account_type": "equity"},
-        {"id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "name": "Retained Earnings", "account_type": "equity"},
+        {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "name": "Supplies Expense",
+            "account_type": "expense",
+        },
+        {
+            "id": "22222222-2222-2222-2222-222222222222",
+            "name": "Accrued Expenses",
+            "account_type": "liability",
+        },
+        {
+            "id": "33333333-3333-3333-3333-333333333333",
+            "name": "Income Tax Expense",
+            "account_type": "expense",
+        },
+        {
+            "id": "44444444-4444-4444-4444-444444444444",
+            "name": "Income Tax Payable",
+            "account_type": "liability",
+        },
+        {
+            "id": "55555555-5555-5555-5555-555555555555",
+            "name": "Kitchen Equipment",
+            "account_type": "asset",
+        },
+        {
+            "id": "66666666-6666-6666-6666-666666666666",
+            "name": "Accumulated Depreciation",
+            "account_type": "asset",
+        },
+        {
+            "id": "77777777-7777-7777-7777-777777777777",
+            "name": "Depreciation Expense",
+            "account_type": "expense",
+        },
+        {
+            "id": "88888888-8888-8888-8888-888888888888",
+            "name": "Food Inventory",
+            "account_type": "asset",
+        },
+        {
+            "id": "99999999-9999-9999-9999-999999999999",
+            "name": "Cost of Goods Sold",
+            "account_type": "expense",
+        },
+        {
+            "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "name": "Income Summary",
+            "account_type": "equity",
+        },
+        {
+            "id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            "name": "Retained Earnings",
+            "account_type": "equity",
+        },
     ]
 
 
@@ -157,8 +200,14 @@ def _trial_balance() -> dict[str, Any]:
         "total_debits": "100.00",
         "total_credits": "100.00",
         "accounts": [
-            {"account_id": "55555555-5555-5555-5555-555555555555", "balance": "10000.00"},
-            {"account_id": "88888888-8888-8888-8888-888888888888", "balance": "5000.00"},
+            {
+                "account_id": "55555555-5555-5555-5555-555555555555",
+                "balance": "10000.00",
+            },
+            {
+                "account_id": "88888888-8888-8888-8888-888888888888",
+                "balance": "5000.00",
+            },
         ],
     }
 
@@ -249,8 +298,16 @@ async def test_year_end_reporting_counts_1099_bills():
             {"id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "display_name": "Vendor B"},
         ],
         payments_made=[
-            {"vendor_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "payment_date": "2024-06-15", "amount": "1200.00"},
-            {"vendor_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "payment_date": "2024-07-01", "amount": "200.00"},
+            {
+                "vendor_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "payment_date": "2024-06-15",
+                "amount": "1200.00",
+            },
+            {
+                "vendor_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                "payment_date": "2024-07-01",
+                "amount": "200.00",
+            },
         ],
         vendor_tax_profiles={
             "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa": {"tax_form_on_file": False},

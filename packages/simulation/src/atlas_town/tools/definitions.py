@@ -880,7 +880,10 @@ LIST_BANK_TRANSACTIONS_TOOL: dict[str, Any] = {
             },
             "status_filter": {
                 "type": "string",
-                "description": "Optional status filter (pending, matched, categorized, reconciled, excluded)",
+                "description": (
+                    "Optional status filter (pending, matched, categorized, "
+                    "reconciled, excluded)"
+                ),
             },
             "offset": {"type": "integer", "default": 0},
             "limit": {"type": "integer", "default": 100},

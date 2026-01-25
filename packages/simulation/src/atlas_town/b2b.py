@@ -15,6 +15,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 import structlog
 
 from atlas_town.config.personas_loader import load_persona_b2b_configs
+from atlas_town.economics import InflationModel, get_inflation_model
 
 logger = structlog.get_logger(__name__)
 
@@ -141,6 +142,7 @@ class B2BCoordinator:
         orgs_by_key: dict[str, Any],
         configs: dict[str, Any] | None = None,
         org_reference: dict[str, Any] | None = None,
+        inflation: InflationModel | None = None,
     ) -> None:
         self._orgs_by_key = orgs_by_key
         raw_configs = configs if configs is not None else load_persona_b2b_configs()
@@ -148,6 +150,7 @@ class B2BCoordinator:
         self._org_reference = (
             org_reference if org_reference is not None else load_business_credentials()
         )
+        self._inflation = inflation or get_inflation_model()
         self._seen_pairs: set[str] = set()
         self._logger = logger.bind(component="b2b_coordinator")
 
@@ -357,7 +360,8 @@ class B2BCoordinator:
             float(amount_min) + (float(amount_max) - float(amount_min)) * 0.3,
         )
         amount_float = round(amount_float / 0.05) * 0.05
-        return Decimal(str(round(amount_float, 2)))
+        amount = Decimal(str(round(amount_float, 2)))
+        return self._inflation.apply(amount, current_date)
 
     def _default_amount_range(self, spec: B2BPairSpec) -> tuple[Decimal | None, Decimal | None]:
         if spec.amount_min is not None or spec.amount_max is not None:

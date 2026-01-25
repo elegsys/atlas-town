@@ -49,6 +49,7 @@ from atlas_town.config.personas_loader import (
     load_persona_sales_tax_configs,
     load_persona_tax_configs,
 )
+from atlas_town.economics import InflationModel, get_inflation_model
 from atlas_town.events import (
     EventPublisher,
     agent_moving,
@@ -162,7 +163,8 @@ class Orchestrator:
         self._start_websocket = start_websocket
 
         # Transaction generator for realistic daily activity
-        self._tx_generator = create_transaction_generator()
+        self._inflation: InflationModel = get_inflation_model()
+        self._tx_generator = create_transaction_generator(inflation=self._inflation)
 
         # State
         self._is_initialized = False
@@ -178,6 +180,9 @@ class Orchestrator:
 
         # Period-end tracking for LLM mode
         self._month_end_llm_done: set[tuple[UUID, int, int]] = set()
+
+        # Vendor price increase notifications (per org/vendor/year)
+        self._vendor_price_increase_sent: set[tuple[UUID, str, int]] = set()
         self._quarter_end_llm_done: set[tuple[UUID, int, int]] = set()
         self._year_end_llm_done: set[tuple[UUID, int]] = set()
         self._year_end_reporting_done: set[tuple[UUID, int]] = set()
@@ -450,7 +455,7 @@ class Orchestrator:
         orgs_by_key = {ctx.owner_key: ctx for ctx in self._organizations.values()}
         if not orgs_by_key:
             return
-        self._b2b_coordinator = B2BCoordinator(orgs_by_key)
+        self._b2b_coordinator = B2BCoordinator(orgs_by_key, inflation=self._inflation)
 
     @staticmethod
     def _normalize_vendor_name(name: str) -> str:
@@ -987,6 +992,56 @@ class Orchestrator:
         """Get the current simulation date based on day number."""
         base_date = date.today() - timedelta(days=30)  # Start 30 days ago
         return base_date + timedelta(days=self._scheduler.current_time.day - 1)
+
+    def _maybe_publish_vendor_price_increases(self, sim_date: date) -> None:
+        """Publish annual vendor price increase notifications."""
+        if self._inflation.annual_rate <= 0:
+            return
+        if not self._inflation.is_anniversary(sim_date):
+            return
+
+        rate_pct = (self._inflation.annual_rate * Decimal("100")).quantize(
+            Decimal("0.1")
+        )
+        multiplier = float(self._inflation.annual_increase_multiplier())
+
+        for org_id, ctx in self._organizations.items():
+            profiles = VENDOR_ARCHETYPES.get(ctx.industry, [])
+            if not profiles:
+                continue
+
+            vendor_agents_by_name = {
+                vendor.profile.name.strip().lower(): vendor for vendor in ctx.vendors
+            }
+
+            for profile in profiles:
+                key = (org_id, profile.name, sim_date.year)
+                if key in self._vendor_price_increase_sent:
+                    continue
+
+                agent = vendor_agents_by_name.get(profile.name.strip().lower())
+                if agent is not None:
+                    agent_id = agent.id
+                    agent_name = agent.name
+                    agent.profile.typical_amount = round(
+                        agent.profile.typical_amount * multiplier, 2
+                    )
+                else:
+                    agent_id = UUID(int=0)
+                    agent_name = profile.name
+
+                self._event_publisher.publish(
+                    agent_speaking(
+                        agent_id=agent_id,
+                        agent_name=agent_name,
+                        message=(
+                            f"{agent_name} notified {ctx.name} of a "
+                            f"{rate_pct}% price increase effective {sim_date.isoformat()}."
+                        ),
+                        org_id=org_id,
+                    )
+                )
+                self._vendor_price_increase_sent.add(key)
 
     def _run_note(self) -> str | None:
         if not self._run_id:
@@ -2041,6 +2096,8 @@ class Orchestrator:
                 )
             )
 
+        self._maybe_publish_vendor_price_increases(sim_date)
+
         # Generate deterministic recurring bills (once per day)
         for org_id, ctx in self._organizations.items():
             await self.switch_organization(org_id)
@@ -2107,16 +2164,22 @@ class Orchestrator:
 
                 if period_end_results and "quarter_end" in period_end_results:
                     quarter_info = period_end_results["quarter_end"]
-                    reports = quarter_info.get("management_reports", {}) if isinstance(quarter_info, dict) else {}
+                    reports = (
+                        quarter_info.get("management_reports", {})
+                        if isinstance(quarter_info, dict)
+                        else {}
+                    )
                     revenue_total = Decimal(str(reports.get("revenue_total") or "0"))
                     expense_total = Decimal(str(reports.get("expense_total") or "0"))
                     net_income = revenue_total - expense_total
                     top_customer = None
                     top_expense = None
-                    if isinstance(reports.get("revenue_by_customer"), list) and reports["revenue_by_customer"]:
-                        top_customer = reports["revenue_by_customer"][0].get("name")
-                    if isinstance(reports.get("expenses_by_category"), list) and reports["expenses_by_category"]:
-                        top_expense = reports["expenses_by_category"][0].get("name")
+                    revenue_by_customer = reports.get("revenue_by_customer")
+                    if isinstance(revenue_by_customer, list) and revenue_by_customer:
+                        top_customer = revenue_by_customer[0].get("name")
+                    expenses_by_category = reports.get("expenses_by_category")
+                    if isinstance(expenses_by_category, list) and expenses_by_category:
+                        top_expense = expenses_by_category[0].get("name")
                     owner_name = ctx.owner.name if ctx.owner else "Owner"
                     summary = (
                         f"Quarterly review for {ctx.name}: "
@@ -2458,8 +2521,8 @@ class Orchestrator:
         quarter_period = AccountingWorkflow._quarter_end_period(sim_date)
         if quarter_period:
             start, end, year, quarter = quarter_period
-            key = (org_id, year, quarter)
-            if key not in self._quarter_end_llm_done:
+            quarter_key = (org_id, year, quarter)
+            if quarter_key not in self._quarter_end_llm_done:
                 task = (
                     f"Quarter-end close for {ctx.name} (Q{quarter} {year}). "
                     f"Generate Profit & Loss for {start.isoformat()} to {end.isoformat()}, "
@@ -2468,7 +2531,7 @@ class Orchestrator:
                     "Summarize key metrics for owner review."
                 )
                 await self.run_single_task(task, org_id=org_id)
-                self._quarter_end_llm_done.add(key)
+                self._quarter_end_llm_done.add(quarter_key)
                 results["quarter_end"] = {
                     "period_start": start.isoformat(),
                     "period_end": end.isoformat(),
@@ -2478,28 +2541,28 @@ class Orchestrator:
 
         if sim_date.month == 12 and sim_date.day == 31:
             year = sim_date.year
-            key = (org_id, year)
-            if key not in self._year_end_llm_done:
+            year_end_key = (org_id, year)
+            if year_end_key not in self._year_end_llm_done:
                 task = (
                     f"Year-end close for {ctx.name} as of {sim_date.isoformat()}. "
                     "Record depreciation, complete inventory adjustments if applicable, "
                     "and post closing entries to transfer net income to retained earnings."
                 )
                 await self.run_single_task(task, org_id=org_id)
-                self._year_end_llm_done.add(key)
+                self._year_end_llm_done.add(year_end_key)
                 results["year_end"] = {"year": year}
 
         if sim_date.month == 1 and sim_date.day <= 31:
             prior_year = sim_date.year - 1
-            key = (org_id, prior_year)
-            if key not in self._year_end_reporting_done:
+            reporting_key = (org_id, prior_year)
+            if reporting_key not in self._year_end_reporting_done:
                 task = (
                     f"Year-end reporting for {ctx.name} ({prior_year}). "
                     "Compile 1099-NEC vendor filings and confirm they are prepared. "
                     "Note any missing W-9 information or follow-ups needed."
                 )
                 await self.run_single_task(task, org_id=org_id)
-                self._year_end_reporting_done.add(key)
+                self._year_end_reporting_done.add(reporting_key)
                 results["year_end_reporting"] = {"tax_year": prior_year}
 
         return results

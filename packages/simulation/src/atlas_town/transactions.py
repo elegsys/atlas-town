@@ -24,6 +24,7 @@ from atlas_town.config.personas_loader import (
     load_persona_recurring_transactions,
     load_persona_tax_configs,
 )
+from atlas_town.economics import InflationModel, get_inflation_model
 from atlas_town.scheduler import PHASE_TIMES, DayPhase
 
 logger = structlog.get_logger(__name__)
@@ -218,10 +219,12 @@ class PayrollGenerator:
         employees_by_business: dict[str, list[EmployeeSpec]],
         payroll_by_business: dict[str, PayrollConfig],
         industries_by_business: dict[str, str] | None = None,
+        inflation: InflationModel | None = None,
     ) -> None:
         self._employees_by_business = employees_by_business
         self._payroll_by_business = payroll_by_business
         self._industries_by_business = industries_by_business or {}
+        self._inflation = inflation or get_inflation_model()
         self._last_pay_date: dict[str, date] = {}
         self._tax_due_by_date: dict[str, dict[date, Decimal]] = {}
         self._quarter_tax_liability: dict[tuple[str, int, int], Decimal] = {}
@@ -297,7 +300,12 @@ class PayrollGenerator:
             current_date.year, current_date.month, weekday
         )
 
-    def _calculate_gross_pay(self, employees: list[EmployeeSpec], frequency: str) -> Decimal:
+    def _calculate_gross_pay(
+        self,
+        employees: list[EmployeeSpec],
+        frequency: str,
+        inflation_factor: Decimal,
+    ) -> Decimal:
         weeks = Decimal("1")
         if frequency == "bi-weekly":
             weeks = Decimal("2")
@@ -306,7 +314,8 @@ class PayrollGenerator:
 
         total = Decimal("0")
         for emp in employees:
-            total += emp.pay_rate * emp.hours_per_week * weeks * Decimal(emp.count)
+            adjusted_rate = emp.pay_rate * inflation_factor
+            total += adjusted_rate * emp.hours_per_week * weeks * Decimal(emp.count)
         return total.quantize(Decimal("0.01"))
 
     @staticmethod
@@ -436,10 +445,11 @@ class PayrollGenerator:
             return transactions
 
         frequency = self._normalize_frequency(config.frequency)
+        inflation_factor = self._inflation.factor_for(current_date)
 
         # Payroll run
         if self._payroll_due(business_key, current_date):
-            gross = self._calculate_gross_pay(employees, frequency)
+            gross = self._calculate_gross_pay(employees, frequency, inflation_factor)
             if gross > 0:
                 ss = (gross * self._SOCIAL_SECURITY).quantize(Decimal("0.01"))
                 medicare = (gross * self._MEDICARE).quantize(Decimal("0.01"))
@@ -1179,11 +1189,16 @@ TEMPLATE_DATA = {
 class TransactionGenerator:
     """Generates realistic daily transactions for each business."""
 
-    def __init__(self, seed: int | None = None):
+    def __init__(
+        self,
+        seed: int | None = None,
+        inflation: InflationModel | None = None,
+    ):
         """Initialize with optional random seed for reproducibility."""
         self._rng = random.Random(seed)
         self._logger = logger.bind(component="transaction_generator")
         self._day_patterns = get_business_day_patterns()
+        self._inflation = inflation or get_inflation_model()
         self._recurring_scheduler = RecurringTransactionScheduler(
             self._load_recurring_transactions()
         )
@@ -1191,6 +1206,7 @@ class TransactionGenerator:
             self._load_employee_configs(),
             self._load_payroll_configs(),
             self._load_industries(),
+            inflation=self._inflation,
         )
         self._quarterly_tax_scheduler = QuarterlyTaxScheduler(
             self._load_tax_configs()
@@ -1324,11 +1340,14 @@ class TransactionGenerator:
         vendors: list[dict[str, Any]],
     ) -> list[GeneratedTransaction]:
         """Generate recurring transactions for a business on the given date."""
-        return self._recurring_scheduler.get_due_transactions(
+        transactions = self._recurring_scheduler.get_due_transactions(
             business_key=business_key,
             current_date=current_date,
             vendors=vendors,
         )
+        for tx in transactions:
+            tx.amount = self._inflation.apply(tx.amount, current_date)
+        return transactions
 
     def generate_payroll_transactions(
         self,
@@ -1500,13 +1519,13 @@ class TransactionGenerator:
             return list(range(start_h, end_h))
         return list(range(start_h, 24)) + list(range(0, end_h))
 
-    def _generate_amount(self, pattern: TransactionPattern) -> Decimal:
+    def _generate_amount(self, pattern: TransactionPattern, current_date: date) -> Decimal:
         """Generate a random amount within the pattern's range."""
         min_val = float(pattern.min_amount)
         max_val = float(pattern.max_amount)
 
         if min_val == max_val:
-            return pattern.min_amount
+            return self._inflation.apply(pattern.min_amount, current_date)
 
         # Use triangular distribution (mode at lower end for realistic pricing)
         amount = self._rng.triangular(
@@ -1514,7 +1533,8 @@ class TransactionGenerator:
         )
         # Round to 2 decimal places, nearest 0.05 for realism
         amount = round(amount / 0.05) * 0.05
-        return Decimal(str(round(amount, 2)))
+        base_amount = Decimal(str(round(amount, 2)))
+        return self._inflation.apply(base_amount, current_date)
 
     def generate_daily_transactions(
         self,
@@ -1635,7 +1655,7 @@ class TransactionGenerator:
 
                     # Generate regular transaction
                     description = self._fill_template(pattern.description_template)
-                    amount = self._generate_amount(pattern)
+                    amount = self._generate_amount(pattern, current_date)
 
                     # Assign customer or vendor
                     customer_id = None
@@ -1714,7 +1734,7 @@ class TransactionGenerator:
 
             # Generate regular transaction
             description = self._fill_template(pattern.description_template)
-            amount = self._generate_amount(pattern)
+            amount = self._generate_amount(pattern, current_date)
 
             # Assign customer or vendor
             customer_id = None
@@ -1780,6 +1800,9 @@ class TransactionGenerator:
         }
 
 
-def create_transaction_generator(seed: int | None = None) -> TransactionGenerator:
+def create_transaction_generator(
+    seed: int | None = None,
+    inflation: InflationModel | None = None,
+) -> TransactionGenerator:
     """Create a transaction generator instance."""
-    return TransactionGenerator(seed)
+    return TransactionGenerator(seed=seed, inflation=inflation)

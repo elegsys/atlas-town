@@ -4,6 +4,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
+from atlas_town.economics import InflationModel
 from atlas_town.transactions import (
     EmployeeSpec,
     PayrollConfig,
@@ -34,7 +35,11 @@ def test_payroll_run_generates_bill_with_hint():
     )
     vendors = [_vendor(payroll_vendor)]
 
-    generator = PayrollGenerator({"biz": employees}, {"biz": config})
+    generator = PayrollGenerator(
+        {"biz": employees},
+        {"biz": config},
+        inflation=InflationModel.disabled(),
+    )
     pay_date = date(2024, 1, 5)  # Friday
 
     transactions = generator.get_due_transactions("biz", pay_date, vendors)
@@ -67,7 +72,11 @@ def test_payroll_tax_deposit_semiweekly_schedule():
     )
     vendors = [_vendor(payroll_vendor), _vendor(tax_vendor)]
 
-    generator = PayrollGenerator({"biz": employees}, {"biz": config})
+    generator = PayrollGenerator(
+        {"biz": employees},
+        {"biz": config},
+        inflation=InflationModel.disabled(),
+    )
     pay_date = date(2024, 1, 5)  # Friday
     gross = Decimal("280000.00")
     taxes = (gross * Decimal("0.1965")).quantize(Decimal("0.01"))
@@ -107,7 +116,11 @@ def test_payroll_tax_deposit_monthly_schedule():
     )
     vendors = [_vendor(payroll_vendor), _vendor(tax_vendor)]
 
-    generator = PayrollGenerator({"biz": employees}, {"biz": config})
+    generator = PayrollGenerator(
+        {"biz": employees},
+        {"biz": config},
+        inflation=InflationModel.disabled(),
+    )
     pay_date = date(2024, 1, 5)  # Friday
 
     payroll_txs = generator.get_due_transactions("biz", pay_date, vendors)
@@ -142,7 +155,11 @@ def test_payroll_tax_deposit_quarterly_with_form_941():
     )
     vendors = [_vendor(payroll_vendor), _vendor(tax_vendor)]
 
-    generator = PayrollGenerator({"biz": employees}, {"biz": config})
+    generator = PayrollGenerator(
+        {"biz": employees},
+        {"biz": config},
+        inflation=InflationModel.disabled(),
+    )
     pay_date = date(2024, 1, 5)
     payroll_txs = generator.get_due_transactions("biz", pay_date, vendors)
     assert any(tx.description.startswith("Payroll") for tx in payroll_txs)
@@ -182,6 +199,7 @@ def test_1099_processing_generated_for_eligible_vendors():
         {"biz": employees},
         {"biz": config},
         industries_by_business={"biz": "technology"},
+        inflation=InflationModel.disabled(),
     )
 
     year_end_date = date(2025, 1, 31)

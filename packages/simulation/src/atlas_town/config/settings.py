@@ -1,5 +1,7 @@
 """Configuration settings for Atlas Town simulation."""
 
+from datetime import date
+from decimal import Decimal
 from functools import lru_cache
 from typing import Literal
 
@@ -161,6 +163,14 @@ class FlatSettings(BaseSettings):
     )
     simulation_run_id: str | None = Field(
         default=None, validation_alias="SIMULATION_RUN_ID"
+    )
+
+    # Economics
+    inflation_annual_rate: Decimal = Field(
+        default=Decimal("0.025"), validation_alias="INFLATION_ANNUAL_RATE"
+    )
+    inflation_start_date: date = Field(
+        default=date(2024, 1, 1), validation_alias="INFLATION_START_DATE"
     )
 
 

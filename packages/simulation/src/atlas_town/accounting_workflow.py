@@ -22,13 +22,13 @@ from uuid import UUID, uuid4
 
 import structlog
 
-from atlas_town.tools.atlas_api import AtlasAPIClient, AtlasAPIError
 from atlas_town.config.personas_loader import (
     load_persona_industries,
     load_persona_sales_tax_configs,
     load_persona_tax_configs,
     load_persona_year_end_configs,
 )
+from atlas_town.tools.atlas_api import AtlasAPIClient, AtlasAPIError
 from atlas_town.transactions import (
     GeneratedTransaction,
     TransactionGenerator,
@@ -351,8 +351,12 @@ class AccountingWorkflow:
             base = _base_config(business_key)
             override = overrides.get(business_key, {})
 
-            def _decimal_override(key: str, fallback: Decimal) -> Decimal:
-                value = override.get(key)
+            def _decimal_override(
+                key: str,
+                fallback: Decimal,
+                override_map: dict[str, Any] = override,
+            ) -> Decimal:
+                value = override_map.get(key)
                 if value is None:
                     return fallback
                 try:
@@ -360,8 +364,12 @@ class AccountingWorkflow:
                 except (ValueError, TypeError):
                     return fallback
 
-            def _keywords_override(key: str, fallback: tuple[str, ...]) -> tuple[str, ...]:
-                raw = override.get(key)
+            def _keywords_override(
+                key: str,
+                fallback: tuple[str, ...],
+                override_map: dict[str, Any] = override,
+            ) -> tuple[str, ...]:
+                raw = override_map.get(key)
                 if not raw:
                     return fallback
                 if isinstance(raw, list):
@@ -1990,7 +1998,10 @@ class AccountingWorkflow:
         payments_received = await self._fetch_all_payments()
         payments_made = await self._fetch_all_payments_made()
 
-        def _index_by_amount(items: list[dict[str, Any]], date_key: str) -> dict[str, list[dict[str, Any]]]:
+        def _index_by_amount(
+            items: list[dict[str, Any]],
+            date_key: str,
+        ) -> dict[str, list[dict[str, Any]]]:
             index: dict[str, list[dict[str, Any]]] = {}
             for item in items:
                 amount = self._extract_decimal(item.get("amount"))
@@ -2111,8 +2122,9 @@ class AccountingWorkflow:
                 or self._extract_decimal(inv.get("subtotal"))
                 or Decimal("0")
             )
-            customer_id = str(inv.get("customer_id"))
-            customer_name = customer_map.get(customer_id, customer_id or "Unknown")
+            customer_id = str(inv.get("customer_id") or "")
+            customer_name = customer_map.get(customer_id) or customer_id or "Unknown"
+            customer_name = str(customer_name)
             revenue_by_customer[customer_name] = revenue_by_customer.get(
                 customer_name, Decimal("0")
             ) + amount
@@ -2131,7 +2143,8 @@ class AccountingWorkflow:
                 continue
             for line in detail.get("lines", []):
                 account_id = line.get("expense_account_id") or line.get("account_id")
-                category = account_map.get(str(account_id), "Uncategorized")
+                category = account_map.get(str(account_id)) or "Uncategorized"
+                category = str(category)
                 qty = self._extract_decimal(line.get("quantity")) or Decimal("1")
                 unit_price = (
                     self._extract_decimal(line.get("unit_price"))
@@ -2153,21 +2166,27 @@ class AccountingWorkflow:
         revenue_total = sum(revenue_by_customer.values(), Decimal("0"))
         expense_total = sum(expenses_by_category.values(), Decimal("0"))
 
+        top_vendors: dict[str, Decimal] = {}
+        for bill in bills:
+            vendor_id = bill.get("vendor_id")
+            if not vendor_id:
+                continue
+            vendor_name = vendor_map.get(str(vendor_id)) or str(vendor_id)
+            amount = (
+                self._extract_decimal(bill.get("amount_due"))
+                or self._extract_decimal(bill.get("amount"))
+                or Decimal("0")
+            )
+            top_vendors[str(vendor_name)] = top_vendors.get(
+                str(vendor_name), Decimal("0")
+            ) + amount
+
         return {
             "revenue_by_customer": _top_n(revenue_by_customer),
             "expenses_by_category": _top_n(expenses_by_category),
             "revenue_total": str(revenue_total.quantize(Decimal("0.01"))),
             "expense_total": str(expense_total.quantize(Decimal("0.01"))),
-            "top_vendors": _top_n(
-                {
-                    vendor_map.get(str(v.get("vendor_id")), str(v.get("vendor_id"))): (
-                        self._extract_decimal(v.get("amount_due"))
-                        or self._extract_decimal(v.get("amount"))
-                        or Decimal("0")
-                    )
-                    for v in bills
-                }
-            ),
+            "top_vendors": _top_n(top_vendors),
         }
 
     async def _initialize_new_year_budget(self, year: int) -> dict[str, Any] | None:
