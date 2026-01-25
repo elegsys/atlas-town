@@ -640,13 +640,23 @@ async def main():
         signup_result = await signup_business(api_url, key, biz)
 
         if signup_result:
-            # New account created, use the tokens from signup
-            business_credentials[key] = {
-                "access_token": signup_result["tokens"]["access_token"],
-                "refresh_token": signup_result["tokens"]["refresh_token"],
-                "organization": signup_result["organization"],
-                "user": signup_result["user"],
-            }
+            # New account created, prefer a fresh login token for switch-org
+            login_result = await login_business(api_url, biz["email"])
+            if login_result and login_result.get("organizations"):
+                org = login_result["organizations"][0]
+                business_credentials[key] = {
+                    "access_token": login_result["tokens"]["access_token"],
+                    "refresh_token": login_result["tokens"]["refresh_token"],
+                    "organization": org,
+                    "user": login_result["user"],
+                }
+            else:
+                business_credentials[key] = {
+                    "access_token": signup_result["tokens"]["access_token"],
+                    "refresh_token": signup_result["tokens"]["refresh_token"],
+                    "organization": signup_result["organization"],
+                    "user": signup_result["user"],
+                }
         else:
             # Account exists, login to get tokens
             login_result = await login_business(api_url, biz["email"])

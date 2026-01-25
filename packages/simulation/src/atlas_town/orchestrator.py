@@ -46,6 +46,7 @@ from atlas_town.clients import ClaudeClient, GeminiClient, OpenAIClient
 from atlas_town.config import get_settings
 from atlas_town.config.personas_loader import (
     load_persona_payroll_configs,
+    load_persona_sales_tax_configs,
     load_persona_tax_configs,
 )
 from atlas_town.events import (
@@ -245,6 +246,7 @@ class Orchestrator:
         self._initialize_b2b()
         await self._ensure_payroll_vendors()
         await self._ensure_tax_vendors()
+        await self._ensure_sales_tax_vendors()
         await self._ensure_1099_vendors()
 
         # Only create LLM agents if not in FAST mode
@@ -643,6 +645,37 @@ class Orchestrator:
             except AtlasAPIError as exc:
                 self._logger.warning(
                     "tax_vendor_list_failed",
+                    org=ctx.name,
+                    error=str(exc),
+                )
+                continue
+
+            await self._ensure_vendor_present(vendors, vendor_name)
+
+    async def _ensure_sales_tax_vendors(self) -> None:
+        if not self._api_client:
+            return
+
+        tax_configs = load_persona_sales_tax_configs()
+        if not tax_configs:
+            return
+
+        for org_id, ctx in self._organizations.items():
+            config = tax_configs.get(ctx.owner_key)
+            if not config or not config.get("enabled"):
+                continue
+
+            tax_authority = config.get("tax_authority") or "State Tax Authority"
+            vendor_name = str(tax_authority).strip()
+            if not vendor_name:
+                continue
+
+            try:
+                await self.switch_organization(org_id)
+                vendors = await self._api_client.list_vendors()
+            except AtlasAPIError as exc:
+                self._logger.warning(
+                    "sales_tax_vendor_list_failed",
                     org=ctx.name,
                     error=str(exc),
                 )

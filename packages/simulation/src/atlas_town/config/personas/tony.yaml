@@ -90,6 +90,18 @@ tax_config:
   estimated_tax_rate: 0.23
   tax_vendor: "IRS Estimated Taxes"
 
+sales_tax:
+  enabled: true
+  rate: 0.0825
+  jurisdiction: "NY"
+  tax_type: "sales_tax"
+  name: "NY Sales Tax"
+  collect_on:
+    - "pizza"
+    - "catering"
+  tax_authority: "New York State Department of Taxation"
+  remit_day: 1
+
 recurring_transactions:
   - name: "Restaurant Rent"
     vendor: "Downtown Properties LLC"

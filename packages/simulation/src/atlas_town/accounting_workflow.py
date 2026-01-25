@@ -23,6 +23,7 @@ from uuid import UUID, uuid4
 import structlog
 
 from atlas_town.tools.atlas_api import AtlasAPIClient, AtlasAPIError
+from atlas_town.config.personas_loader import load_persona_sales_tax_configs
 from atlas_town.transactions import (
     GeneratedTransaction,
     TransactionGenerator,
@@ -81,6 +82,31 @@ Books Status: {status}
 """.strip()
 
 
+@dataclass(frozen=True)
+class SalesTaxConfig:
+    """Sales tax configuration for a business."""
+
+    enabled: bool
+    rate: Decimal
+    jurisdiction: str
+    tax_type: str
+    name: str
+    collect_on: tuple[str, ...]
+    tax_authority: str | None
+    remit_day: int
+
+    @property
+    def region(self) -> str:
+        return self.jurisdiction.strip()
+
+    @property
+    def country(self) -> str | None:
+        region = self.region
+        if len(region) == 2 and region.isalpha():
+            return "US"
+        return None
+
+
 class WorkflowResults(TypedDict):
     """Typed results for deterministic transaction processing."""
 
@@ -118,6 +144,10 @@ class AccountingWorkflow:
         self._logger = logger.bind(component="accounting_workflow")
         # Cache accounts per org to avoid repeated API calls
         self._account_cache: dict[UUID, dict[str, Any]] = {}
+        self._sales_tax_configs = self._load_sales_tax_configs()
+        self._sales_tax_collected: dict[tuple[str, int, int], Decimal] = {}
+        self._sales_tax_remitted: set[tuple[str, int, int]] = set()
+        self._sales_tax_rate_cache: dict[tuple[UUID, str], dict[str, Any]] = {}
         self._run_id = run_id
         self._run_id_short = run_id.split("-")[0] if run_id else None
 
@@ -130,6 +160,47 @@ class AccountingWorkflow:
         if not self._run_id_short:
             return ""
         return f"-R{self._run_id_short}"
+
+    def _load_sales_tax_configs(self) -> dict[str, SalesTaxConfig]:
+        raw = load_persona_sales_tax_configs()
+        configs: dict[str, SalesTaxConfig] = {}
+        for business_key, config in raw.items():
+            enabled = bool(config.get("enabled", False))
+            if not enabled:
+                continue
+
+            try:
+                rate = Decimal(str(config.get("rate", "0")))
+            except (ValueError, TypeError) as exc:
+                raise ValueError(
+                    f"Sales tax rate invalid for {business_key}: {config!r}"
+                ) from exc
+
+            jurisdiction = str(config.get("jurisdiction") or "US")
+            tax_type = str(config.get("tax_type") or "sales")
+            name = str(
+                config.get("name") or f"{jurisdiction} {tax_type.title()} Tax"
+            )
+            collect_on = tuple(
+                str(item).strip().lower()
+                for item in (config.get("collect_on") or [])
+                if str(item).strip()
+            )
+            tax_authority = config.get("tax_authority")
+            remit_day = int(config.get("remit_day", 1))
+
+            configs[business_key] = SalesTaxConfig(
+                enabled=True,
+                rate=rate,
+                jurisdiction=jurisdiction,
+                tax_type=tax_type,
+                name=name,
+                collect_on=collect_on,
+                tax_authority=str(tax_authority) if tax_authority is not None else None,
+                remit_day=remit_day,
+            )
+
+        return configs
 
     async def _get_accounts_for_org(self, org_id: UUID) -> dict[str, Any]:
         """Get cached account info for an organization."""
@@ -174,6 +245,17 @@ class AccountingWorkflow:
                 ]
             ap_account = ap_accounts[0] if ap_accounts else None
 
+            # Find sales tax payable account (liability with "sales tax" or "tax payable")
+            sales_tax_accounts = [
+                a for a in accounts
+                if a.get("account_type") == "liability"
+                and (
+                    "sales tax" in a.get("name", "").lower()
+                    or "tax payable" in a.get("name", "").lower()
+                )
+            ]
+            sales_tax_account = sales_tax_accounts[0] if sales_tax_accounts else None
+
             # Find deposit/cash account (bank or cash type)
             bank_accounts = [a for a in accounts if a.get("account_type") == "bank"]
             if not bank_accounts:
@@ -193,6 +275,9 @@ class AccountingWorkflow:
                 "ar_account_id": ar_account["id"] if ar_account else None,
                 "ap_account_id": ap_account["id"] if ap_account else None,
                 "deposit_account_id": deposit_account["id"] if deposit_account else None,
+                "sales_tax_payable_account_id": (
+                    sales_tax_account["id"] if sales_tax_account else None
+                ),
                 "all_accounts": accounts,
             }
 
@@ -206,8 +291,235 @@ class AccountingWorkflow:
                 self._logger.warning("no_ap_account", org_id=str(org_id))
             if not deposit_account:
                 self._logger.warning("no_deposit_account", org_id=str(org_id))
+            if not sales_tax_account:
+                self._logger.info("no_sales_tax_account", org_id=str(org_id))
 
         return self._account_cache[org_id]
+
+    def _is_sales_taxable(self, config: SalesTaxConfig, tx: GeneratedTransaction) -> bool:
+        if not config.collect_on:
+            return True
+
+        candidates: list[str] = []
+        if tx.metadata:
+            for key in ("category", "tax_category", "item_type", "line_item_type"):
+                value = tx.metadata.get(key)
+                if isinstance(value, str) and value.strip():
+                    candidates.append(value)
+                elif isinstance(value, list):
+                    candidates.extend(
+                        str(item) for item in value if str(item).strip()
+                    )
+
+        candidates.append(tx.description)
+
+        for candidate in candidates:
+            lowered = candidate.lower()
+            for keyword in config.collect_on:
+                if keyword in lowered:
+                    return True
+
+        return False
+
+    async def _get_or_create_sales_tax_rate(
+        self, org_id: UUID, config: SalesTaxConfig
+    ) -> dict[str, Any] | None:
+        cache_key = (org_id, config.name)
+        if cache_key in self._sales_tax_rate_cache:
+            return self._sales_tax_rate_cache[cache_key]
+
+        try:
+            rates = await self._api.list_tax_rates(
+                tax_type=config.tax_type
+            )
+        except AtlasAPIError as exc:
+            self._logger.warning(
+                "sales_tax_rate_list_failed",
+                org_id=str(org_id),
+                error=str(exc),
+            )
+            return None
+
+        match = None
+        for rate in rates:
+            name = str(rate.get("name", "")).strip()
+            if name.lower() == config.name.lower():
+                match = rate
+                break
+            try:
+                rate_value = Decimal(str(rate.get("rate", "0")))
+            except (ValueError, TypeError):
+                rate_value = None
+            if (
+                rate_value is not None
+                and rate_value == config.rate
+                and str(rate.get("tax_type", "")).lower() == config.tax_type.lower()
+                and str(rate.get("region", "")).lower()
+                == config.region.lower()
+            ):
+                match = rate
+                break
+
+        if not match:
+            region = config.region.upper()
+            code = f"ST-{region}" if region else "SALES"
+            payload = {
+                "name": config.name,
+                "rate": str(config.rate),
+                "tax_type": config.tax_type,
+                "code": code[:20],
+                "country": config.country,
+                "region": config.region,
+                "is_compound": False,
+                "is_recoverable": True,
+            }
+            try:
+                match = await self._api.create_tax_rate(payload)
+            except AtlasAPIError as exc:
+                self._logger.warning(
+                    "sales_tax_rate_create_failed",
+                    org_id=str(org_id),
+                    error=str(exc),
+                )
+                match = None
+
+        if match:
+            self._sales_tax_rate_cache[cache_key] = match
+
+        return match
+
+    async def _calculate_sales_tax(
+        self,
+        business_key: str,
+        tx: GeneratedTransaction,
+        org_id: UUID,
+    ) -> Decimal:
+        config = self._sales_tax_configs.get(business_key)
+        if not config or not config.enabled:
+            return Decimal("0")
+
+        if tx.amount <= 0:
+            return Decimal("0")
+
+        if tx.metadata and tx.metadata.get("tax_exempt"):
+            return Decimal("0")
+
+        if not self._is_sales_taxable(config, tx):
+            return Decimal("0")
+
+        rate = config.rate
+        tax_rate = await self._get_or_create_sales_tax_rate(org_id, config)
+        if tax_rate:
+            try:
+                rate = Decimal(str(tax_rate.get("rate", str(rate))))
+            except (ValueError, TypeError):
+                rate = config.rate
+
+        return (tx.amount * rate).quantize(Decimal("0.01"))
+
+    def _record_sales_tax_collected(
+        self, business_key: str, current_date: date, amount: Decimal
+    ) -> None:
+        period_key = (business_key, current_date.year, current_date.month)
+        self._sales_tax_collected[period_key] = (
+            self._sales_tax_collected.get(period_key, Decimal("0")) + amount
+        )
+
+    def _mark_sales_tax_remitted(
+        self, business_key: str, metadata: dict[str, Any] | None
+    ) -> None:
+        if not metadata:
+            return
+        year = metadata.get("tax_period_year")
+        month = metadata.get("tax_period_month")
+        if year is None or month is None:
+            return
+        try:
+            period_key = (business_key, int(year), int(month))
+        except (TypeError, ValueError):
+            return
+        self._sales_tax_remitted.add(period_key)
+
+    def _find_vendor_id(
+        self, vendor_name: str, vendors: list[dict[str, Any]]
+    ) -> UUID | None:
+        normalized = vendor_name.strip().lower()
+        for vendor in vendors:
+            name = str(
+                vendor.get("display_name") or vendor.get("name", "")
+            ).strip().lower()
+            if name == normalized:
+                try:
+                    return UUID(str(vendor.get("id")))
+                except (TypeError, ValueError):
+                    return None
+        return None
+
+    async def _generate_sales_tax_remittance(
+        self,
+        business_key: str,
+        current_date: date,
+        vendors: list[dict[str, Any]],
+        org_id: UUID,
+    ) -> GeneratedTransaction | None:
+        config = self._sales_tax_configs.get(business_key)
+        if not config or not config.enabled:
+            return None
+
+        if current_date.day != config.remit_day:
+            return None
+
+        prior_month = current_date.month - 1
+        prior_year = current_date.year
+        if prior_month == 0:
+            prior_month = 12
+            prior_year -= 1
+
+        period_key = (business_key, prior_year, prior_month)
+        if period_key in self._sales_tax_remitted:
+            return None
+
+        amount = self._sales_tax_collected.get(period_key, Decimal("0"))
+        if amount <= 0:
+            return None
+
+        vendor_name = config.tax_authority or "State Tax Authority"
+        vendor_id = self._find_vendor_id(vendor_name, vendors)
+        if vendor_id is None and vendors:
+            self._logger.warning(
+                "sales_tax_vendor_missing",
+                business=business_key,
+                vendor=vendor_name,
+            )
+            return None
+
+        account_info = await self._get_accounts_for_org(org_id)
+        tax_account_id = (
+            account_info.get("sales_tax_payable_account_id")
+            or account_info.get("ap_account_id")
+        )
+        if not tax_account_id:
+            self._logger.warning(
+                "sales_tax_remittance_missing_account",
+                business=business_key,
+                org_id=str(org_id),
+            )
+            return None
+
+        period_label = date(prior_year, prior_month, 1).strftime("%B %Y")
+        return GeneratedTransaction(
+            transaction_type=TransactionType.BILL,
+            description=f"Sales tax remittance - {period_label}",
+            amount=amount.quantize(Decimal("0.01")),
+            vendor_id=vendor_id,
+            metadata={
+                "tax_remittance": "sales",
+                "tax_period_year": prior_year,
+                "tax_period_month": prior_month,
+                "account_id_override": str(tax_account_id),
+                "notes": f"Remit sales tax collected for {period_label}.",
+            },
+        )
 
     # =========================================================================
     # CORE WORKFLOWS (Replace LLM decision-making)
@@ -266,8 +578,19 @@ class AccountingWorkflow:
         if recurring_transactions:
             transactions.extend(recurring_transactions)
 
+        sales_tax_remittance = await self._generate_sales_tax_remittance(
+            business_key=business_key,
+            current_date=current_date,
+            vendors=vendors,
+            org_id=org_id,
+        )
+        if sales_tax_remittance:
+            transactions.append(sales_tax_remittance)
+
         # Step 2-5: Process transactions (deterministic)
-        results = await self._process_transactions(transactions, current_date, org_id)
+        results = await self._process_transactions(
+            transactions, current_date, org_id, business_key
+        )
 
         # Step 6: Verify books are balanced
         trial_balance = await self._api.get_trial_balance(
@@ -308,6 +631,7 @@ class AccountingWorkflow:
         transactions: list[GeneratedTransaction],
         current_date: date,
         org_id: UUID,
+        business_key: str,
     ) -> WorkflowResults:
         """Process generated transactions into accounting records.
 
@@ -328,32 +652,57 @@ class AccountingWorkflow:
         for tx in transactions:
             try:
                 if tx.transaction_type == TransactionType.INVOICE:
-                    invoice = await self._create_invoice(tx, current_date, org_id)
+                    tax_amount = await self._calculate_sales_tax(
+                        business_key=business_key,
+                        tx=tx,
+                        org_id=org_id,
+                    )
+                    invoice = await self._create_invoice(
+                        tx, current_date, org_id, business_key, tax_amount
+                    )
                     if invoice:
                         results["invoices_created"] += 1
-                        results["invoices_total"] += tx.amount
+                        results["invoices_total"] += tx.amount + tax_amount
+                        if tax_amount > 0:
+                            self._record_sales_tax_collected(
+                                business_key, current_date, tax_amount
+                            )
 
                 elif tx.transaction_type == TransactionType.CASH_SALE:
                     # Cash sales: create invoice + immediate payment
-                    invoice = await self._create_invoice(tx, current_date, org_id)
+                    tax_amount = await self._calculate_sales_tax(
+                        business_key=business_key,
+                        tx=tx,
+                        org_id=org_id,
+                    )
+                    invoice = await self._create_invoice(
+                        tx, current_date, org_id, business_key, tax_amount
+                    )
                     if invoice and tx.customer_id:
+                        total_amount = tx.amount + tax_amount
                         await self._record_payment(
                             invoice_id=invoice["id"],
                             customer_id=tx.customer_id,
-                            amount=tx.amount,
+                            amount=total_amount,
                             payment_date=current_date,
                             org_id=org_id,
                         )
                         results["invoices_created"] += 1
-                        results["invoices_total"] += tx.amount
+                        results["invoices_total"] += total_amount
                         results["payments_received"] += 1
-                        results["payments_total"] += tx.amount
+                        results["payments_total"] += total_amount
+                        if tax_amount > 0:
+                            self._record_sales_tax_collected(
+                                business_key, current_date, tax_amount
+                            )
 
                 elif tx.transaction_type == TransactionType.BILL:
                     bill = await self._create_bill(tx, current_date, org_id)
                     if bill:
                         results["bills_created"] += 1
                         results["bills_total"] += tx.amount
+                        if tx.metadata and tx.metadata.get("tax_remittance") == "sales":
+                            self._mark_sales_tax_remitted(business_key, tx.metadata)
 
                 elif tx.transaction_type == TransactionType.PAYMENT_RECEIVED:
                     # Payment for existing invoice
@@ -396,6 +745,8 @@ class AccountingWorkflow:
         tx: GeneratedTransaction,
         invoice_date: date,
         org_id: UUID,
+        business_key: str,
+        tax_amount: Decimal,
     ) -> dict[str, Any] | None:
         """Create an invoice - deterministic, no LLM reasoning needed."""
         if not tx.customer_id:
@@ -406,6 +757,10 @@ class AccountingWorkflow:
         account_info = await self._get_accounts_for_org(org_id)
         revenue_account_id = account_info.get("revenue_account_id")
         ar_account_id = account_info.get("ar_account_id")
+        tax_account_id = (
+            account_info.get("sales_tax_payable_account_id")
+            or account_info.get("ap_account_id")
+        )
 
         if not revenue_account_id:
             self._logger.warning(
@@ -425,18 +780,38 @@ class AccountingWorkflow:
 
         due_date = invoice_date + timedelta(days=30)  # Net 30 terms
 
+        lines: list[dict[str, Any]] = [
+            {
+                "description": tx.description,
+                "quantity": "1",
+                "unit_price": str(tx.amount),
+                "revenue_account_id": revenue_account_id,
+            }
+        ]
+
+        if tax_amount > 0 and tax_account_id:
+            sales_tax_config = self._sales_tax_configs.get(business_key)
+            tax_label = sales_tax_config.name if sales_tax_config else "Sales Tax"
+            lines.append(
+                {
+                    "description": f"{tax_label}",
+                    "quantity": "1",
+                    "unit_price": str(tax_amount),
+                    "revenue_account_id": tax_account_id,
+                }
+            )
+        elif tax_amount > 0:
+            self._logger.warning(
+                "sales_tax_skipped_missing_account",
+                org_id=str(org_id),
+                amount=str(tax_amount),
+            )
+
         invoice_payload = {
             "customer_id": str(tx.customer_id),
             "invoice_date": invoice_date.isoformat(),
             "due_date": due_date.isoformat(),
-            "lines": [
-                {
-                    "description": tx.description,
-                    "quantity": "1",
-                    "unit_price": str(tx.amount),
-                    "revenue_account_id": revenue_account_id,
-                }
-            ],
+            "lines": lines,
         }
         run_note = self._run_note()
         if run_note:
@@ -464,6 +839,16 @@ class AccountingWorkflow:
         # Get cached expense account
         account_info = await self._get_accounts_for_org(org_id)
         expense_account_id = account_info.get("expense_account_id")
+        notes: str | None = None
+        account_override: str | None = None
+
+        if tx.metadata:
+            override_value = tx.metadata.get("account_id_override")
+            if isinstance(override_value, str) and override_value.strip():
+                account_override = override_value.strip()
+            notes_value = tx.metadata.get("notes")
+            if isinstance(notes_value, str) and notes_value.strip():
+                notes = notes_value.strip()
 
         if not expense_account_id:
             self._logger.warning(
@@ -479,6 +864,7 @@ class AccountingWorkflow:
         vendor_bill_number = (
             f"SIMRUN-{self._run_id}"[:50] if self._run_id else None
         )
+        line_account_id = account_override or expense_account_id
         bill_payload = {
             "vendor_id": str(tx.vendor_id),
             "bill_date": bill_date.isoformat(),
@@ -489,10 +875,12 @@ class AccountingWorkflow:
                     "description": tx.description,
                     "quantity": "1",
                     "unit_price": str(tx.amount),
-                    "expense_account_id": expense_account_id,
+                    "expense_account_id": line_account_id,
                 }
             ],
         }
+        if notes:
+            bill_payload["notes"] = notes
         if vendor_bill_number:
             bill_payload["vendor_bill_number"] = vendor_bill_number
 

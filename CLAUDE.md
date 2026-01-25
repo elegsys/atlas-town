@@ -37,6 +37,14 @@ uv run ruff check src/ tests/
 uv run mypy src/
 ```
 
+### Simulation Runbook (Best Practices)
+
+See `docs/simulation-runbook.md` for:
+- Reset DB + reseed steps
+- Credential locations
+- Logging patterns
+- Sales tax verification
+
 ### Frontend (Next.js) - Not yet implemented
 
 ```bash

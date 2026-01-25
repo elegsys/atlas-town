@@ -340,6 +340,54 @@ def load_persona_tax_configs() -> dict[str, dict[str, Any]]:
 
 
 @lru_cache
+def load_persona_sales_tax_configs() -> dict[str, dict[str, Any]]:
+    """Load sales tax configs from persona YAML files.
+
+    Returns:
+        Mapping of persona key (filename stem) to sales tax config dict.
+    """
+    personas_dir = Path(__file__).resolve().parent / "personas"
+    if not personas_dir.exists():
+        return {}
+
+    sales_tax_by_persona: dict[str, dict[str, Any]] = {}
+
+    for path in sorted(personas_dir.glob("*.yaml")):
+        raw = path.read_text(encoding="utf-8")
+        data = yaml.safe_load(raw) or {}
+        tax_config = data.get("sales_tax")
+
+        if tax_config is None:
+            continue
+        if not isinstance(tax_config, dict):
+            raise ValueError(f"{path.name}: sales_tax must be a mapping")
+
+        collect_on = tax_config.get("collect_on")
+        if collect_on is None:
+            collect_on = []
+        if not isinstance(collect_on, list):
+            raise ValueError(f"{path.name}: sales_tax.collect_on must be a list")
+
+        raw_tax_type = tax_config.get("tax_type", "sales_tax")
+        tax_type = str(raw_tax_type).strip().lower() if raw_tax_type is not None else "sales_tax"
+        if tax_type == "sales":
+            tax_type = "sales_tax"
+
+        sales_tax_by_persona[path.stem] = {
+            "enabled": bool(tax_config.get("enabled", False)),
+            "rate": tax_config.get("rate"),
+            "jurisdiction": tax_config.get("jurisdiction"),
+            "tax_type": tax_type,
+            "name": tax_config.get("name"),
+            "collect_on": collect_on,
+            "tax_authority": tax_config.get("tax_authority"),
+            "remit_day": tax_config.get("remit_day", 1),
+        }
+
+    return sales_tax_by_persona
+
+
+@lru_cache
 def load_persona_b2b_configs() -> dict[str, dict[str, Any]]:
     """Load B2B pairing configs from persona YAML files.
 

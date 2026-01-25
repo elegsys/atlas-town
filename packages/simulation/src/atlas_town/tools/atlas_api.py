@@ -282,6 +282,7 @@ class AtlasAPIClient:
         "/api/v1/payments",
         "/api/v1/payments-made",
         "/api/v1/accounts",
+        "/api/v1/tax-rates",
         "/api/v1/journal-entries",
         "/api/v1/bank-transactions",
         "/api/v1/reports",
@@ -511,6 +512,33 @@ class AtlasAPIClient:
     async def approve_bill(self, bill_id: UUID) -> dict[str, Any]:
         """Approve a bill for payment."""
         result = await self.post(f"/api/v1/bills/{bill_id}/approve")
+        return result if isinstance(result, dict) else {}
+
+    # === Tax Rate Endpoints ===
+
+    async def list_tax_rates(
+        self,
+        offset: int = 0,
+        limit: int = 100,
+        tax_type: str | None = None,
+        company_id: UUID | None = None,
+    ) -> list[dict[str, Any]]:
+        """List tax rates for the current organization."""
+        params: dict[str, Any] = {"offset": offset, "limit": self._clamp_limit(limit)}
+        if company_id is None:
+            company_id = self._current_company_id
+        if company_id:
+            params["company_id"] = str(company_id)
+        if tax_type:
+            params["tax_type"] = tax_type
+        result = await self.get("/api/v1/tax-rates/", params=params)
+        return self._extract_items(result)
+
+    async def create_tax_rate(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Create a tax rate."""
+        if "company_id" not in data and self._current_company_id:
+            data = {**data, "company_id": str(self._current_company_id)}
+        result = await self.post("/api/v1/tax-rates/", json=data)
         return result if isinstance(result, dict) else {}
 
     # === Payment Endpoints ===
