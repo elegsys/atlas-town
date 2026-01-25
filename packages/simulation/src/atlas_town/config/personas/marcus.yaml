@@ -78,6 +78,44 @@ tax_config:
   estimated_tax_rate: 0.27
   tax_vendor: "IRS Estimated Taxes"
 
+year_end:
+  accrual_rate: 0.07
+  depreciation_rate: 0.10
+  inventory_shrink_rate: 0.00
+  fixed_asset_keywords:
+    - office
+    - computer
+    - vehicle
+    - furniture
+    - signage
+  inventory_keywords:
+    - supplies
+    - marketing materials
+  accumulated_dep_keywords:
+    - accumulated depreciation
+    - accumulated dep
+  depreciation_expense_keywords:
+    - depreciation
+    - depreciation expense
+  cogs_keywords:
+    - commission expense
+    - agent commissions
+    - referral fees
+  tax_expense_keywords:
+    - income tax
+    - tax expense
+  tax_payable_keywords:
+    - income tax payable
+    - tax payable
+  retained_earnings_keywords:
+    - retained earnings
+    - owner's equity
+    - owner equity
+  income_summary_keywords:
+    - income summary
+    - current year earnings
+    - profit and loss
+
 recurring_transactions:
   - name: "Office Rent"
     vendor: "Office Space Partners"

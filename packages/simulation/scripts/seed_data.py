@@ -459,6 +459,109 @@ async def create_opening_balances(
             print(f"    ✗ Opening balances failed: {e.details}")
 
 
+def _find_cash_gl_account(account_map: dict[str, UUID]) -> UUID | None:
+    preferred = (
+        "cash - operating account",
+        "operating cash",
+        "cash",
+        "checking",
+        "bank",
+    )
+    for name in preferred:
+        account_id = account_map.get(name)
+        if account_id:
+            return account_id
+    for key, value in account_map.items():
+        if not isinstance(key, str) or key.isdigit():
+            continue
+        lowered = key.lower()
+        if "cash" in lowered or "checking" in lowered or "bank" in lowered:
+            return value
+    return None
+
+
+async def create_bank_feed_account(
+    client: AtlasAPIClient,
+    business_key: str,
+    account_map: dict[str, UUID],
+) -> None:
+    """Create a linked bank account for bank feed transactions."""
+    gl_account_id = _find_cash_gl_account(account_map)
+    if not gl_account_id:
+        print("    ⚠ Cash/Bank GL account not found - skipping bank feed account")
+        return
+
+    try:
+        existing_accounts = await client.list_bank_accounts()
+        for account in existing_accounts:
+            if str(account.get("gl_account_id")) == str(gl_account_id):
+                print("    ℹ Bank feed account exists")
+                return
+    except AtlasAPIError as e:
+        print(f"    ⚠ Bank accounts lookup failed: {e}")
+
+    profiles = {
+        "craig": {
+            "account_name": "Operating Checking - Landscaping",
+            "bank_name": "Atlas Community Bank",
+            "last4": "1001",
+            "opening_balance": "2500",
+        },
+        "tony": {
+            "account_name": "Operating Checking - Pizzeria",
+            "bank_name": "Atlas Community Bank",
+            "last4": "1002",
+            "opening_balance": "4200",
+        },
+        "maya": {
+            "account_name": "Operating Checking - Consulting",
+            "bank_name": "Atlas Community Bank",
+            "last4": "1003",
+            "opening_balance": "8000",
+        },
+        "chen": {
+            "account_name": "Operating Checking - Dental",
+            "bank_name": "Atlas Community Bank",
+            "last4": "1004",
+            "opening_balance": "6500",
+        },
+        "marcus": {
+            "account_name": "Operating Checking - Realty",
+            "bank_name": "Atlas Community Bank",
+            "last4": "1005",
+            "opening_balance": "5000",
+        },
+    }
+    profile = profiles.get(
+        business_key,
+        {
+            "account_name": "Operating Checking",
+            "bank_name": "Atlas Community Bank",
+            "last4": "1000",
+            "opening_balance": "0",
+        },
+    )
+
+    try:
+        await client.create_bank_account(
+            {
+                "gl_account_id": str(gl_account_id),
+                "account_name": profile["account_name"],
+                "bank_name": profile["bank_name"],
+                "account_number_last4": profile["last4"],
+                "account_type": "checking",
+                "opening_balance": profile["opening_balance"],
+                "currency": "USD",
+            }
+        )
+        print("    ✓ Bank feed account created")
+    except AtlasAPIError as e:
+        if "already exists" in str(e.details).lower() or e.status_code == 409:
+            print("    ℹ Bank feed account exists")
+        else:
+            print(f"    ✗ Bank feed account failed: {e.details}")
+
+
 async def create_sample_transactions(
     client: AtlasAPIClient,
     business_key: str,
@@ -599,6 +702,10 @@ async def seed_organization(client: AtlasAPIClient, org: dict, business_key: str
     # 3. Create vendors
     print("\n  [Vendors]")
     await create_vendors(client, business_key)
+
+    # 4. Create bank feed account
+    print("\n  [Bank Feed Account]")
+    await create_bank_feed_account(client, business_key, account_map)
 
     # 4. Create opening balances
     print("\n  [Opening Balances]")

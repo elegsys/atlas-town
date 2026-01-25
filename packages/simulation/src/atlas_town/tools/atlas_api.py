@@ -504,14 +504,23 @@ class AtlasAPIClient:
         result = await self.get(f"/api/v1/bills/{bill_id}")
         return result if isinstance(result, dict) else {}
 
+    async def approve_bill(self, bill_id: UUID, ap_account_id: str | None = None) -> dict[str, Any]:
+        """Approve a draft bill so it can be paid."""
+        if not ap_account_id:
+            accounts = await self.list_accounts(limit=200)
+            ap_account_id = self._find_ap_account_id(accounts)
+        if not ap_account_id:
+            raise AtlasAPIError("Missing AP account for bill approval")
+
+        result = await self.post(
+            f"/api/v1/bills/{bill_id}/approve",
+            json={"ap_account_id": str(ap_account_id)},
+        )
+        return result if isinstance(result, dict) else {}
+
     async def create_bill(self, data: dict[str, Any]) -> dict[str, Any]:
         """Create a new bill."""
         result = await self.post("/api/v1/bills/", json=data)
-        return result if isinstance(result, dict) else {}
-
-    async def approve_bill(self, bill_id: UUID) -> dict[str, Any]:
-        """Approve a bill for payment."""
-        result = await self.post(f"/api/v1/bills/{bill_id}/approve")
         return result if isinstance(result, dict) else {}
 
     # === Tax Rate Endpoints ===
@@ -541,6 +550,63 @@ class AtlasAPIClient:
         result = await self.post("/api/v1/tax-rates/", json=data)
         return result if isinstance(result, dict) else {}
 
+    # === Budget Endpoints ===
+
+    async def list_budgets(
+        self,
+        offset: int = 0,
+        limit: int = 100,
+        fiscal_year: int | None = None,
+        status: str | None = None,
+        company_id: UUID | None = None,
+    ) -> list[dict[str, Any]]:
+        """List budgets for the current company."""
+        if company_id is None:
+            company_id = self._current_company_id
+        if not company_id:
+            raise AtlasAPIError("Company ID required for budgets")
+        params: dict[str, Any] = {
+            "company_id": str(company_id),
+            "offset": offset,
+            "limit": self._clamp_limit(limit),
+        }
+        if fiscal_year is not None:
+            params["fiscal_year"] = fiscal_year
+        if status:
+            params["status"] = status
+        result = await self.get("/api/v1/budgets/", params=params)
+        return self._extract_items(result)
+
+    async def create_budget(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Create a budget."""
+        if "company_id" not in data and self._current_company_id:
+            data = {**data, "company_id": str(self._current_company_id)}
+        result = await self.post("/api/v1/budgets/", json=data)
+        return result if isinstance(result, dict) else {}
+
+    # === Bank Account Endpoints ===
+
+    async def list_bank_accounts(
+        self,
+        include_inactive: bool = False,
+        company_id: UUID | None = None,
+    ) -> list[dict[str, Any]]:
+        """List bank accounts for the current company."""
+        if company_id is None:
+            company_id = self._current_company_id
+        if not company_id:
+            raise AtlasAPIError("Company ID required for bank accounts")
+        params = {"company_id": str(company_id), "include_inactive": include_inactive}
+        result = await self.get("/api/v1/bank-accounts/", params=params)
+        return self._extract_items(result)
+
+    async def create_bank_account(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Create a bank account linked to a GL cash account."""
+        if "company_id" not in data and self._current_company_id:
+            data = {**data, "company_id": str(self._current_company_id)}
+        result = await self.post("/api/v1/bank-accounts/", json=data)
+        return result if isinstance(result, dict) else {}
+
     # === Payment Endpoints ===
 
     async def list_payments(
@@ -549,6 +615,16 @@ class AtlasAPIClient:
         """List payments for current organization."""
         result = await self.get(
             "/api/v1/payments/",
+            params={"offset": offset, "limit": self._clamp_limit(limit)},
+        )
+        return self._extract_items(result)
+
+    async def list_payments_made(
+        self, offset: int = 0, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """List vendor payments (payments made)."""
+        result = await self.get(
+            "/api/v1/payments-made/",
             params={"offset": offset, "limit": self._clamp_limit(limit)},
         )
         return self._extract_items(result)
@@ -657,6 +733,13 @@ class AtlasAPIClient:
         )
         return result if isinstance(result, dict) else {}
 
+    # === Vendor Tax Profile Endpoints ===
+
+    async def get_vendor_tax_profile(self, vendor_id: UUID) -> dict[str, Any]:
+        """Get vendor tax profile details (W-9 status, reportability)."""
+        result = await self.get(f"/api/v1/vendors/{vendor_id}/tax-profile")
+        return result if isinstance(result, dict) else {}
+
     @staticmethod
     def _find_ap_account_id(accounts: list[dict[str, Any]]) -> str | None:
         ap_accounts = [
@@ -753,6 +836,16 @@ class AtlasAPIClient:
         """Get balance sheet report."""
         result = await self.get(
             "/api/v1/reports/balance-sheet", params={"as_of_date": as_of_date}
+        )
+        return result if isinstance(result, dict) else {}
+
+    async def get_cash_flow(
+        self, period_start: str, period_end: str
+    ) -> dict[str, Any]:
+        """Get cash flow report."""
+        result = await self.get(
+            "/api/v1/reports/cash-flow",
+            params={"period_start": period_start, "period_end": period_end},
         )
         return result if isinstance(result, dict) else {}
 
@@ -878,13 +971,21 @@ class AtlasAPIClient:
     # === Bank Transaction Endpoints ===
 
     async def list_bank_transactions(
-        self, offset: int = 0, limit: int = 100
+        self,
+        bank_account_id: UUID,
+        offset: int = 0,
+        limit: int = 100,
+        status_filter: str | None = None,
     ) -> list[dict[str, Any]]:
         """List bank transactions."""
-        result = await self.get(
-            "/api/v1/bank-transactions/",
-            params={"offset": offset, "limit": self._clamp_limit(limit)},
-        )
+        params: dict[str, Any] = {
+            "bank_account_id": str(bank_account_id),
+            "offset": offset,
+            "limit": self._clamp_limit(limit),
+        }
+        if status_filter:
+            params["status_filter"] = status_filter
+        result = await self.get("/api/v1/bank-transactions/", params=params)
         return self._extract_items(result)
 
     async def categorize_bank_transaction(

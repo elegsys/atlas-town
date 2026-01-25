@@ -595,7 +595,7 @@ CREATE_JOURNAL_ENTRY_TOOL: dict[str, Any] = {
                 "format": "date",
                 "description": "Date of the entry",
             },
-            "memo": {
+            "description": {
                 "type": "string",
                 "description": "Description of the journal entry",
             },
@@ -610,25 +610,26 @@ CREATE_JOURNAL_ENTRY_TOOL: dict[str, Any] = {
                             "format": "uuid",
                             "description": "Account to affect",
                         },
-                        "debit": {
+                        "entry_type": {
                             "type": "string",
-                            "description": "Debit amount (use either debit or credit, not both)",
+                            "enum": ["debit", "credit"],
+                            "description": "Debit or credit indicator",
                         },
-                        "credit": {
+                        "amount": {
                             "type": "string",
-                            "description": "Credit amount",
+                            "description": "Line amount (positive)",
                         },
-                        "memo": {
+                        "description": {
                             "type": "string",
-                            "description": "Line memo",
+                            "description": "Line description",
                         },
                     },
-                    "required": ["account_id"],
+                    "required": ["account_id", "entry_type", "amount"],
                 },
                 "minItems": 2,
             },
         },
-        "required": ["entry_date", "lines"],
+        "required": ["entry_date", "description", "lines"],
     },
 }
 
@@ -687,6 +688,27 @@ GET_BALANCE_SHEET_TOOL: dict[str, Any] = {
             },
         },
         "required": ["as_of_date"],
+    },
+}
+
+GET_CASH_FLOW_TOOL: dict[str, Any] = {
+    "name": "get_cash_flow",
+    "description": "Get the Cash Flow Statement report for a date range.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "period_start": {
+                "type": "string",
+                "format": "date",
+                "description": "Start of period",
+            },
+            "period_end": {
+                "type": "string",
+                "format": "date",
+                "description": "End of period",
+            },
+        },
+        "required": ["period_start", "period_end"],
     },
 }
 
@@ -851,10 +873,19 @@ LIST_BANK_TRANSACTIONS_TOOL: dict[str, Any] = {
     "input_schema": {
         "type": "object",
         "properties": {
+            "bank_account_id": {
+                "type": "string",
+                "format": "uuid",
+                "description": "Bank account ID to list transactions for",
+            },
+            "status_filter": {
+                "type": "string",
+                "description": "Optional status filter (pending, matched, categorized, reconciled, excluded)",
+            },
             "offset": {"type": "integer", "default": 0},
             "limit": {"type": "integer", "default": 100},
         },
-        "required": [],
+        "required": ["bank_account_id"],
     },
 }
 
@@ -962,6 +993,7 @@ ACCOUNTANT_TOOLS: list[dict[str, Any]] = [
     GET_TRIAL_BALANCE_TOOL,
     GET_PROFIT_LOSS_TOOL,
     GET_BALANCE_SHEET_TOOL,
+    GET_CASH_FLOW_TOOL,
     GET_AR_AGING_TOOL,
     GET_AP_AGING_TOOL,
     # Tax Forms

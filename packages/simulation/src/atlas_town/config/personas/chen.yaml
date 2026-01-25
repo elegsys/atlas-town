@@ -85,6 +85,48 @@ tax_config:
   estimated_tax_rate: 0.30
   tax_vendor: "IRS Estimated Taxes"
 
+year_end:
+  accrual_rate: 0.09
+  depreciation_rate: 0.12
+  inventory_shrink_rate: 0.02
+  fixed_asset_keywords:
+    - dental
+    - equipment
+    - x-ray
+    - chair
+    - imaging
+    - autoclave
+    - sterilizer
+  inventory_keywords:
+    - inventory
+    - supplies
+    - dental supplies
+    - medical supplies
+  accumulated_dep_keywords:
+    - accumulated depreciation
+    - accumulated dep
+  depreciation_expense_keywords:
+    - depreciation
+    - depreciation expense
+  cogs_keywords:
+    - lab fees
+    - cost of supplies
+    - medical supplies
+  tax_expense_keywords:
+    - income tax
+    - tax expense
+  tax_payable_keywords:
+    - income tax payable
+    - tax payable
+  retained_earnings_keywords:
+    - retained earnings
+    - owner's equity
+    - owner equity
+  income_summary_keywords:
+    - income summary
+    - current year earnings
+    - profit and loss
+
 recurring_transactions:
   - name: "Office Rent"
     vendor: "Medical Plaza Properties"

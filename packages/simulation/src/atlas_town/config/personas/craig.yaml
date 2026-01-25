@@ -82,6 +82,50 @@ tax_config:
   estimated_tax_rate: 0.25
   tax_vendor: "IRS Estimated Taxes"
 
+year_end:
+  accrual_rate: 0.08
+  depreciation_rate: 0.18
+  inventory_shrink_rate: 0.015
+  fixed_asset_keywords:
+    - equipment
+    - vehicle
+    - trailer
+    - mower
+    - trimmer
+    - blower
+  inventory_keywords:
+    - supplies
+    - fertilizer
+    - fuel
+    - mulch
+    - plants
+  accumulated_dep_keywords:
+    - accumulated depreciation
+    - accumulated dep
+  depreciation_expense_keywords:
+    - depreciation
+    - depreciation expense
+  cogs_keywords:
+    - cost of services
+    - job costs
+    - materials
+  tax_expense_keywords:
+    - income tax
+    - estimated tax
+    - tax expense
+  tax_payable_keywords:
+    - income tax payable
+    - estimated tax payable
+    - tax payable
+  retained_earnings_keywords:
+    - retained earnings
+    - owner's equity
+    - owner equity
+  income_summary_keywords:
+    - income summary
+    - current year earnings
+    - profit and loss
+
 recurring_transactions:
   - name: "Equipment Yard Lease"
     vendor: "Equipment Yard Lease"

@@ -102,6 +102,52 @@ sales_tax:
   tax_authority: "New York State Department of Taxation"
   remit_day: 1
 
+year_end:
+  accrual_rate: 0.12
+  depreciation_rate: 0.15
+  inventory_shrink_rate: 0.035
+  fixed_asset_keywords:
+    - kitchen
+    - oven
+    - refrigeration
+    - equipment
+    - furniture
+    - hood
+    - pos
+  inventory_keywords:
+    - inventory
+    - food
+    - supplies
+    - ingredients
+    - beverages
+    - packaging
+  accumulated_dep_keywords:
+    - accumulated depreciation
+    - accumulated dep
+  depreciation_expense_keywords:
+    - depreciation
+    - depreciation expense
+  cogs_keywords:
+    - cost of goods
+    - food cost
+    - cogs
+  tax_expense_keywords:
+    - income tax
+    - tax expense
+    - sales tax expense
+  tax_payable_keywords:
+    - income tax payable
+    - tax payable
+    - sales tax payable
+  retained_earnings_keywords:
+    - retained earnings
+    - owner's equity
+    - owner equity
+  income_summary_keywords:
+    - income summary
+    - current year earnings
+    - profit and loss
+
 recurring_transactions:
   - name: "Restaurant Rent"
     vendor: "Downtown Properties LLC"

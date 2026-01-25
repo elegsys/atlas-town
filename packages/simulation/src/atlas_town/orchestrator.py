@@ -176,6 +176,12 @@ class Orchestrator:
         # Quarterly tax tracking per org (estimate_id, bill_id)
         self._quarterly_tax_records: dict[tuple[UUID, int, int], dict[str, str]] = {}
 
+        # Period-end tracking for LLM mode
+        self._month_end_llm_done: set[tuple[UUID, int, int]] = set()
+        self._quarter_end_llm_done: set[tuple[UUID, int, int]] = set()
+        self._year_end_llm_done: set[tuple[UUID, int]] = set()
+        self._year_end_reporting_done: set[tuple[UUID, int]] = set()
+
         # B2B paired transaction coordinator
         self._b2b_coordinator: B2BCoordinator | None = None
         self._b2b_pairs_created: set[str] = set()
@@ -1902,6 +1908,19 @@ class Orchestrator:
             )
             return False
 
+        if bill and bill.get("status") == "draft":
+            try:
+                bill = await self._api_client.approve_bill(UUID(bill_id))
+            except AtlasAPIError as exc:
+                self._logger.warning(
+                    "quarterly_tax_bill_approve_failed",
+                    org=ctx.name,
+                    tax_year=action.tax_year,
+                    quarter=action.quarter,
+                    error=str(exc),
+                )
+                return False
+
         amount_raw = None
         if estimate:
             amount_raw = estimate.get("remaining_due") or estimate.get("amount_due")
@@ -2080,12 +2099,64 @@ class Orchestrator:
                         )
                     )
 
+                period_end_results = await self._run_period_end_tasks(
+                    org_id=org_id,
+                    ctx=ctx,
+                    sim_date=sim_date,
+                )
+
+                if period_end_results and "quarter_end" in period_end_results:
+                    quarter_info = period_end_results["quarter_end"]
+                    reports = quarter_info.get("management_reports", {}) if isinstance(quarter_info, dict) else {}
+                    revenue_total = Decimal(str(reports.get("revenue_total") or "0"))
+                    expense_total = Decimal(str(reports.get("expense_total") or "0"))
+                    net_income = revenue_total - expense_total
+                    top_customer = None
+                    top_expense = None
+                    if isinstance(reports.get("revenue_by_customer"), list) and reports["revenue_by_customer"]:
+                        top_customer = reports["revenue_by_customer"][0].get("name")
+                    if isinstance(reports.get("expenses_by_category"), list) and reports["expenses_by_category"]:
+                        top_expense = reports["expenses_by_category"][0].get("name")
+                    owner_name = ctx.owner.name if ctx.owner else "Owner"
+                    summary = (
+                        f"Quarterly review for {ctx.name}: "
+                        f"Revenue ${revenue_total:,.2f}, "
+                        f"Expenses ${expense_total:,.2f}, "
+                        f"Net ${net_income:,.2f}."
+                    )
+                    if top_customer:
+                        summary += f" Top customer: {top_customer}."
+                    if top_expense:
+                        summary += f" Top expense category: {top_expense}."
+                    self._event_publisher.publish(
+                        agent_speaking(
+                            agent_id=self._accountant.id if self._accountant else UUID(int=0),
+                            agent_name="Sarah Chen",
+                            message=f"{owner_name} review: {summary}",
+                            org_id=org_id,
+                        )
+                    )
+
+                if period_end_results:
+                    self._event_publisher.publish(
+                        agent_speaking(
+                            agent_id=self._accountant.id if self._accountant else UUID(int=0),
+                            agent_name="Sarah Chen",
+                            message=(
+                                f"{ctx.name}: Completed period-end tasks "
+                                f"({', '.join(period_end_results.keys())})."
+                            ),
+                            org_id=org_id,
+                        )
+                    )
+
                 results.append(
                     {
                         "org": ctx.name,
                         "recurring_bills": bills_created,
                         "quarterly_tax_bills": quarterly_created,
                         "quarterly_tax_payments": quarterly_paid,
+                        "period_end": period_end_results,
                     }
                 )
 
@@ -2339,6 +2410,99 @@ class Orchestrator:
         if workflow:
             return workflow
         raise RuntimeError("AccountingWorkflow not initialized")
+
+    async def _run_period_end_tasks(
+        self,
+        org_id: UUID,
+        ctx: OrganizationContext,
+        sim_date: date,
+    ) -> dict[str, Any]:
+        if self._mode in (SimulationMode.FAST, SimulationMode.HYBRID):
+            workflow = self._get_accounting_workflow(org_id)
+            return await workflow.run_period_end_workflow(
+                business_key=ctx.owner_key,
+                org_id=org_id,
+                current_date=sim_date,
+            )
+        if self._mode == SimulationMode.LLM:
+            return await self._run_period_end_llm(org_id, ctx, sim_date)
+        return {}
+
+    async def _run_period_end_llm(
+        self,
+        org_id: UUID,
+        ctx: OrganizationContext,
+        sim_date: date,
+    ) -> dict[str, Any]:
+        results: dict[str, Any] = {}
+
+        month_period = AccountingWorkflow._month_end_period(sim_date)
+        if month_period:
+            start, end, year, month = month_period
+            key = (org_id, year, month)
+            if key not in self._month_end_llm_done:
+                task = (
+                    f"Month-end close for {ctx.name} "
+                    f"(period {start.isoformat()} to {end.isoformat()}). "
+                    "Please run AR aging, AP aging, review bank transactions for "
+                    "unmatched items, record any accrual adjustments needed with a "
+                    "journal entry, and run a trial balance as of period end."
+                )
+                await self.run_single_task(task, org_id=org_id)
+                self._month_end_llm_done.add(key)
+                results["month_end"] = {
+                    "period_start": start.isoformat(),
+                    "period_end": end.isoformat(),
+                }
+
+        quarter_period = AccountingWorkflow._quarter_end_period(sim_date)
+        if quarter_period:
+            start, end, year, quarter = quarter_period
+            key = (org_id, year, quarter)
+            if key not in self._quarter_end_llm_done:
+                task = (
+                    f"Quarter-end close for {ctx.name} (Q{quarter} {year}). "
+                    f"Generate Profit & Loss for {start.isoformat()} to {end.isoformat()}, "
+                    f"Balance Sheet as of {end.isoformat()}, and Cash Flow for the period. "
+                    "Estimate a tax provision and record it as a journal entry. "
+                    "Summarize key metrics for owner review."
+                )
+                await self.run_single_task(task, org_id=org_id)
+                self._quarter_end_llm_done.add(key)
+                results["quarter_end"] = {
+                    "period_start": start.isoformat(),
+                    "period_end": end.isoformat(),
+                    "quarter": quarter,
+                    "year": year,
+                }
+
+        if sim_date.month == 12 and sim_date.day == 31:
+            year = sim_date.year
+            key = (org_id, year)
+            if key not in self._year_end_llm_done:
+                task = (
+                    f"Year-end close for {ctx.name} as of {sim_date.isoformat()}. "
+                    "Record depreciation, complete inventory adjustments if applicable, "
+                    "and post closing entries to transfer net income to retained earnings."
+                )
+                await self.run_single_task(task, org_id=org_id)
+                self._year_end_llm_done.add(key)
+                results["year_end"] = {"year": year}
+
+        if sim_date.month == 1 and sim_date.day <= 31:
+            prior_year = sim_date.year - 1
+            key = (org_id, prior_year)
+            if key not in self._year_end_reporting_done:
+                task = (
+                    f"Year-end reporting for {ctx.name} ({prior_year}). "
+                    "Compile 1099-NEC vendor filings and confirm they are prepared. "
+                    "Note any missing W-9 information or follow-ups needed."
+                )
+                await self.run_single_task(task, org_id=org_id)
+                self._year_end_reporting_done.add(key)
+                results["year_end_reporting"] = {"tax_year": prior_year}
+
+        return results
 
     async def _handle_evening_fast(
         self,

@@ -62,6 +62,7 @@ class ToolExecutor:
             "get_trial_balance": self._get_trial_balance,
             "get_profit_loss": self._get_profit_loss,
             "get_balance_sheet": self._get_balance_sheet,
+            "get_cash_flow": self._get_cash_flow,
             "get_ar_aging": self._get_ar_aging,
             "get_ap_aging": self._get_ap_aging,
             # Bank Transactions
@@ -248,6 +249,11 @@ class ToolExecutor:
     async def _get_balance_sheet(self, as_of_date: str) -> dict[str, Any]:
         return await self.client.get_balance_sheet(as_of_date)
 
+    async def _get_cash_flow(
+        self, period_start: str, period_end: str
+    ) -> dict[str, Any]:
+        return await self.client.get_cash_flow(period_start, period_end)
+
     async def _get_ar_aging(self) -> dict[str, Any]:
         return await self.client.get_ar_aging()
 
@@ -257,9 +263,18 @@ class ToolExecutor:
     # === Bank Transaction Handlers ===
 
     async def _list_bank_transactions(
-        self, offset: int = 0, limit: int = 100
+        self,
+        bank_account_id: str,
+        offset: int = 0,
+        limit: int = 100,
+        status_filter: str | None = None,
     ) -> list[dict[str, Any]]:
-        return await self.client.list_bank_transactions(offset=offset, limit=limit)
+        return await self.client.list_bank_transactions(
+            bank_account_id=UUID(bank_account_id),
+            offset=offset,
+            limit=limit,
+            status_filter=status_filter,
+        )
 
     async def _categorize_bank_transaction(
         self, transaction_id: str, account_id: str

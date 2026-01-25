@@ -86,6 +86,48 @@ tax_config:
   estimated_tax_rate: 0.28
   tax_vendor: "IRS Estimated Taxes"
 
+year_end:
+  accrual_rate: 0.06
+  depreciation_rate: 0.25
+  inventory_shrink_rate: 0.00
+  fixed_asset_keywords:
+    - computer
+    - laptop
+    - equipment
+    - server
+    - workstation
+    - network
+    - router
+    - switch
+  inventory_keywords:
+    - supplies
+    - office supplies
+    - software licenses
+  accumulated_dep_keywords:
+    - accumulated depreciation
+    - accumulated dep
+  depreciation_expense_keywords:
+    - depreciation
+    - depreciation expense
+  cogs_keywords:
+    - cost of services
+    - contractor costs
+    - subcontractor
+  tax_expense_keywords:
+    - income tax
+    - tax expense
+  tax_payable_keywords:
+    - income tax payable
+    - tax payable
+  retained_earnings_keywords:
+    - retained earnings
+    - owner's equity
+    - owner equity
+  income_summary_keywords:
+    - income summary
+    - current year earnings
+    - profit and loss
+
 recurring_transactions:
   - name: "Office Rent"
     vendor: "Coworking Space LLC"

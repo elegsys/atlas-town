@@ -388,6 +388,47 @@ def load_persona_sales_tax_configs() -> dict[str, dict[str, Any]]:
 
 
 @lru_cache
+def load_persona_year_end_configs() -> dict[str, dict[str, Any]]:
+    """Load year-end configs from persona YAML files.
+
+    Returns:
+        Mapping of persona key (filename stem) to year-end config dict.
+    """
+    personas_dir = Path(__file__).resolve().parent / "personas"
+    if not personas_dir.exists():
+        return {}
+
+    year_end_by_persona: dict[str, dict[str, Any]] = {}
+
+    for path in sorted(personas_dir.glob("*.yaml")):
+        raw = path.read_text(encoding="utf-8")
+        data = yaml.safe_load(raw) or {}
+        year_end = data.get("year_end")
+
+        if year_end is None:
+            continue
+        if not isinstance(year_end, dict):
+            raise ValueError(f"{path.name}: year_end must be a mapping")
+
+        year_end_by_persona[path.stem] = {
+            "accrual_rate": year_end.get("accrual_rate"),
+            "tax_provision_rate": year_end.get("tax_provision_rate"),
+            "depreciation_rate": year_end.get("depreciation_rate"),
+            "inventory_shrink_rate": year_end.get("inventory_shrink_rate"),
+            "fixed_asset_keywords": year_end.get("fixed_asset_keywords"),
+            "accumulated_dep_keywords": year_end.get("accumulated_dep_keywords"),
+            "depreciation_expense_keywords": year_end.get("depreciation_expense_keywords"),
+            "inventory_keywords": year_end.get("inventory_keywords"),
+            "cogs_keywords": year_end.get("cogs_keywords"),
+            "tax_expense_keywords": year_end.get("tax_expense_keywords"),
+            "tax_payable_keywords": year_end.get("tax_payable_keywords"),
+            "retained_earnings_keywords": year_end.get("retained_earnings_keywords"),
+            "income_summary_keywords": year_end.get("income_summary_keywords"),
+        }
+
+    return year_end_by_persona
+
+@lru_cache
 def load_persona_b2b_configs() -> dict[str, dict[str, Any]]:
     """Load B2B pairing configs from persona YAML files.
 

@@ -16,14 +16,19 @@ The LLM agent is still valuable for:
 
 from dataclasses import dataclass
 from datetime import date, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, TypedDict
 from uuid import UUID, uuid4
 
 import structlog
 
 from atlas_town.tools.atlas_api import AtlasAPIClient, AtlasAPIError
-from atlas_town.config.personas_loader import load_persona_sales_tax_configs
+from atlas_town.config.personas_loader import (
+    load_persona_industries,
+    load_persona_sales_tax_configs,
+    load_persona_tax_configs,
+    load_persona_year_end_configs,
+)
 from atlas_town.transactions import (
     GeneratedTransaction,
     TransactionGenerator,
@@ -107,6 +112,51 @@ class SalesTaxConfig:
         return None
 
 
+@dataclass(frozen=True)
+class YearEndConfig:
+    """Year-end configuration for a business."""
+
+    accrual_rate: Decimal
+    tax_provision_rate: Decimal
+    depreciation_rate: Decimal
+    inventory_shrink_rate: Decimal
+    fixed_asset_keywords: tuple[str, ...]
+    accumulated_dep_keywords: tuple[str, ...]
+    depreciation_expense_keywords: tuple[str, ...]
+    inventory_keywords: tuple[str, ...]
+    cogs_keywords: tuple[str, ...]
+    tax_expense_keywords: tuple[str, ...]
+    tax_payable_keywords: tuple[str, ...]
+    retained_earnings_keywords: tuple[str, ...]
+    income_summary_keywords: tuple[str, ...]
+
+    @staticmethod
+    def default() -> "YearEndConfig":
+        return YearEndConfig(
+            accrual_rate=Decimal("0.10"),
+            tax_provision_rate=Decimal("0.25"),
+            depreciation_rate=Decimal("0.10"),
+            inventory_shrink_rate=Decimal("0.02"),
+            fixed_asset_keywords=(
+                "equipment",
+                "furniture",
+                "vehicle",
+                "computer",
+                "machinery",
+                "leasehold",
+                "fixtures",
+            ),
+            accumulated_dep_keywords=("accumulated depreciation", "accumulated"),
+            depreciation_expense_keywords=("depreciation",),
+            inventory_keywords=("inventory", "supplies"),
+            cogs_keywords=("cost of goods", "cogs"),
+            tax_expense_keywords=("income tax", "tax expense", "taxes"),
+            tax_payable_keywords=("income tax payable", "tax payable"),
+            retained_earnings_keywords=("retained earnings", "owner's equity"),
+            income_summary_keywords=("income summary", "current year earnings", "profit and loss"),
+        )
+
+
 class WorkflowResults(TypedDict):
     """Typed results for deterministic transaction processing."""
 
@@ -148,6 +198,12 @@ class AccountingWorkflow:
         self._sales_tax_collected: dict[tuple[str, int, int], Decimal] = {}
         self._sales_tax_remitted: set[tuple[str, int, int]] = set()
         self._sales_tax_rate_cache: dict[tuple[UUID, str], dict[str, Any]] = {}
+        self._year_end_configs = self._load_year_end_configs()
+        self._month_end_closed: set[tuple[str, int, int]] = set()
+        self._quarter_end_closed: set[tuple[str, int, int]] = set()
+        self._year_end_closed: set[tuple[str, int]] = set()
+        self._year_rollover_done: set[tuple[str, int]] = set()
+        self._year_end_reporting_done: set[tuple[str, int]] = set()
         self._run_id = run_id
         self._run_id_short = run_id.split("-")[0] if run_id else None
 
@@ -198,6 +254,158 @@ class AccountingWorkflow:
                 collect_on=collect_on,
                 tax_authority=str(tax_authority) if tax_authority is not None else None,
                 remit_day=remit_day,
+            )
+
+        return configs
+
+    def _load_year_end_configs(self) -> dict[str, YearEndConfig]:
+        industries = load_persona_industries()
+        tax_configs = load_persona_tax_configs()
+        overrides = load_persona_year_end_configs()
+
+        def _with_rates(
+            base: YearEndConfig,
+            depreciation_rate: Decimal | None = None,
+            inventory_shrink_rate: Decimal | None = None,
+        ) -> YearEndConfig:
+            return YearEndConfig(
+                accrual_rate=base.accrual_rate,
+                tax_provision_rate=base.tax_provision_rate,
+                depreciation_rate=depreciation_rate
+                if depreciation_rate is not None
+                else base.depreciation_rate,
+                inventory_shrink_rate=inventory_shrink_rate
+                if inventory_shrink_rate is not None
+                else base.inventory_shrink_rate,
+                fixed_asset_keywords=base.fixed_asset_keywords,
+                accumulated_dep_keywords=base.accumulated_dep_keywords,
+                depreciation_expense_keywords=base.depreciation_expense_keywords,
+                inventory_keywords=base.inventory_keywords,
+                cogs_keywords=base.cogs_keywords,
+                tax_expense_keywords=base.tax_expense_keywords,
+                tax_payable_keywords=base.tax_payable_keywords,
+                retained_earnings_keywords=base.retained_earnings_keywords,
+                income_summary_keywords=base.income_summary_keywords,
+            )
+
+        defaults_by_industry: dict[str, YearEndConfig] = {
+            "restaurant": _with_rates(
+                YearEndConfig.default(),
+                depreciation_rate=Decimal("0.12"),
+                inventory_shrink_rate=Decimal("0.03"),
+            ),
+            "healthcare": _with_rates(
+                YearEndConfig.default(),
+                depreciation_rate=Decimal("0.10"),
+                inventory_shrink_rate=Decimal("0.015"),
+            ),
+            "consulting": _with_rates(
+                YearEndConfig.default(),
+                depreciation_rate=Decimal("0.20"),
+                inventory_shrink_rate=Decimal("0.00"),
+            ),
+            "service": _with_rates(
+                YearEndConfig.default(),
+                depreciation_rate=Decimal("0.15"),
+                inventory_shrink_rate=Decimal("0.01"),
+            ),
+            "real_estate": _with_rates(
+                YearEndConfig.default(),
+                depreciation_rate=Decimal("0.08"),
+                inventory_shrink_rate=Decimal("0.00"),
+            ),
+        }
+
+        def _base_config(business_key: str) -> YearEndConfig:
+            industry = industries.get(business_key, "")
+            base = defaults_by_industry.get(industry, YearEndConfig.default())
+            tax_config = tax_configs.get(business_key)
+            tax_rate = None
+            if isinstance(tax_config, dict):
+                tax_rate = tax_config.get("estimated_tax_rate")
+            if tax_rate is not None:
+                try:
+                    tax_rate_value = Decimal(str(tax_rate))
+                    return YearEndConfig(
+                        accrual_rate=base.accrual_rate,
+                        tax_provision_rate=tax_rate_value,
+                        depreciation_rate=base.depreciation_rate,
+                        inventory_shrink_rate=base.inventory_shrink_rate,
+                        fixed_asset_keywords=base.fixed_asset_keywords,
+                        accumulated_dep_keywords=base.accumulated_dep_keywords,
+                        depreciation_expense_keywords=base.depreciation_expense_keywords,
+                        inventory_keywords=base.inventory_keywords,
+                        cogs_keywords=base.cogs_keywords,
+                        tax_expense_keywords=base.tax_expense_keywords,
+                        tax_payable_keywords=base.tax_payable_keywords,
+                        retained_earnings_keywords=base.retained_earnings_keywords,
+                        income_summary_keywords=base.income_summary_keywords,
+                    )
+                except (ValueError, TypeError):
+                    pass
+            return base
+
+        configs: dict[str, YearEndConfig] = {}
+        keys = set(industries.keys()) | set(overrides.keys())
+        for business_key in keys:
+            base = _base_config(business_key)
+            override = overrides.get(business_key, {})
+
+            def _decimal_override(key: str, fallback: Decimal) -> Decimal:
+                value = override.get(key)
+                if value is None:
+                    return fallback
+                try:
+                    return Decimal(str(value))
+                except (ValueError, TypeError):
+                    return fallback
+
+            def _keywords_override(key: str, fallback: tuple[str, ...]) -> tuple[str, ...]:
+                raw = override.get(key)
+                if not raw:
+                    return fallback
+                if isinstance(raw, list):
+                    values = tuple(str(item).strip() for item in raw if str(item).strip())
+                else:
+                    values = (str(raw).strip(),)
+                return tuple(dict.fromkeys(fallback + values))
+
+            configs[business_key] = YearEndConfig(
+                accrual_rate=_decimal_override("accrual_rate", base.accrual_rate),
+                tax_provision_rate=_decimal_override(
+                    "tax_provision_rate", base.tax_provision_rate
+                ),
+                depreciation_rate=_decimal_override(
+                    "depreciation_rate", base.depreciation_rate
+                ),
+                inventory_shrink_rate=_decimal_override(
+                    "inventory_shrink_rate", base.inventory_shrink_rate
+                ),
+                fixed_asset_keywords=_keywords_override(
+                    "fixed_asset_keywords", base.fixed_asset_keywords
+                ),
+                accumulated_dep_keywords=_keywords_override(
+                    "accumulated_dep_keywords", base.accumulated_dep_keywords
+                ),
+                depreciation_expense_keywords=_keywords_override(
+                    "depreciation_expense_keywords", base.depreciation_expense_keywords
+                ),
+                inventory_keywords=_keywords_override(
+                    "inventory_keywords", base.inventory_keywords
+                ),
+                cogs_keywords=_keywords_override("cogs_keywords", base.cogs_keywords),
+                tax_expense_keywords=_keywords_override(
+                    "tax_expense_keywords", base.tax_expense_keywords
+                ),
+                tax_payable_keywords=_keywords_override(
+                    "tax_payable_keywords", base.tax_payable_keywords
+                ),
+                retained_earnings_keywords=_keywords_override(
+                    "retained_earnings_keywords", base.retained_earnings_keywords
+                ),
+                income_summary_keywords=_keywords_override(
+                    "income_summary_keywords", base.income_summary_keywords
+                ),
             )
 
         return configs
@@ -269,12 +477,37 @@ class AccountingWorkflow:
                 ]
             deposit_account = bank_accounts[0] if bank_accounts else None
 
+            bank_account_id = None
+            try:
+                bank_accounts_feed = await self._api.list_bank_accounts()
+                if bank_accounts_feed:
+                    matched = None
+                    if deposit_account:
+                        matched = next(
+                            (
+                                acct
+                                for acct in bank_accounts_feed
+                                if str(acct.get("gl_account_id"))
+                                == str(deposit_account.get("id"))
+                            ),
+                            None,
+                        )
+                    selected = matched or bank_accounts_feed[0]
+                    bank_account_id = selected.get("id")
+            except AtlasAPIError as exc:
+                self._logger.warning(
+                    "bank_accounts_list_failed",
+                    org_id=str(org_id),
+                    error=str(exc),
+                )
+
             self._account_cache[org_id] = {
                 "revenue_account_id": revenue_account["id"] if revenue_account else None,
                 "expense_account_id": expense_account["id"] if expense_account else None,
                 "ar_account_id": ar_account["id"] if ar_account else None,
                 "ap_account_id": ap_account["id"] if ap_account else None,
                 "deposit_account_id": deposit_account["id"] if deposit_account else None,
+                "bank_account_id": bank_account_id,
                 "sales_tax_payable_account_id": (
                     sales_tax_account["id"] if sales_tax_account else None
                 ),
@@ -295,6 +528,190 @@ class AccountingWorkflow:
                 self._logger.info("no_sales_tax_account", org_id=str(org_id))
 
         return self._account_cache[org_id]
+
+    @staticmethod
+    def _last_day_of_month(year: int, month: int) -> date:
+        if month == 12:
+            return date(year, 12, 31)
+        return date(year, month + 1, 1) - timedelta(days=1)
+
+    @classmethod
+    def _month_end_period(cls, current_date: date) -> tuple[date, date, int, int] | None:
+        if current_date.day > 5:
+            return None
+        year = current_date.year
+        month = current_date.month - 1
+        if month == 0:
+            month = 12
+            year -= 1
+        start = date(year, month, 1)
+        end = cls._last_day_of_month(year, month)
+        return start, end, year, month
+
+    @classmethod
+    def _quarter_end_period(cls, current_date: date) -> tuple[date, date, int, int] | None:
+        if current_date.day > 10:
+            return None
+        if current_date.month not in (1, 4, 7, 10):
+            return None
+        year = current_date.year
+        if current_date.month == 1:
+            year -= 1
+            quarter = 4
+        elif current_date.month == 4:
+            quarter = 1
+        elif current_date.month == 7:
+            quarter = 2
+        else:
+            quarter = 3
+        start_month = (quarter - 1) * 3 + 1
+        start = date(year, start_month, 1)
+        end = cls._last_day_of_month(year, start_month + 2)
+        return start, end, year, quarter
+
+    @staticmethod
+    def _find_account_by_keywords(
+        accounts: list[dict[str, Any]],
+        keywords: tuple[str, ...],
+        account_type: str | None = None,
+    ) -> dict[str, Any] | None:
+        lowered_keywords = tuple(k.lower() for k in keywords)
+        for account in accounts:
+            if account_type and account.get("account_type") != account_type:
+                continue
+            name = str(account.get("name", "")).lower()
+            if any(keyword in name for keyword in lowered_keywords):
+                return account
+        return None
+
+    @classmethod
+    def _find_account_with_fallback(
+        cls,
+        accounts: list[dict[str, Any]],
+        keywords: tuple[str, ...],
+        account_type: str | None,
+    ) -> dict[str, Any] | None:
+        account = cls._find_account_by_keywords(accounts, keywords, account_type)
+        if account:
+            return account
+        return cls._find_account_by_keywords(accounts, keywords, None)
+
+    @staticmethod
+    def _extract_decimal(value: Any) -> Decimal | None:
+        if value is None:
+            return None
+        try:
+            return Decimal(str(value))
+        except (TypeError, ValueError, InvalidOperation):
+            return None
+
+    def _extract_net_income(self, report: dict[str, Any]) -> Decimal | None:
+        for key in ("net_income", "net_profit", "net_income_amount", "net_profit_amount"):
+            value = self._extract_decimal(report.get(key))
+            if value is not None:
+                return value
+
+        for container_key in ("summary", "totals", "total", "result"):
+            container = report.get(container_key)
+            if isinstance(container, dict):
+                for key in ("net_income", "net_profit", "net_income_amount", "net_profit_amount"):
+                    value = self._extract_decimal(container.get(key))
+                    if value is not None:
+                        return value
+
+        revenue = self._extract_decimal(report.get("total_revenue"))
+        expenses = self._extract_decimal(report.get("total_expenses"))
+        if revenue is None and isinstance(report.get("summary"), dict):
+            revenue = self._extract_decimal(report["summary"].get("total_revenue"))
+        if expenses is None and isinstance(report.get("summary"), dict):
+            expenses = self._extract_decimal(report["summary"].get("total_expenses"))
+        if revenue is not None and expenses is not None:
+            return revenue - expenses
+        return None
+
+    def _extract_trial_balance_accounts(
+        self, trial_balance: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        for key in ("accounts", "rows", "items", "data"):
+            value = trial_balance.get(key)
+            if isinstance(value, list):
+                return value
+        return []
+
+    def _trial_balance_amount(self, entry: dict[str, Any]) -> Decimal | None:
+        balance = self._extract_decimal(entry.get("balance"))
+        if balance is not None:
+            return balance
+        debit = self._extract_decimal(entry.get("debit")) or Decimal("0")
+        credit = self._extract_decimal(entry.get("credit")) or Decimal("0")
+        if debit == Decimal("0") and credit == Decimal("0"):
+            return None
+        return debit - credit
+
+    @staticmethod
+    def _parse_date(value: str | None) -> date | None:
+        if not value:
+            return None
+        try:
+            return date.fromisoformat(str(value)[:10])
+        except (TypeError, ValueError):
+            return None
+
+    async def _fetch_all_invoices(
+        self, status: str | None = None, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        invoices: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            batch = await self._api.list_invoices(offset=offset, limit=limit, status=status)
+            if not batch:
+                break
+            invoices.extend(batch)
+            if len(batch) < limit:
+                break
+            offset += limit
+        return invoices
+
+    async def _fetch_all_bills(
+        self, status: str | None = None, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        bills: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            batch = await self._api.list_bills(offset=offset, limit=limit, status=status)
+            if not batch:
+                break
+            bills.extend(batch)
+            if len(batch) < limit:
+                break
+            offset += limit
+        return bills
+
+    async def _fetch_all_payments(self, limit: int = 200) -> list[dict[str, Any]]:
+        payments: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            batch = await self._api.list_payments(offset=offset, limit=limit)
+            if not batch:
+                break
+            payments.extend(batch)
+            if len(batch) < limit:
+                break
+            offset += limit
+        return payments
+
+    async def _fetch_all_payments_made(self, limit: int = 200) -> list[dict[str, Any]]:
+        payments: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            batch = await self._api.list_payments_made(offset=offset, limit=limit)
+            if not batch:
+                break
+            payments.extend(batch)
+            if len(batch) < limit:
+                break
+            offset += limit
+        return payments
 
     def _is_sales_taxable(self, config: SalesTaxConfig, tx: GeneratedTransaction) -> bool:
         if not config.collect_on:
@@ -625,6 +1042,498 @@ class AccountingWorkflow:
         )
 
         return summary
+
+    async def run_period_end_workflow(
+        self,
+        business_key: str,
+        org_id: UUID,
+        current_date: date,
+    ) -> dict[str, Any]:
+        """Run month-end, quarter-end, and year-end workflows when due."""
+        results: dict[str, Any] = {}
+
+        month_period = self._month_end_period(current_date)
+        if month_period:
+            start, end, year, month = month_period
+            month_key = (business_key, year, month)
+            if month_key not in self._month_end_closed:
+                results["month_end"] = await self._run_month_end_close(
+                    business_key, org_id, start, end
+                )
+                self._month_end_closed.add(month_key)
+
+        quarter_period = self._quarter_end_period(current_date)
+        if quarter_period:
+            start, end, year, quarter = quarter_period
+            quarter_key = (business_key, year, quarter)
+            if quarter_key not in self._quarter_end_closed:
+                results["quarter_end"] = await self._run_quarter_end_close(
+                    business_key, org_id, start, end, year, quarter
+                )
+                self._quarter_end_closed.add(quarter_key)
+
+        if current_date.month == 12 and current_date.day == 31:
+            year = current_date.year
+            year_key = (business_key, year)
+            if year_key not in self._year_end_closed:
+                results["year_end"] = await self._run_year_end_close(
+                    business_key, org_id, current_date
+                )
+                self._year_end_closed.add(year_key)
+
+        if current_date.month == 1 and current_date.day == 1:
+            prior_year = current_date.year - 1
+            rollover_key = (business_key, prior_year)
+            if rollover_key not in self._year_rollover_done:
+                budget = await self._initialize_new_year_budget(current_date.year)
+                results["new_year_setup"] = {
+                    "year": current_date.year,
+                    "notes": "Initialized new fiscal year (balances carried forward).",
+                    "budget_initialized": bool(budget),
+                    "budget_id": budget.get("id") if budget else None,
+                }
+                self._year_rollover_done.add(rollover_key)
+
+        if current_date.month == 1 and current_date.day <= 31:
+            prior_year = current_date.year - 1
+            reporting_key = (business_key, prior_year)
+            if reporting_key not in self._year_end_reporting_done:
+                results["year_end_reporting"] = await self._run_year_end_reporting(
+                    business_key, org_id, prior_year
+                )
+                self._year_end_reporting_done.add(reporting_key)
+
+        return results
+
+    async def _run_month_end_close(
+        self,
+        business_key: str,
+        org_id: UUID,
+        period_start: date,
+        period_end: date,
+    ) -> dict[str, Any]:
+        config = self._year_end_configs.get(business_key, YearEndConfig.default())
+        self._logger.info(
+            "month_end_close_start",
+            business=business_key,
+            period_start=period_start.isoformat(),
+            period_end=period_end.isoformat(),
+        )
+
+        await self._api.switch_organization(org_id)
+        ar_aging = await self._api.get_ar_aging()
+        ap_aging = await self._api.get_ap_aging()
+        trial_balance = await self._api.get_trial_balance(
+            as_of_date=period_end.isoformat()
+        )
+
+        account_info = await self._get_accounts_for_org(org_id)
+        bank_transactions: list[dict[str, Any]] = []
+        bank_account_id = account_info.get("bank_account_id")
+        if bank_account_id:
+            try:
+                bank_transactions = await self._api.list_bank_transactions(
+                    bank_account_id=UUID(str(bank_account_id)),
+                    limit=200,
+                )
+            except AtlasAPIError as exc:
+                self._logger.warning(
+                    "bank_transactions_list_failed",
+                    business=business_key,
+                    org_id=str(org_id),
+                    error=str(exc),
+                )
+        unmatched = [
+            tx for tx in bank_transactions
+            if not tx.get("match_id") and not tx.get("matched") and not tx.get("is_matched")
+        ]
+        followups = await self._generate_overdue_followups(period_end)
+        reconciliation = await self._reconcile_bank_transactions(
+            bank_transactions, account_info, period_end
+        )
+
+        accrual_entry_id = None
+        pending_bills = await self._api.list_bills(status="pending")
+        accrual_base = sum(
+            self._extract_decimal(bill.get("balance")) or Decimal("0")
+            for bill in pending_bills
+            if bill.get("due_date")
+            and self._is_due_within_days(bill.get("due_date"), period_end, 30)
+        )
+        accrual_amount = (accrual_base * config.accrual_rate).quantize(Decimal("0.01"))
+        if accrual_amount > 0:
+            accounts = account_info.get("all_accounts", [])
+            expense_account_id = account_info.get("expense_account_id")
+            accrued_liability = self._find_account_with_fallback(
+                accounts, ("accrued", "accrual", "payable"), "liability"
+            )
+            if expense_account_id and accrued_liability:
+                entry = await self._api.create_journal_entry({
+                    "entry_date": period_end.isoformat(),
+                    "description": f"Month-end accrual adjustment{self._run_suffix()}",
+                    "lines": [
+                        {
+                            "account_id": str(expense_account_id),
+                            "entry_type": "debit",
+                            "amount": str(accrual_amount),
+                            "description": "Accrued expenses",
+                        },
+                        {
+                            "account_id": str(accrued_liability["id"]),
+                            "entry_type": "credit",
+                            "amount": str(accrual_amount),
+                            "description": "Accrued expenses payable",
+                        },
+                    ],
+                })
+                accrual_entry_id = entry.get("id")
+
+        return {
+            "period_start": period_start.isoformat(),
+            "period_end": period_end.isoformat(),
+            "ar_aging": ar_aging,
+            "ap_aging": ap_aging,
+            "trial_balance_ok": self._check_trial_balance(trial_balance),
+            "bank_transactions": len(bank_transactions),
+            "unmatched_bank_transactions": len(unmatched),
+            "reconciliation_summary": reconciliation,
+            "overdue_followups": followups,
+            "accrual_entry_id": accrual_entry_id,
+        }
+
+    async def _run_quarter_end_close(
+        self,
+        business_key: str,
+        org_id: UUID,
+        period_start: date,
+        period_end: date,
+        year: int,
+        quarter: int,
+    ) -> dict[str, Any]:
+        config = self._year_end_configs.get(business_key, YearEndConfig.default())
+        self._logger.info(
+            "quarter_end_close_start",
+            business=business_key,
+            tax_year=year,
+            quarter=quarter,
+        )
+
+        await self._api.switch_organization(org_id)
+        profit_loss = await self._api.get_profit_loss(
+            period_start.isoformat(), period_end.isoformat()
+        )
+        balance_sheet = await self._api.get_balance_sheet(period_end.isoformat())
+        cash_flow = await self._api.get_cash_flow(
+            period_start.isoformat(), period_end.isoformat()
+        )
+        management_reports = await self._generate_management_reports(
+            period_start, period_end
+        )
+
+        tax_entry_id = None
+        net_income = self._extract_net_income(profit_loss)
+        if net_income is not None and net_income > Decimal("0"):
+            tax_amount = (net_income * config.tax_provision_rate).quantize(
+                Decimal("0.01")
+            )
+            account_info = await self._get_accounts_for_org(org_id)
+            accounts = account_info.get("all_accounts", [])
+            tax_expense = self._find_account_with_fallback(
+                accounts, config.tax_expense_keywords, "expense"
+            )
+            tax_payable = self._find_account_with_fallback(
+                accounts, config.tax_payable_keywords, "liability"
+            )
+            if tax_expense and tax_payable:
+                entry = await self._api.create_journal_entry({
+                    "entry_date": period_end.isoformat(),
+                    "description": (
+                        f"Quarter-end tax provision Q{quarter} {year}{self._run_suffix()}"
+                    ),
+                    "lines": [
+                        {
+                            "account_id": str(tax_expense["id"]),
+                            "entry_type": "debit",
+                            "amount": str(tax_amount),
+                            "description": "Income tax provision",
+                        },
+                        {
+                            "account_id": str(tax_payable["id"]),
+                            "entry_type": "credit",
+                            "amount": str(tax_amount),
+                            "description": "Income tax payable",
+                        },
+                    ],
+                })
+                tax_entry_id = entry.get("id")
+
+        return {
+            "period_start": period_start.isoformat(),
+            "period_end": period_end.isoformat(),
+            "quarter": quarter,
+            "year": year,
+            "profit_loss": profit_loss,
+            "balance_sheet": balance_sheet,
+            "cash_flow": cash_flow,
+            "management_reports": management_reports,
+            "tax_provision_entry_id": tax_entry_id,
+        }
+
+    async def _run_year_end_close(
+        self,
+        business_key: str,
+        org_id: UUID,
+        period_end: date,
+    ) -> dict[str, Any]:
+        config = self._year_end_configs.get(business_key, YearEndConfig.default())
+        self._logger.info(
+            "year_end_close_start",
+            business=business_key,
+            period_end=period_end.isoformat(),
+        )
+
+        await self._api.switch_organization(org_id)
+        trial_balance = await self._api.get_trial_balance(
+            as_of_date=period_end.isoformat()
+        )
+        accounts = (await self._get_accounts_for_org(org_id)).get("all_accounts", [])
+        tb_accounts = self._extract_trial_balance_accounts(trial_balance)
+
+        fixed_assets = [
+            account for account in accounts
+            if account.get("account_type") == "asset"
+            and any(
+                keyword in str(account.get("name", "")).lower()
+                for keyword in config.fixed_asset_keywords
+            )
+        ]
+        accumulated_dep = self._find_account_with_fallback(
+            accounts, config.accumulated_dep_keywords, "asset"
+        )
+        depreciation_expense = self._find_account_with_fallback(
+            accounts, config.depreciation_expense_keywords, "expense"
+        )
+
+        depreciation_entry_id = None
+        total_fixed = Decimal("0")
+        if fixed_assets:
+            for account in fixed_assets:
+                balance = None
+                for entry in tb_accounts:
+                    if str(entry.get("account_id") or entry.get("id")) == str(account.get("id")):
+                        balance = self._trial_balance_amount(entry)
+                        break
+                if balance is None:
+                    balance_info = await self._api.get_account_balance(
+                        UUID(str(account["id"]))
+                    )
+                    balance = self._extract_decimal(balance_info.get("balance"))
+                if balance and balance > 0:
+                    total_fixed += balance
+
+        if total_fixed > 0 and accumulated_dep and depreciation_expense:
+            depreciation_amount = (total_fixed * config.depreciation_rate).quantize(
+                Decimal("0.01")
+            )
+            if depreciation_amount > 0:
+                entry = await self._api.create_journal_entry({
+                    "entry_date": period_end.isoformat(),
+                    "description": f"Year-end depreciation{self._run_suffix()}",
+                    "lines": [
+                        {
+                            "account_id": str(depreciation_expense["id"]),
+                            "entry_type": "debit",
+                            "amount": str(depreciation_amount),
+                            "description": "Depreciation expense",
+                        },
+                        {
+                            "account_id": str(accumulated_dep["id"]),
+                            "entry_type": "credit",
+                            "amount": str(depreciation_amount),
+                            "description": "Accumulated depreciation",
+                        },
+                    ],
+                })
+                depreciation_entry_id = entry.get("id")
+
+        inventory_entry_id = None
+        if business_key in {"tony", "chen"}:
+            inventory_account = self._find_account_with_fallback(
+                accounts, config.inventory_keywords, "asset"
+            )
+            cogs_account = self._find_account_with_fallback(
+                accounts, config.cogs_keywords, "expense"
+            )
+            if inventory_account and cogs_account:
+                inventory_balance = None
+                for entry in tb_accounts:
+                    if str(entry.get("account_id") or entry.get("id")) == str(
+                        inventory_account.get("id")
+                    ):
+                        inventory_balance = self._trial_balance_amount(entry)
+                        break
+                if inventory_balance is None:
+                    balance_info = await self._api.get_account_balance(
+                        UUID(str(inventory_account["id"]))
+                    )
+                    inventory_balance = self._extract_decimal(balance_info.get("balance"))
+                if inventory_balance and inventory_balance > 0:
+                    adjustment = (inventory_balance * config.inventory_shrink_rate).quantize(
+                        Decimal("0.01")
+                    )
+                    if adjustment > 0:
+                        entry = await self._api.create_journal_entry({
+                            "entry_date": period_end.isoformat(),
+                            "description": f"Inventory adjustment{self._run_suffix()}",
+                            "lines": [
+                                {
+                                    "account_id": str(cogs_account["id"]),
+                                    "entry_type": "debit",
+                                    "amount": str(adjustment),
+                                    "description": "Inventory shrink adjustment",
+                                },
+                                {
+                                    "account_id": str(inventory_account["id"]),
+                                    "entry_type": "credit",
+                                    "amount": str(adjustment),
+                                    "description": "Inventory adjustment",
+                                },
+                            ],
+                        })
+                        inventory_entry_id = entry.get("id")
+
+        closing_entry_id = None
+        revenue_expense_close_entry_id = None
+        year_start = date(period_end.year, 1, 1)
+        profit_loss = await self._api.get_profit_loss(
+            year_start.isoformat(), period_end.isoformat()
+        )
+        net_income = self._extract_net_income(profit_loss)
+        retained_earnings = self._find_account_with_fallback(
+            accounts, config.retained_earnings_keywords, "equity"
+        )
+        income_summary = self._find_account_with_fallback(
+            accounts, config.income_summary_keywords, "equity"
+        )
+
+        tb_rows = self._extract_trial_balance_accounts(trial_balance)
+        revenue_rows = [row for row in tb_rows if row.get("account_type") == "revenue"]
+        expense_rows = [row for row in tb_rows if row.get("account_type") == "expense"]
+
+        revenue_total = Decimal("0")
+        expense_total = Decimal("0")
+        closing_lines: list[dict[str, Any]] = []
+
+        for row in revenue_rows:
+            debit = self._extract_decimal(row.get("debit")) or Decimal("0")
+            credit = self._extract_decimal(row.get("credit")) or Decimal("0")
+            amount = (credit - debit).quantize(Decimal("0.01"))
+            if amount <= 0 or not row.get("account_id"):
+                continue
+            revenue_total += amount
+            closing_lines.append(
+                {
+                    "account_id": str(row.get("account_id")),
+                    "entry_type": "debit",
+                    "amount": str(amount),
+                    "description": f"Close revenue - {row.get('account_name')}",
+                }
+            )
+
+        for row in expense_rows:
+            debit = self._extract_decimal(row.get("debit")) or Decimal("0")
+            credit = self._extract_decimal(row.get("credit")) or Decimal("0")
+            amount = (debit - credit).quantize(Decimal("0.01"))
+            if amount <= 0 or not row.get("account_id"):
+                continue
+            expense_total += amount
+            closing_lines.append(
+                {
+                    "account_id": str(row.get("account_id")),
+                    "entry_type": "credit",
+                    "amount": str(amount),
+                    "description": f"Close expense - {row.get('account_name')}",
+                }
+            )
+
+        if income_summary and (revenue_total > 0 or expense_total > 0):
+            if revenue_total > 0:
+                closing_lines.append(
+                    {
+                        "account_id": str(income_summary.get("id")),
+                        "entry_type": "credit",
+                        "amount": str(revenue_total.quantize(Decimal("0.01"))),
+                        "description": "Close revenue to income summary",
+                    }
+                )
+            if expense_total > 0:
+                closing_lines.append(
+                    {
+                        "account_id": str(income_summary.get("id")),
+                        "entry_type": "debit",
+                        "amount": str(expense_total.quantize(Decimal("0.01"))),
+                        "description": "Close expenses to income summary",
+                    }
+                )
+
+        if closing_lines and income_summary:
+            entry = await self._api.create_journal_entry({
+                "entry_date": period_end.isoformat(),
+                "description": f"Revenue & expense closing {period_end.year}{self._run_suffix()}",
+                "lines": closing_lines,
+            })
+            revenue_expense_close_entry_id = entry.get("id")
+
+        if net_income is None:
+            net_income = revenue_total - expense_total
+
+        if net_income is not None and retained_earnings and income_summary:
+            amount = net_income.quantize(Decimal("0.01"))
+            if amount != 0:
+                if amount > 0:
+                    debit_account = income_summary["id"]
+                    credit_account = retained_earnings["id"]
+                else:
+                    debit_account = retained_earnings["id"]
+                    credit_account = income_summary["id"]
+                    amount = abs(amount)
+                entry = await self._api.create_journal_entry({
+                    "entry_date": period_end.isoformat(),
+                    "description": f"Closing entry {period_end.year}{self._run_suffix()}",
+                    "lines": [
+                        {
+                            "account_id": str(debit_account),
+                            "entry_type": "debit",
+                            "amount": str(amount),
+                            "description": "Close income summary",
+                        },
+                        {
+                            "account_id": str(credit_account),
+                            "entry_type": "credit",
+                            "amount": str(amount),
+                            "description": "Transfer to retained earnings",
+                        },
+                    ],
+                })
+                closing_entry_id = entry.get("id")
+
+        return {
+            "trial_balance_ok": self._check_trial_balance(trial_balance),
+            "depreciation_entry_id": depreciation_entry_id,
+            "inventory_entry_id": inventory_entry_id,
+            "revenue_expense_close_entry_id": revenue_expense_close_entry_id,
+            "closing_entry_id": closing_entry_id,
+        }
+
+    async def _run_year_end_reporting(
+        self,
+        business_key: str,
+        org_id: UUID,
+        tax_year: int,
+    ) -> dict[str, Any]:
+        await self._api.switch_organization(org_id)
+        report = await self._summarize_1099_activity(tax_year)
+        return {"tax_year": tax_year, **report}
 
     async def _process_transactions(
         self,
@@ -1025,6 +1934,314 @@ class AccountingWorkflow:
             return current_date <= due_date <= current_date + timedelta(days=days)
         except (ValueError, TypeError):
             return False
+
+    async def _generate_overdue_followups(
+        self, period_end: date
+    ) -> list[dict[str, Any]]:
+        followups: list[dict[str, Any]] = []
+        overdue_invoices = await self._api.list_invoices(status="overdue")
+        for inv in overdue_invoices:
+            due_date = self._parse_date(inv.get("due_date")) or self._parse_date(
+                inv.get("invoice_date")
+            )
+            if not due_date or due_date > period_end:
+                continue
+            days_overdue = (period_end - due_date).days
+            amount_due = (
+                self._extract_decimal(inv.get("amount_due"))
+                or self._extract_decimal(inv.get("balance"))
+                or self._extract_decimal(inv.get("total_amount"))
+                or Decimal("0")
+            )
+            if days_overdue >= 90:
+                action = "Consider collection agency or write-off review"
+            elif days_overdue >= 60:
+                action = "Second notice + call customer"
+            elif days_overdue >= 30:
+                action = "Send payment reminder"
+            else:
+                action = "Friendly reminder"
+            followups.append(
+                {
+                    "invoice_id": inv.get("id"),
+                    "customer_id": inv.get("customer_id"),
+                    "days_overdue": days_overdue,
+                    "amount_due": str(amount_due),
+                    "action": action,
+                }
+            )
+        return followups
+
+    async def _reconcile_bank_transactions(
+        self,
+        bank_transactions: list[dict[str, Any]],
+        account_info: dict[str, Any],
+        period_end: date,
+    ) -> dict[str, Any]:
+        summary = {
+            "unmatched": 0,
+            "matched": 0,
+            "categorized": 0,
+            "failed": 0,
+        }
+        if not bank_transactions:
+            return summary
+
+        payments_received = await self._fetch_all_payments()
+        payments_made = await self._fetch_all_payments_made()
+
+        def _index_by_amount(items: list[dict[str, Any]], date_key: str) -> dict[str, list[dict[str, Any]]]:
+            index: dict[str, list[dict[str, Any]]] = {}
+            for item in items:
+                amount = self._extract_decimal(item.get("amount"))
+                if amount is None:
+                    continue
+                item_date = self._parse_date(item.get(date_key))
+                if not item_date:
+                    continue
+                if abs((period_end - item_date).days) > 45:
+                    continue
+                key = str(amount.quantize(Decimal("0.01")))
+                index.setdefault(key, []).append(item)
+            return index
+
+        payments_by_amount = _index_by_amount(payments_received, "payment_date")
+        payments_made_by_amount = _index_by_amount(payments_made, "payment_date")
+        used_payments: set[str] = set()
+
+        for tx in bank_transactions:
+            if tx.get("is_matched") or tx.get("matched") or tx.get("match_id"):
+                continue
+
+            summary["unmatched"] += 1
+            tx_id = tx.get("id")
+            if not tx_id:
+                summary["failed"] += 1
+                continue
+            try:
+                tx_uuid = UUID(str(tx_id))
+            except (ValueError, TypeError):
+                summary["failed"] += 1
+                continue
+
+            amount = self._extract_decimal(tx.get("absolute_amount")) or self._extract_decimal(
+                tx.get("amount")
+            )
+            tx_date = self._parse_date(tx.get("transaction_date"))
+            if amount is None or not tx_date:
+                summary["failed"] += 1
+                continue
+
+            key = str(amount.quantize(Decimal("0.01")))
+            if tx.get("is_deposit"):
+                candidates = payments_by_amount.get(key, [])
+                match_type = "payment"
+                date_key = "payment_date"
+            else:
+                candidates = payments_made_by_amount.get(key, [])
+                match_type = "bill_payment"
+                date_key = "payment_date"
+
+            matched = False
+            for candidate in candidates:
+                candidate_id = str(candidate.get("id"))
+                if not candidate_id or candidate_id in used_payments:
+                    continue
+                candidate_date = self._parse_date(candidate.get(date_key))
+                if not candidate_date:
+                    continue
+                if abs((candidate_date - tx_date).days) > 5:
+                    continue
+                try:
+                    await self._api.match_bank_transaction(
+                        tx_uuid,
+                        UUID(candidate_id),
+                        match_type,
+                    )
+                    used_payments.add(candidate_id)
+                    summary["matched"] += 1
+                    matched = True
+                    break
+                except AtlasAPIError:
+                    summary["failed"] += 1
+            if matched:
+                continue
+
+            account_id = (
+                account_info.get("revenue_account_id")
+                if tx.get("is_deposit")
+                else account_info.get("expense_account_id")
+            )
+            if not account_id:
+                summary["failed"] += 1
+                continue
+            try:
+                await self._api.categorize_bank_transaction(
+                    tx_uuid, UUID(str(account_id))
+                )
+                summary["categorized"] += 1
+            except AtlasAPIError:
+                summary["failed"] += 1
+
+        return summary
+
+    async def _generate_management_reports(
+        self,
+        period_start: date,
+        period_end: date,
+    ) -> dict[str, Any]:
+        customers = await self._api.list_customers()
+        vendors = await self._api.list_vendors()
+        accounts = await self._api.list_accounts(limit=200)
+
+        customer_map = {str(c.get("id")): c.get("display_name") for c in customers}
+        vendor_map = {str(v.get("id")): v.get("display_name") for v in vendors}
+        account_map = {str(a.get("id")): a.get("name") for a in accounts}
+
+        invoices = await self._fetch_all_invoices()
+        bills = await self._fetch_all_bills()
+
+        revenue_by_customer: dict[str, Decimal] = {}
+        for inv in invoices:
+            inv_date = self._parse_date(inv.get("invoice_date"))
+            if not inv_date or not (period_start <= inv_date <= period_end):
+                continue
+            amount = (
+                self._extract_decimal(inv.get("total_amount"))
+                or self._extract_decimal(inv.get("subtotal"))
+                or Decimal("0")
+            )
+            customer_id = str(inv.get("customer_id"))
+            customer_name = customer_map.get(customer_id, customer_id or "Unknown")
+            revenue_by_customer[customer_name] = revenue_by_customer.get(
+                customer_name, Decimal("0")
+            ) + amount
+
+        expenses_by_category: dict[str, Decimal] = {}
+        for bill in bills:
+            bill_date = self._parse_date(bill.get("bill_date"))
+            if not bill_date or not (period_start <= bill_date <= period_end):
+                continue
+            bill_id = bill.get("id")
+            if not bill_id:
+                continue
+            try:
+                detail = await self._api.get_bill(UUID(str(bill_id)))
+            except AtlasAPIError:
+                continue
+            for line in detail.get("lines", []):
+                account_id = line.get("expense_account_id") or line.get("account_id")
+                category = account_map.get(str(account_id), "Uncategorized")
+                qty = self._extract_decimal(line.get("quantity")) or Decimal("1")
+                unit_price = (
+                    self._extract_decimal(line.get("unit_price"))
+                    or self._extract_decimal(line.get("amount"))
+                    or Decimal("0")
+                )
+                line_amount = (qty * unit_price).quantize(Decimal("0.01"))
+                expenses_by_category[category] = expenses_by_category.get(
+                    category, Decimal("0")
+                ) + line_amount
+
+        def _top_n(values: dict[str, Decimal], count: int = 5) -> list[dict[str, Any]]:
+            items = sorted(values.items(), key=lambda x: x[1], reverse=True)
+            return [
+                {"name": name, "amount": str(amount.quantize(Decimal("0.01")))}
+                for name, amount in items[:count]
+            ]
+
+        revenue_total = sum(revenue_by_customer.values(), Decimal("0"))
+        expense_total = sum(expenses_by_category.values(), Decimal("0"))
+
+        return {
+            "revenue_by_customer": _top_n(revenue_by_customer),
+            "expenses_by_category": _top_n(expenses_by_category),
+            "revenue_total": str(revenue_total.quantize(Decimal("0.01"))),
+            "expense_total": str(expense_total.quantize(Decimal("0.01"))),
+            "top_vendors": _top_n(
+                {
+                    vendor_map.get(str(v.get("vendor_id")), str(v.get("vendor_id"))): (
+                        self._extract_decimal(v.get("amount_due"))
+                        or self._extract_decimal(v.get("amount"))
+                        or Decimal("0")
+                    )
+                    for v in bills
+                }
+            ),
+        }
+
+    async def _initialize_new_year_budget(self, year: int) -> dict[str, Any] | None:
+        try:
+            existing = await self._api.list_budgets(fiscal_year=year)
+        except AtlasAPIError:
+            existing = []
+        if existing:
+            return existing[0]
+        payload = {
+            "name": f"FY{year} Operating Budget",
+            "fiscal_year": year,
+            "period_type": "monthly",
+            "start_date": date(year, 1, 1).isoformat(),
+            "end_date": date(year, 12, 31).isoformat(),
+            "description": "Auto-generated budget for new fiscal year",
+        }
+        try:
+            return await self._api.create_budget(payload)
+        except AtlasAPIError as exc:
+            self._logger.warning("budget_create_failed", year=year, error=str(exc))
+        return None
+
+    async def _summarize_1099_activity(
+        self, tax_year: int
+    ) -> dict[str, Any]:
+        payments_made = await self._fetch_all_payments_made()
+        vendors = await self._api.list_vendors()
+        vendor_map = {str(v.get("id")): v for v in vendors}
+
+        totals: dict[str, Decimal] = {}
+        for payment in payments_made:
+            payment_date = self._parse_date(payment.get("payment_date"))
+            if not payment_date or payment_date.year != tax_year:
+                continue
+            vendor_id = payment.get("vendor_id")
+            if not vendor_id:
+                continue
+            amount = self._extract_decimal(payment.get("amount")) or Decimal("0")
+            totals[str(vendor_id)] = totals.get(str(vendor_id), Decimal("0")) + amount
+
+        threshold = Decimal("600")
+        reportable_vendors: list[dict[str, Any]] = []
+        missing_w9: list[str] = []
+        for vendor_id, total in totals.items():
+            if total < threshold:
+                continue
+            vendor = vendor_map.get(vendor_id, {})
+            vendor_name = vendor.get("display_name") or vendor_id
+            tax_profile = {}
+            try:
+                tax_profile = await self._api.get_vendor_tax_profile(UUID(vendor_id))
+            except AtlasAPIError:
+                tax_profile = {}
+            tax_form_on_file = bool(tax_profile.get("tax_form_on_file"))
+            is_tax_reportable = tax_profile.get("is_tax_reportable", True)
+            reportable_vendors.append(
+                {
+                    "vendor_id": vendor_id,
+                    "vendor_name": vendor_name,
+                    "total_paid": str(total.quantize(Decimal("0.01"))),
+                    "tax_form_on_file": tax_form_on_file,
+                    "is_tax_reportable": is_tax_reportable,
+                }
+            )
+            if not tax_form_on_file:
+                missing_w9.append(vendor_name)
+
+        return {
+            "vendors_over_threshold": len(reportable_vendors),
+            "vendors_missing_w9": len(missing_w9),
+            "missing_w9_vendors": missing_w9,
+            "reportable_vendors": reportable_vendors,
+        }
 
     async def _get_org_name(self, org_id: UUID) -> str:
         """Get organization name."""
