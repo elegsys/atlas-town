@@ -2176,15 +2176,26 @@ class TransactionGenerator:
 
     def _get_holiday_multiplier(self, business_key: str, current_date: date) -> float:
         """Get holiday/event multiplier for a business on a given date."""
+        multiplier, _ = self.get_holiday_context(business_key, current_date)
+        return multiplier
+
+    def get_holiday_context(
+        self,
+        business_key: str,
+        current_date: date,
+    ) -> tuple[float, list[str]]:
+        """Return holiday multiplier and active holiday names for a date."""
         multiplier = 1.0
+        names: list[str] = []
         for holiday in self._holiday_calendar:
             if not holiday.matches(current_date):
                 continue
+            names.append(holiday.name)
             value = holiday.modifier_for(business_key)
             if value <= 0:
-                return 0.0
+                return 0.0, names
             multiplier *= value
-        return multiplier
+        return multiplier, names
 
     def _get_day_multiplier(self, business_key: str, weekday: int) -> float:
         """Get day-of-week multiplier for a business.

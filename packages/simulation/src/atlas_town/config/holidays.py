@@ -61,6 +61,8 @@ class HolidayRule:
         if self.rule_type == "nth_weekday":
             if self.month is None or self.weekday is None or self.nth is None:
                 return False
+            if target_date.month != self.month:
+                return False
             match_day = _nth_weekday_of_month(
                 target_date.year, self.month, self.weekday, self.nth
             )
@@ -68,6 +70,8 @@ class HolidayRule:
 
         if self.rule_type == "last_weekday":
             if self.month is None or self.weekday is None:
+                return False
+            if target_date.month != self.month:
                 return False
             match_day = _last_weekday_of_month(
                 target_date.year, self.month, self.weekday

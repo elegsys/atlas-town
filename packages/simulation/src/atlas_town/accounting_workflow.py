@@ -1020,6 +1020,20 @@ class AccountingWorkflow:
         if sales_tax_remittance:
             transactions.append(sales_tax_remittance)
 
+        holiday_multiplier, holiday_names = self._tx_gen.get_holiday_context(
+            business_key, current_date
+        )
+        tx_summary = self._tx_gen.get_transaction_summary(transactions)
+        self._logger.info(
+            "daily_transaction_summary",
+            business=business_key,
+            date=current_date.isoformat(),
+            total_transactions=tx_summary["count"],
+            by_type=tx_summary["by_type"],
+            holiday_multiplier=holiday_multiplier,
+            holidays=holiday_names,
+        )
+
         # Step 2-5: Process transactions (deterministic)
         results = await self._process_transactions(
             transactions, current_date, org_id, business_key
