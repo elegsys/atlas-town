@@ -14,6 +14,7 @@ The LLM agent is still valuable for:
 - Demo/showcase scenarios
 """
 
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
@@ -1672,6 +1673,7 @@ class AccountingWorkflow:
                             amount=total_amount,
                             payment_date=current_date,
                             org_id=org_id,
+                            take_discount=False,
                         )
                         results["invoices_created"] += 1
                         results["invoices_total"] += total_amount
@@ -1693,12 +1695,14 @@ class AccountingWorkflow:
                 elif tx.transaction_type == TransactionType.PAYMENT_RECEIVED:
                     # Payment for existing invoice
                     if tx.metadata and tx.metadata.get("invoice_id") and tx.customer_id:
+                        take_discount = bool(tx.metadata.get("take_discount"))
                         await self._record_payment(
                             invoice_id=tx.metadata["invoice_id"],
                             customer_id=tx.customer_id,
                             amount=tx.amount,
                             payment_date=current_date,
                             org_id=org_id,
+                            take_discount=take_discount,
                         )
                         results["payments_received"] += 1
                         results["payments_total"] += tx.amount
@@ -1764,7 +1768,12 @@ class AccountingWorkflow:
             )
             return None
 
-        due_date = invoice_date + timedelta(days=30)  # Net 30 terms
+        due_date: date | None = None
+        if tx.metadata:
+            due_value = tx.metadata.get("due_date")
+            if isinstance(due_value, str):
+                with suppress(ValueError):
+                    due_date = date.fromisoformat(due_value)
 
         lines: list[dict[str, Any]] = [
             {
@@ -1796,12 +1805,19 @@ class AccountingWorkflow:
         invoice_payload = {
             "customer_id": str(tx.customer_id),
             "invoice_date": invoice_date.isoformat(),
-            "due_date": due_date.isoformat(),
             "lines": lines,
         }
+        if due_date:
+            invoice_payload["due_date"] = due_date.isoformat()
         run_note = self._run_note()
         if run_note:
             invoice_payload["notes"] = run_note
+        if tx.metadata:
+            discount_percent = tx.metadata.get("discount_percent")
+            discount_days = tx.metadata.get("discount_days")
+            if discount_percent is not None and discount_days is not None:
+                invoice_payload["discount_percent"] = str(discount_percent)
+                invoice_payload["discount_days"] = int(discount_days)
 
         invoice = await self._api.create_invoice(invoice_payload)
 
@@ -1940,6 +1956,7 @@ class AccountingWorkflow:
         amount: Decimal,
         payment_date: date,
         org_id: UUID,
+        take_discount: bool = False,
     ) -> dict[str, Any] | None:
         """Record a customer payment - deterministic."""
         # Get cached accounts for AR and deposit
@@ -1975,6 +1992,7 @@ class AccountingWorkflow:
                     UUID(payment["id"]),
                     UUID(invoice_id),
                     str(amount),
+                    take_discount=take_discount,
                 )
             except Exception as e:
                 details = e.details if isinstance(e, AtlasAPIError) else None

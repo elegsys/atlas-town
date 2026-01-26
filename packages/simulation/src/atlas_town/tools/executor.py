@@ -185,10 +185,17 @@ class ToolExecutor:
         return await self.client.create_payment(data, ar_account_id=ar_account_id)
 
     async def _apply_payment_to_invoice(
-        self, payment_id: str, invoice_id: str, amount: str
+        self,
+        payment_id: str,
+        invoice_id: str,
+        amount: str,
+        take_discount: bool | None = None,
     ) -> dict[str, Any]:
         return await self.client.apply_payment_to_invoice(
-            UUID(payment_id), UUID(invoice_id), amount
+            UUID(payment_id),
+            UUID(invoice_id),
+            amount,
+            take_discount=take_discount,
         )
 
     async def _create_bill_payment(self, **data: Any) -> dict[str, Any]:

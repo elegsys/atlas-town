@@ -661,12 +661,19 @@ class AtlasAPIClient:
         return result if isinstance(result, dict) else {}
 
     async def apply_payment_to_invoice(
-        self, payment_id: UUID, invoice_id: UUID, amount: str
+        self,
+        payment_id: UUID,
+        invoice_id: UUID,
+        amount: str,
+        take_discount: bool | None = None,
     ) -> dict[str, Any]:
         """Apply payment to an invoice."""
+        payload: dict[str, Any] = {"invoice_id": str(invoice_id), "amount": amount}
+        if take_discount is not None:
+            payload["take_discount"] = take_discount
         result = await self.post(
             f"/api/v1/payments/{payment_id}/apply",
-            json={"invoice_id": str(invoice_id), "amount": amount},
+            json=payload,
         )
         return result if isinstance(result, dict) else {}
 

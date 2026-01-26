@@ -2255,6 +2255,47 @@ class TransactionGenerator:
                 return probability
         return 0.0
 
+    def _discount_take_probability(self, discount_percent: Decimal) -> float:
+        """Probability of taking an early payment discount."""
+        try:
+            percent_value = float(discount_percent)
+        except (TypeError, ValueError):
+            return 0.4
+        return max(0.1, min(0.8, 0.25 + percent_value / 10.0))
+
+    def _discount_for_invoice(
+        self,
+        invoice: dict[str, Any],
+        current_date: date,
+        amount_due: Decimal,
+    ) -> tuple[bool, Decimal]:
+        discount_percent = invoice.get("discount_percent")
+        discount_cutoff = self._parse_date(invoice.get("discount_cutoff_date"))
+        if discount_percent is None or discount_cutoff is None:
+            return False, Decimal("0")
+        try:
+            percent_value = Decimal(str(discount_percent))
+        except (TypeError, ValueError):
+            return False, Decimal("0")
+        if percent_value <= 0 or current_date > discount_cutoff:
+            return False, Decimal("0")
+        if self._rng.random() > self._discount_take_probability(percent_value):
+            return False, Decimal("0")
+        discount_amount = (amount_due * percent_value / Decimal("100")).quantize(
+            Decimal("0.0001")
+        )
+        if discount_amount <= 0:
+            return False, Decimal("0")
+        return True, discount_amount
+
+    def _maybe_discount_terms(self) -> dict[str, Any] | None:
+        """Optionally attach early payment discount terms to an invoice."""
+        if self._rng.random() > 0.2:
+            return None
+        if self._rng.random() < 0.7:
+            return {"discount_percent": "2", "discount_days": 10}
+        return {"discount_percent": "1", "discount_days": 15}
+
     def _should_generate(
         self,
         pattern: TransactionPattern,
@@ -2421,6 +2462,22 @@ class TransactionGenerator:
                         return amount
             return None
 
+        def payment_details(
+            invoice: dict[str, Any],
+        ) -> tuple[Decimal | None, bool, Decimal]:
+            amount_due = invoice_amount(invoice)
+            if amount_due is None or amount_due <= 0:
+                return None, False, Decimal("0")
+            take_discount, discount_amount = self._discount_for_invoice(
+                invoice, current_date, amount_due
+            )
+            if not take_discount:
+                return amount_due, False, Decimal("0")
+            payment_amount = (amount_due - discount_amount).quantize(Decimal("0.0001"))
+            if payment_amount <= 0:
+                return amount_due, False, Decimal("0")
+            return payment_amount, True, discount_amount
+
         if hourly:
             hours = self._get_phase_hours(current_phase)
             if not hours and current_hour is not None:
@@ -2471,7 +2528,9 @@ class TransactionGenerator:
                     if pattern.transaction_type == TransactionType.PAYMENT_RECEIVED:
                         selected_invoice = pop_pending_invoice()
                         if selected_invoice:
-                            amount = invoice_amount(selected_invoice)
+                            amount, take_discount, discount_amount = payment_details(
+                                selected_invoice
+                            )
                             invoice_id = selected_invoice.get("id")
                             if amount and invoice_id:
                                 invoice_number = selected_invoice.get("invoice_number", "N/A")
@@ -2480,13 +2539,17 @@ class TransactionGenerator:
                                     if selected_invoice.get("customer_id")
                                     else None
                                 )
+                                metadata = {"invoice_id": invoice_id}
+                                if take_discount:
+                                    metadata["take_discount"] = True
+                                    metadata["discount_amount"] = str(discount_amount)
                                 hour_transactions.append(
                                     GeneratedTransaction(
                                         transaction_type=pattern.transaction_type,
                                         description=f"Payment received - Invoice #{invoice_number}",
                                         amount=amount,
                                         customer_id=customer_id_value,
-                                        metadata={"invoice_id": invoice_id},
+                                        metadata=metadata,
                                     )
                                 )
                         continue
@@ -2517,6 +2580,12 @@ class TransactionGenerator:
                             amount=amount,
                             customer_id=customer_id,
                             vendor_id=vendor_id,
+                            metadata=(
+                                self._maybe_discount_terms()
+                                if pattern.transaction_type == TransactionType.INVOICE
+                                and customer_id
+                                else None
+                            ),
                         )
                     )
 
@@ -2550,7 +2619,9 @@ class TransactionGenerator:
             if pattern.transaction_type == TransactionType.PAYMENT_RECEIVED:
                 selected_invoice = pop_pending_invoice()
                 if selected_invoice:
-                    amount = invoice_amount(selected_invoice)
+                    amount, take_discount, discount_amount = payment_details(
+                        selected_invoice
+                    )
                     invoice_id = selected_invoice.get("id")
                     if amount and invoice_id:
                         invoice_number = selected_invoice.get("invoice_number", "N/A")
@@ -2559,13 +2630,17 @@ class TransactionGenerator:
                             if selected_invoice.get("customer_id")
                             else None
                         )
+                        metadata = {"invoice_id": invoice_id}
+                        if take_discount:
+                            metadata["take_discount"] = True
+                            metadata["discount_amount"] = str(discount_amount)
                         transactions.append(
                             GeneratedTransaction(
                                 transaction_type=pattern.transaction_type,
                                 description=f"Payment received - Invoice #{invoice_number}",
                                 amount=amount,
                                 customer_id=customer_id_value,
-                                metadata={"invoice_id": invoice_id},
+                                metadata=metadata,
                             )
                         )
                 continue
@@ -2589,13 +2664,21 @@ class TransactionGenerator:
                 vendor = self._rng.choice(vendors)
                 vendor_id = UUID(vendor["id"])
 
-            transactions.append(GeneratedTransaction(
-                transaction_type=pattern.transaction_type,
-                description=description,
-                amount=amount,
-                customer_id=customer_id,
-                vendor_id=vendor_id,
-            ))
+            transactions.append(
+                GeneratedTransaction(
+                    transaction_type=pattern.transaction_type,
+                    description=description,
+                    amount=amount,
+                    customer_id=customer_id,
+                    vendor_id=vendor_id,
+                    metadata=(
+                        self._maybe_discount_terms()
+                        if pattern.transaction_type == TransactionType.INVOICE
+                        and customer_id
+                        else None
+                    ),
+                )
+            )
 
         self._logger.info(
             "transactions_generated",

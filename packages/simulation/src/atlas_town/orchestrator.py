@@ -1247,7 +1247,7 @@ class Orchestrator:
                 )
                 return None
 
-            due_date = sim_date + timedelta(days=30)
+            due_date: date | None = None
             notes: str | None = None
             if tx.metadata:
                 due_value = tx.metadata.get("due_date")
@@ -1261,7 +1261,6 @@ class Orchestrator:
             invoice_data = {
                 "customer_id": str(tx.customer_id),
                 "invoice_date": sim_date.isoformat(),
-                "due_date": due_date.isoformat(),
                 "lines": [{
                     "description": tx.description,
                     "quantity": "1",
@@ -1269,10 +1268,18 @@ class Orchestrator:
                     "revenue_account_id": revenue_account["id"],
                 }],
             }
+            if due_date:
+                invoice_data["due_date"] = due_date.isoformat()
             run_note = self._run_note()
             merged_notes = self._merge_notes(run_note, notes)
             if merged_notes:
                 invoice_data["notes"] = merged_notes
+            if tx.metadata:
+                discount_percent = tx.metadata.get("discount_percent")
+                discount_days = tx.metadata.get("discount_days")
+                if discount_percent is not None and discount_days is not None:
+                    invoice_data["discount_percent"] = str(discount_percent)
+                    invoice_data["discount_days"] = int(discount_days)
 
             result = await self._api_client.create_invoice(invoice_data)
 
@@ -1489,10 +1496,14 @@ class Orchestrator:
         if result and result.get("id"):
             try:
                 # Apply to invoice
+                take_discount = False
+                if tx.metadata:
+                    take_discount = bool(tx.metadata.get("take_discount"))
                 await self._api_client.apply_payment_to_invoice(
                     UUID(result["id"]),
                     UUID(invoice_id),
                     str(tx.amount),
+                    take_discount=take_discount,
                 )
             except Exception as e:
                 details = e.details if isinstance(e, AtlasAPIError) else None

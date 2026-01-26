@@ -70,6 +70,18 @@ CREATE_CUSTOMER_TOOL: dict[str, Any] = {
                 "type": "string",
                 "description": "Customer's phone number",
             },
+            "discount_percent": {
+                "type": "number",
+                "description": "Early payment discount percent (e.g., 2 for 2%)",
+            },
+            "discount_days": {
+                "type": "integer",
+                "description": "Days from invoice date to qualify for discount",
+            },
+            "net_days": {
+                "type": "integer",
+                "description": "Net terms days until invoice due",
+            },
             "billing_address": {
                 "type": "object",
                 "description": "Customer's billing address",
@@ -247,6 +259,14 @@ CREATE_INVOICE_TOOL: dict[str, Any] = {
             "notes": {
                 "type": "string",
                 "description": "Notes to include on the invoice",
+            },
+            "discount_percent": {
+                "type": "number",
+                "description": "Early payment discount percent (e.g., 2 for 2%)",
+            },
+            "discount_days": {
+                "type": "integer",
+                "description": "Days from invoice date to qualify for discount",
             },
         },
         "required": ["customer_id", "invoice_date", "lines"],
@@ -475,6 +495,10 @@ APPLY_PAYMENT_TOOL: dict[str, Any] = {
             "amount": {
                 "type": "string",
                 "description": "Amount to apply",
+            },
+            "take_discount": {
+                "type": "boolean",
+                "description": "Take early payment discount if available",
             },
         },
         "required": ["payment_id", "invoice_id", "amount"],
