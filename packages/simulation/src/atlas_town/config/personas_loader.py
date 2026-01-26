@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -240,6 +241,82 @@ def load_persona_employees() -> dict[str, list[dict[str, Any]]]:
             employees_by_persona[path.stem] = normalized
 
     return employees_by_persona
+
+
+@lru_cache
+def load_persona_cash_flow_settings() -> dict[str, dict[str, Any]]:
+    """Load cash flow settings from persona YAML files."""
+    personas_dir = Path(__file__).resolve().parent / "personas"
+    if not personas_dir.exists():
+        return {}
+
+    settings: dict[str, dict[str, Any]] = {}
+
+    for path in sorted(personas_dir.glob("*.yaml")):
+        raw = path.read_text(encoding="utf-8")
+        data = yaml.safe_load(raw) or {}
+        cash_flow = data.get("cash_flow")
+
+        if cash_flow is None:
+            continue
+        if not isinstance(cash_flow, dict):
+            raise ValueError(f"{path.name}: cash_flow must be a mapping")
+
+        normalized: dict[str, Any] = {}
+
+        def _parse_decimal(value: Any, label: str, path_name: str) -> Decimal:
+            try:
+                return Decimal(str(value))
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"{path_name}: cash_flow.{label} must be numeric"
+                ) from exc
+
+        for key in ("min_cash", "reserve_target", "auto_draw_threshold"):
+            if key in cash_flow and cash_flow[key] is not None:
+                normalized[key] = _parse_decimal(cash_flow[key], key, path.name)
+
+        reserve_by_month = cash_flow.get("reserve_by_month")
+        if reserve_by_month is not None:
+            if not isinstance(reserve_by_month, dict):
+                raise ValueError(
+                    f"{path.name}: cash_flow.reserve_by_month must be a mapping"
+                )
+            month_targets: dict[int, Decimal] = {}
+            for raw_month, value in reserve_by_month.items():
+                try:
+                    month = int(raw_month)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"{path.name}: cash_flow.reserve_by_month invalid month {raw_month!r}"
+                    ) from exc
+                if not (1 <= month <= 12):
+                    raise ValueError(
+                        f"{path.name}: cash_flow.reserve_by_month month must be 1-12"
+                    )
+                month_targets[month] = _parse_decimal(
+                    value, f"reserve_by_month[{month}]", path.name
+                )
+            normalized["reserve_by_month"] = month_targets
+
+        essential_keywords = cash_flow.get("essential_vendor_keywords")
+        if essential_keywords is not None:
+            if not isinstance(essential_keywords, list):
+                raise ValueError(
+                    f"{path.name}: cash_flow.essential_vendor_keywords must be a list"
+                )
+            normalized["essential_vendor_keywords"] = [
+                str(value).strip().lower() for value in essential_keywords if str(value).strip()
+            ]
+
+        defer_nonessential = cash_flow.get("defer_nonessential")
+        if defer_nonessential is not None:
+            normalized["defer_nonessential"] = bool(defer_nonessential)
+
+        if normalized:
+            settings[path.stem] = normalized
+
+    return settings
 
 
 @lru_cache
@@ -598,6 +675,8 @@ def load_persona_financing_configs() -> dict[str, dict[str, Any]]:
                     "name": line.get("name"),
                     "balance": balance,
                     "rate": rate,
+                    "limit": line.get("limit"),
+                    "auto_draw_threshold": line.get("auto_draw_threshold"),
                     "billing_day": line.get("billing_day", 1),
                     "lender": line.get("lender"),
                     "start_date": parse_date_value(

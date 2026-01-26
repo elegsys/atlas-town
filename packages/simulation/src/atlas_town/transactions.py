@@ -19,6 +19,7 @@ from atlas_town.agents.vendor import VENDOR_ARCHETYPES, VendorType
 from atlas_town.config.holidays import load_holiday_calendar
 from atlas_town.config.personas_loader import (
     WEEKDAY_NAME_TO_INDEX,
+    load_persona_cash_flow_settings,
     load_persona_day_patterns,
     load_persona_employees,
     load_persona_financing_configs,
@@ -267,6 +268,8 @@ class LineOfCreditSpec:
     start_date: date | None = None
     rate_adjustments: tuple[FinancingRateAdjustment, ...] = ()
     balance_events: tuple[BalanceEvent, ...] = ()
+    limit: Decimal | None = None
+    auto_draw_threshold: Decimal | None = None
 
 
 class FinancingScheduler:
@@ -394,6 +397,20 @@ class FinancingScheduler:
             day += timedelta(days=1)
 
         self._loc_last_accrual[key] = current_date
+
+    def get_loc_balance(self, business_key: str, name: str) -> Decimal:
+        key = (business_key, name)
+        if key in self._loc_current_balance:
+            return self._loc_current_balance[key]
+        for spec in self._locs_by_business.get(business_key, []):
+            if spec.name == name:
+                return spec.balance
+        return Decimal("0")
+
+    def set_loc_balance(
+        self, business_key: str, name: str, balance: Decimal
+    ) -> None:
+        self._loc_current_balance[(business_key, name)] = balance
 
     def _equipment_decision(
         self, business_key: str, spec: EquipmentFinancingSpec
@@ -1780,6 +1797,7 @@ class TransactionGenerator:
         self._day_patterns = get_business_day_patterns()
         self._inflation = inflation or get_inflation_model()
         self._holiday_calendar = load_holiday_calendar()
+        self._cash_flow_settings = self._load_cash_flow_settings()
         self._payment_behaviors = self._load_payment_behaviors()
         self._recurring_scheduler = RecurringTransactionScheduler(
             self._load_recurring_transactions()
@@ -1800,6 +1818,9 @@ class TransactionGenerator:
             financing["equipment_financing"],
             rng=self._rng,
         )
+
+    def _load_cash_flow_settings(self) -> dict[str, dict[str, Any]]:
+        return load_persona_cash_flow_settings()
 
     def _load_payment_behaviors(self) -> dict[str, dict[str, dict[str, Any]]]:
         raw = load_persona_payment_behaviors()
@@ -1879,6 +1900,38 @@ class TransactionGenerator:
             behavior["overdue_bonus"] = overrides["overdue_bonus"]
 
         return behavior
+
+    def get_cash_flow_policy(self, business_key: str) -> dict[str, Any]:
+        return self._cash_flow_settings.get(business_key, {}).copy()
+
+    def get_reserve_target(self, business_key: str, current_date: date) -> Decimal:
+        policy = self._cash_flow_settings.get(business_key, {})
+        reserve_by_month = policy.get("reserve_by_month") or {}
+        if isinstance(reserve_by_month, dict) and current_date.month in reserve_by_month:
+            try:
+                return Decimal(str(reserve_by_month[current_date.month]))
+            except (TypeError, ValueError):
+                return Decimal("0")
+        reserve_target = policy.get("reserve_target")
+        if isinstance(reserve_target, Decimal):
+            return reserve_target
+        if reserve_target is not None:
+            try:
+                return Decimal(str(reserve_target))
+            except (TypeError, ValueError):
+                return Decimal("0")
+        return Decimal("0")
+
+    def get_line_of_credit_specs(self, business_key: str) -> list[LineOfCreditSpec]:
+        return list(self._financing_scheduler._locs_by_business.get(business_key, []))
+
+    def get_line_of_credit_balance(self, business_key: str, name: str) -> Decimal:
+        return self._financing_scheduler.get_loc_balance(business_key, name)
+
+    def set_line_of_credit_balance(
+        self, business_key: str, name: str, balance: Decimal
+    ) -> None:
+        self._financing_scheduler.set_loc_balance(business_key, name, balance)
     def _load_recurring_transactions(
         self,
     ) -> dict[str, list[RecurringTransactionSpec]]:
@@ -2072,6 +2125,25 @@ class TransactionGenerator:
                     raise ValueError(
                         f"Financing line_of_credit invalid for {business_key}: {item!r}"
                     ) from exc
+                limit = item.get("limit")
+                auto_draw_threshold = item.get("auto_draw_threshold")
+                limit_value = None
+                if limit is not None:
+                    try:
+                        limit_value = Decimal(str(limit))
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError(
+                            f"Financing line_of_credit limit invalid for {business_key}: {item!r}"
+                        ) from exc
+                auto_draw_value = None
+                if auto_draw_threshold is not None:
+                    try:
+                        auto_draw_value = Decimal(str(auto_draw_threshold))
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError(
+                            "Financing line_of_credit auto_draw_threshold invalid for "
+                            f"{business_key}: {item!r}"
+                        ) from exc
                 billing_day = int(item.get("billing_day", 1))
                 if not (1 <= billing_day <= 31):
                     raise ValueError(
@@ -2123,6 +2195,8 @@ class TransactionGenerator:
                         name=name,
                         annual_rate=rate,
                         balance=balance,
+                        limit=limit_value,
+                        auto_draw_threshold=auto_draw_value,
                         billing_day=billing_day,
                         lender=lender,
                         start_date=start_date,

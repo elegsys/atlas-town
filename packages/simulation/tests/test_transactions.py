@@ -1108,3 +1108,25 @@ class TestPaymentDecisions:
         assert decision.is_partial is True
         assert decision.amount is not None
         assert decision.amount < Decimal("2000.00")
+
+
+class TestCashFlowSettings:
+    def test_cash_flow_policy_loaded(self):
+        generator = TransactionGenerator(seed=4)
+        policy = generator.get_cash_flow_policy("craig")
+        assert policy["min_cash"] == Decimal("8000")
+
+    def test_reserve_target_by_month(self):
+        generator = TransactionGenerator(seed=5)
+        june_target = generator.get_reserve_target("craig", date(2024, 6, 1))
+        assert june_target == Decimal("25000")
+        november_target = generator.get_reserve_target("craig", date(2024, 11, 1))
+        assert november_target == Decimal("15000")
+
+    def test_line_of_credit_limits_loaded(self):
+        generator = TransactionGenerator(seed=6)
+        locs = generator.get_line_of_credit_specs("craig")
+        assert locs, "Expected Craig to have a line of credit"
+        primary = locs[0]
+        assert primary.limit == Decimal("50000")
+        assert primary.auto_draw_threshold == Decimal("5000")

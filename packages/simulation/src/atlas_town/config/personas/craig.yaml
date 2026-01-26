@@ -36,6 +36,31 @@ financial_preferences:
     min: 500
     max: 15000
 
+cash_flow:
+  min_cash: 8000
+  reserve_target: 15000
+  reserve_by_month:
+    4: 20000
+    5: 25000
+    6: 25000
+    7: 25000
+    8: 22000
+    9: 18000
+    12: 6000
+    1: 6000
+    2: 6000
+  auto_draw_threshold: 5000
+  defer_nonessential: true
+  essential_vendor_keywords:
+    - payroll
+    - rent
+    - lease
+    - utilities
+    - tax
+    - insurance
+    - loan
+    - interest
+
 payment_behavior:
   invoice:
     base_probability: 0.2
@@ -122,6 +147,8 @@ financing:
     name: "Seasonal Working Capital"
     balance: 12000
     rate: 0.095
+    limit: 50000
+    auto_draw_threshold: 5000
     billing_day: 5
     lender: "Atlas Community Bank"
     start_date: "2024-01-01"

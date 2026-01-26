@@ -1060,6 +1060,15 @@ class Orchestrator:
         return "\n".join(parts)
 
     @staticmethod
+    def _extract_decimal(value: Any) -> Decimal | None:
+        if value is None:
+            return None
+        try:
+            return Decimal(str(value))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
     def _extract_event_metadata(
         metadata: dict[str, Any] | None,
     ) -> dict[str, Any] | None:
@@ -1538,6 +1547,217 @@ class Orchestrator:
 
         self._logger.info("payment_received", org=ctx.name, amount=str(tx.amount))
         return result
+
+    async def _get_cash_position(
+        self, org_id: UUID
+    ) -> tuple[Decimal, list[dict[str, Any]]]:
+        if not self._api_client:
+            return Decimal("0"), []
+        accounts = await self._api_client.list_accounts(limit=200)
+        bank_accounts = [a for a in accounts if a.get("account_type") == "bank"]
+        if not bank_accounts:
+            bank_accounts = [
+                a
+                for a in accounts
+                if a.get("account_type") == "asset"
+                and (
+                    "cash" in str(a.get("name", "")).lower()
+                    or "checking" in str(a.get("name", "")).lower()
+                )
+            ]
+        total = Decimal("0")
+        for account in bank_accounts:
+            try:
+                balance_info = await self._api_client.get_account_balance(
+                    UUID(str(account["id"]))
+                )
+            except Exception:
+                continue
+            balance = self._extract_decimal(balance_info.get("balance"))
+            if balance is not None:
+                total += balance
+        return total, bank_accounts
+
+    async def _maybe_draw_loc(
+        self,
+        ctx: OrganizationContext,
+        current_date: date,
+        cash_position: Decimal,
+        reserve_target: Decimal,
+        policy: dict[str, Any],
+    ) -> Decimal:
+        auto_draw_threshold = policy.get("auto_draw_threshold")
+        if auto_draw_threshold is None:
+            auto_draw_threshold = Decimal("0")
+        if cash_position >= auto_draw_threshold:
+            return cash_position
+        if not self._api_client:
+            return cash_position
+
+        loc_specs = self._tx_generator.get_line_of_credit_specs(ctx.owner_key)
+        if not loc_specs:
+            return cash_position
+        primary_loc = loc_specs[0]
+        if primary_loc.limit is None or primary_loc.limit <= Decimal("0"):
+            return cash_position
+
+        current_balance = self._tx_generator.get_line_of_credit_balance(
+            ctx.owner_key, primary_loc.name
+        )
+        available = primary_loc.limit - current_balance
+        if available <= Decimal("0"):
+            return cash_position
+
+        target = reserve_target if reserve_target > 0 else auto_draw_threshold
+        if target <= cash_position:
+            return cash_position
+
+        draw_amount = (target - cash_position).quantize(Decimal("0.01"))
+        if draw_amount <= 0:
+            return cash_position
+        if draw_amount > available:
+            draw_amount = available.quantize(Decimal("0.01"))
+
+        accounts = await self._api_client.list_accounts(limit=200)
+        bank_account = next(
+            (a for a in accounts if a.get("account_type") == "bank"),
+            None,
+        )
+        if bank_account is None:
+            bank_account = next(
+                (
+                    a
+                    for a in accounts
+                    if a.get("account_type") == "asset"
+                    and (
+                        "cash" in str(a.get("name", "")).lower()
+                        or "checking" in str(a.get("name", "")).lower()
+                    )
+                ),
+                None,
+            )
+        loc_account = next(
+            (
+                a
+                for a in accounts
+                if a.get("account_type") in {"liability", "accounts_payable"}
+                and (
+                    "line of credit" in str(a.get("name", "")).lower()
+                    or "credit line" in str(a.get("name", "")).lower()
+                    or primary_loc.name.lower() in str(a.get("name", "")).lower()
+                    or "loc" in str(a.get("name", "")).lower()
+                )
+            ),
+            None,
+        )
+
+        if not bank_account or not loc_account:
+            self._logger.warning(
+                "loc_draw_skipped_missing_accounts",
+                org=ctx.name,
+            )
+            return cash_position
+
+        await self._api_client.create_journal_entry(
+            {
+                "entry_date": current_date.isoformat(),
+                "description": f"LOC draw - {primary_loc.name}{self._run_suffix()}",
+                "lines": [
+                    {
+                        "account_id": str(bank_account["id"]),
+                        "entry_type": "debit",
+                        "amount": str(draw_amount),
+                        "description": "LOC draw deposit",
+                    },
+                    {
+                        "account_id": str(loc_account["id"]),
+                        "entry_type": "credit",
+                        "amount": str(draw_amount),
+                        "description": "LOC liability",
+                    },
+                ],
+            }
+        )
+        self._tx_generator.set_line_of_credit_balance(
+            ctx.owner_key, primary_loc.name, current_balance + draw_amount
+        )
+        self._logger.info(
+            "loc_draw_recorded",
+            org=ctx.name,
+            amount=str(draw_amount),
+            loc_name=primary_loc.name,
+        )
+        return cash_position + draw_amount
+
+    async def _should_pay_bill(
+        self,
+        ctx: OrganizationContext,
+        bill_id: str,
+        cash_position: Decimal,
+        reserve_target: Decimal,
+        policy: dict[str, Any],
+    ) -> bool:
+        defer_nonessential = policy.get("defer_nonessential", True)
+        if not defer_nonessential:
+            return True
+
+        min_cash = policy.get("min_cash") or Decimal("0")
+        effective_min = max(min_cash, reserve_target)
+        if not self._api_client:
+            return cash_position >= effective_min
+
+        try:
+            bill = await self._api_client.get_bill(UUID(str(bill_id)))
+        except Exception:
+            return cash_position >= effective_min
+
+        vendor_name = ""
+        vendor_id = bill.get("vendor_id")
+        if vendor_id:
+            try:
+                vendor = await self._api_client.get_vendor(UUID(str(vendor_id)))
+                vendor_name = str(
+                    vendor.get("display_name") or vendor.get("name") or ""
+                )
+            except Exception:
+                vendor_name = ""
+
+        if self._is_essential_bill(bill, vendor_name, policy):
+            return True
+
+        amount_due = self._extract_decimal(bill.get("amount_due")) or Decimal("0")
+        projected = cash_position - amount_due
+        return projected >= effective_min
+
+    @staticmethod
+    def _is_essential_bill(
+        bill: dict[str, Any],
+        vendor_name: str,
+        policy: dict[str, Any],
+    ) -> bool:
+        default_keywords = {
+            "payroll",
+            "rent",
+            "lease",
+            "tax",
+            "irs",
+            "insurance",
+            "utility",
+            "utilities",
+            "loan",
+            "interest",
+        }
+        keywords = set(policy.get("essential_vendor_keywords") or []) or default_keywords
+        haystack = " ".join(
+            [
+                vendor_name,
+                str(bill.get("bill_number") or ""),
+                str(bill.get("notes") or ""),
+            ]
+        ).lower()
+        for line in bill.get("lines", []) or []:
+            haystack += " " + str(line.get("description") or "").lower()
+        return any(keyword in haystack for keyword in keywords)
 
     async def _pay_bill(
         self,
@@ -2437,6 +2657,18 @@ class Orchestrator:
                     pending_invoices = []
                     pending_bills = []
 
+                cash_policy = self._tx_generator.get_cash_flow_policy(ctx.owner_key)
+                cash_position: Decimal | None = None
+                reserve_target = Decimal("0")
+                if cash_policy:
+                    cash_position, _ = await self._get_cash_position(org_id)
+                    reserve_target = self._tx_generator.get_reserve_target(
+                        ctx.owner_key, sim_date
+                    )
+                    cash_position = await self._maybe_draw_loc(
+                        ctx, sim_date, cash_position, reserve_target, cash_policy
+                    )
+
                 # Generate transactions (bills and payments)
                 transactions = self._tx_generator.generate_daily_transactions(
                     business_key=ctx.owner_key,
@@ -2462,10 +2694,25 @@ class Orchestrator:
                         if tx.metadata and tx.metadata.get("invoice_id"):
                             await self._record_payment(ctx, tx)
                             payments_received += 1
+                            if cash_position is not None:
+                                cash_position += tx.amount
                     elif tx.transaction_type == TransactionType.BILL_PAYMENT:
                         if tx.metadata and tx.metadata.get("bill_id"):
-                            await self._pay_bill(ctx, tx)
-                            bills_paid += 1
+                            if cash_position is not None:
+                                should_pay = await self._should_pay_bill(
+                                    ctx,
+                                    tx.metadata["bill_id"],
+                                    cash_position,
+                                    reserve_target,
+                                    cash_policy,
+                                )
+                            else:
+                                should_pay = True
+                            if should_pay:
+                                await self._pay_bill(ctx, tx)
+                                bills_paid += 1
+                                if cash_position is not None:
+                                    cash_position -= tx.amount
 
                 if bills_created > 0 or payments_received > 0 or bills_paid > 0:
                     self._event_publisher.publish(
