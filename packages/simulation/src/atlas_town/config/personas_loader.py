@@ -340,6 +340,237 @@ def load_persona_tax_configs() -> dict[str, dict[str, Any]]:
 
 
 @lru_cache
+def load_persona_financing_configs() -> dict[str, dict[str, Any]]:
+    """Load financing configs from persona YAML files.
+
+    Returns:
+        Mapping of persona key (filename stem) to financing config dict.
+    """
+    personas_dir = Path(__file__).resolve().parent / "personas"
+    if not personas_dir.exists():
+        return {}
+
+    financing_by_persona: dict[str, dict[str, Any]] = {}
+
+    def normalize_entries(
+        value: Any, path: Path, key: str
+    ) -> list[dict[str, Any]]:
+        if value is None:
+            return []
+        if isinstance(value, dict):
+            entries = [value]
+        elif isinstance(value, list):
+            entries = value
+        else:
+            raise ValueError(f"{path.name}: financing.{key} must be a mapping or list")
+
+        normalized_entries: list[dict[str, Any]] = []
+        for idx, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                raise ValueError(
+                    f"{path.name}: financing.{key}[{idx}] must be a mapping"
+                )
+            normalized_entries.append(entry)
+        return normalized_entries
+
+    def parse_date_value(
+        raw_value: Any, path: Path, label: str
+    ) -> date | None:
+        if raw_value is None:
+            return None
+        if isinstance(raw_value, date):
+            return raw_value
+        if not isinstance(raw_value, str):
+            raise ValueError(f"{path.name}: {label} must be an ISO date string")
+        try:
+            return date.fromisoformat(raw_value)
+        except ValueError as exc:
+            raise ValueError(f"{path.name}: invalid {label}") from exc
+
+    def normalize_rate_adjustments(
+        raw_value: Any, path: Path, label: str
+    ) -> list[dict[str, Any]]:
+        if raw_value is None:
+            return []
+        if not isinstance(raw_value, list):
+            raise ValueError(f"{path.name}: {label} must be a list")
+        adjustments: list[dict[str, Any]] = []
+        for idx, item in enumerate(raw_value):
+            if not isinstance(item, dict):
+                raise ValueError(f"{path.name}: {label}[{idx}] must be a mapping")
+            effective_date = parse_date_value(
+                item.get("effective_date"), path, f"{label}[{idx}].effective_date"
+            )
+            if effective_date is None:
+                raise ValueError(
+                    f"{path.name}: {label}[{idx}] missing effective_date"
+                )
+            if "rate" not in item:
+                raise ValueError(f"{path.name}: {label}[{idx}] missing rate")
+            adjustments.append(
+                {
+                    "effective_date": effective_date,
+                    "rate": item.get("rate"),
+                }
+            )
+        return adjustments
+
+    def normalize_balance_events(
+        raw_value: Any, path: Path, label: str
+    ) -> list[dict[str, Any]]:
+        if raw_value is None:
+            return []
+        if not isinstance(raw_value, list):
+            raise ValueError(f"{path.name}: {label} must be a list")
+        events: list[dict[str, Any]] = []
+        for idx, item in enumerate(raw_value):
+            if not isinstance(item, dict):
+                raise ValueError(f"{path.name}: {label}[{idx}] must be a mapping")
+            effective_date = parse_date_value(
+                item.get("effective_date"), path, f"{label}[{idx}].effective_date"
+            )
+            if effective_date is None:
+                raise ValueError(
+                    f"{path.name}: {label}[{idx}] missing effective_date"
+                )
+            if "balance" not in item:
+                raise ValueError(f"{path.name}: {label}[{idx}] missing balance")
+            events.append(
+                {
+                    "effective_date": effective_date,
+                    "balance": item.get("balance"),
+                }
+            )
+        return events
+
+    for path in sorted(personas_dir.glob("*.yaml")):
+        raw = path.read_text(encoding="utf-8")
+        data = yaml.safe_load(raw) or {}
+        financing = data.get("financing")
+
+        if financing is None:
+            continue
+        if not isinstance(financing, dict):
+            raise ValueError(f"{path.name}: financing must be a mapping")
+
+        term_loans = normalize_entries(
+            financing.get("term_loan", financing.get("term_loans")),
+            path,
+            "term_loan",
+        )
+        lines_of_credit = normalize_entries(
+            financing.get("line_of_credit", financing.get("lines_of_credit")),
+            path,
+            "line_of_credit",
+        )
+        equipment_financing = normalize_entries(
+            financing.get("equipment_financing"), path, "equipment_financing"
+        )
+
+        normalized_term_loans: list[dict[str, Any]] = []
+        for idx, loan in enumerate(term_loans):
+            principal = loan.get("principal")
+            rate = loan.get("rate")
+            term_months = loan.get("term_months")
+            if principal is None or rate is None or term_months is None:
+                raise ValueError(
+                    f"{path.name}: financing.term_loan[{idx}] missing principal/rate/term_months"
+                )
+
+            normalized_term_loans.append(
+                {
+                    "name": loan.get("name"),
+                    "principal": principal,
+                    "rate": rate,
+                    "term_months": term_months,
+                    "payment_day": loan.get("payment_day", 1),
+                    "lender": loan.get("lender"),
+                    "start_date": parse_date_value(
+                        loan.get("start_date"), path, "financing.term_loan.start_date"
+                    ),
+                    "rate_adjustments": normalize_rate_adjustments(
+                        loan.get("rate_adjustments"),
+                        path,
+                        "financing.term_loan.rate_adjustments",
+                    ),
+                }
+            )
+
+        normalized_lines: list[dict[str, Any]] = []
+        for idx, line in enumerate(lines_of_credit):
+            balance = line.get("balance")
+            rate = line.get("rate")
+            if balance is None or rate is None:
+                raise ValueError(
+                    f"{path.name}: financing.line_of_credit[{idx}] missing balance/rate"
+                )
+            normalized_lines.append(
+                {
+                    "name": line.get("name"),
+                    "balance": balance,
+                    "rate": rate,
+                    "billing_day": line.get("billing_day", 1),
+                    "lender": line.get("lender"),
+                    "start_date": parse_date_value(
+                        line.get("start_date"),
+                        path,
+                        "financing.line_of_credit.start_date",
+                    ),
+                    "rate_adjustments": normalize_rate_adjustments(
+                        line.get("rate_adjustments"),
+                        path,
+                        "financing.line_of_credit.rate_adjustments",
+                    ),
+                    "balance_events": normalize_balance_events(
+                        line.get("balance_events"),
+                        path,
+                        "financing.line_of_credit.balance_events",
+                    ),
+                }
+            )
+
+        normalized_equipment: list[dict[str, Any]] = []
+        for idx, equip in enumerate(equipment_financing):
+            principal = equip.get("principal")
+            rate = equip.get("rate")
+            term_months = equip.get("term_months")
+            if principal is None or rate is None or term_months is None:
+                raise ValueError(
+                    f"{path.name}: financing.equipment_financing[{idx}] "
+                    "missing principal/rate/term_months"
+                )
+            normalized_equipment.append(
+                {
+                    "name": equip.get("name"),
+                    "principal": principal,
+                    "rate": rate,
+                    "term_months": term_months,
+                    "payment_day": equip.get("payment_day", 1),
+                    "lender": equip.get("lender"),
+                    "start_date": parse_date_value(
+                        equip.get("start_date"),
+                        path,
+                        "financing.equipment_financing.start_date",
+                    ),
+                    "rate_adjustments": normalize_rate_adjustments(
+                        equip.get("rate_adjustments"),
+                        path,
+                        "financing.equipment_financing.rate_adjustments",
+                    ),
+                }
+            )
+
+        if normalized_term_loans or normalized_lines or normalized_equipment:
+            financing_by_persona[path.stem] = {
+                "term_loans": normalized_term_loans,
+                "lines_of_credit": normalized_lines,
+                "equipment_financing": normalized_equipment,
+            }
+
+    return financing_by_persona
+
+
+@lru_cache
 def load_persona_sales_tax_configs() -> dict[str, dict[str, Any]]:
     """Load sales tax configs from persona YAML files.
 

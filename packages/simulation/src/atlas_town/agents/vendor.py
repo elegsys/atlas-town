@@ -74,6 +74,15 @@ VENDOR_ARCHETYPES: dict[str, list[VendorProfile]] = {
             payment_terms=30,
             description="Liability and equipment insurance",
         ),
+        VendorProfile(
+            name="Atlas Community Bank",
+            vendor_type=VendorType.RECURRING,
+            category="financing",
+            typical_amount=650.0,
+            billing_frequency="monthly",
+            payment_terms=30,
+            description="Business loan and credit line servicing",
+        ),
     ],
     "restaurant": [
         VendorProfile(
@@ -121,6 +130,15 @@ VENDOR_ARCHETYPES: dict[str, list[VendorProfile]] = {
             payment_terms=15,
             description="Commercial kitchen equipment repairs and maintenance",
         ),
+        VendorProfile(
+            name="Atlas Community Bank",
+            vendor_type=VendorType.RECURRING,
+            category="financing",
+            typical_amount=900.0,
+            billing_frequency="monthly",
+            payment_terms=30,
+            description="Restaurant equipment loan and working capital line",
+        ),
     ],
     "technology": [
         VendorProfile(
@@ -158,6 +176,15 @@ VENDOR_ARCHETYPES: dict[str, list[VendorProfile]] = {
             billing_frequency="monthly",
             payment_terms=1,
             description="Office space rental",
+        ),
+        VendorProfile(
+            name="Atlas Community Bank",
+            vendor_type=VendorType.RECURRING,
+            category="financing",
+            typical_amount=750.0,
+            billing_frequency="monthly",
+            payment_terms=30,
+            description="Tech startup financing and credit line",
         ),
     ],
     "healthcare": [
@@ -197,6 +224,15 @@ VENDOR_ARCHETYPES: dict[str, list[VendorProfile]] = {
             payment_terms=30,
             description="Patient management and billing software",
         ),
+        VendorProfile(
+            name="Atlas Community Bank",
+            vendor_type=VendorType.RECURRING,
+            category="financing",
+            typical_amount=1100.0,
+            billing_frequency="monthly",
+            payment_terms=30,
+            description="Medical equipment loan and operating line",
+        ),
     ],
     "real_estate": [
         VendorProfile(
@@ -234,6 +270,15 @@ VENDOR_ARCHETYPES: dict[str, list[VendorProfile]] = {
             billing_frequency="monthly",
             payment_terms=1,
             description="Office rent and utilities",
+        ),
+        VendorProfile(
+            name="Atlas Community Bank",
+            vendor_type=VendorType.RECURRING,
+            category="financing",
+            typical_amount=700.0,
+            billing_frequency="monthly",
+            payment_terms=30,
+            description="Brokerage credit line and financing services",
         ),
     ],
 }

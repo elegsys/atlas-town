@@ -82,6 +82,37 @@ tax_config:
   estimated_tax_rate: 0.25
   tax_vendor: "IRS Estimated Taxes"
 
+financing:
+  term_loan:
+    name: "Truck Replacement Loan"
+    principal: 45000
+    rate: 0.075
+    term_months: 60
+    payment_day: 15
+    lender: "Atlas Community Bank"
+    start_date: "2024-01-01"
+    rate_adjustments:
+      - effective_date: "2024-07-01"
+        rate: 0.082
+  line_of_credit:
+    name: "Seasonal Working Capital"
+    balance: 12000
+    rate: 0.095
+    billing_day: 5
+    lender: "Atlas Community Bank"
+    start_date: "2024-01-01"
+    balance_events:
+      - effective_date: "2024-03-15"
+        balance: 18000
+  equipment_financing:
+    name: "Mower Financing"
+    principal: 22000
+    rate: 0.064
+    term_months: 48
+    payment_day: 20
+    lender: "Atlas Community Bank"
+    start_date: "2024-01-01"
+
 year_end:
   accrual_rate: 0.08
   depreciation_rate: 0.18

@@ -90,6 +90,34 @@ tax_config:
   estimated_tax_rate: 0.23
   tax_vendor: "IRS Estimated Taxes"
 
+financing:
+  term_loan:
+    name: "Kitchen Remodel Loan"
+    principal: 60000
+    rate: 0.072
+    term_months: 72
+    payment_day: 10
+    lender: "Atlas Community Bank"
+    start_date: "2024-01-01"
+  line_of_credit:
+    name: "Inventory Line"
+    balance: 18000
+    rate: 0.11
+    billing_day: 5
+    lender: "Atlas Community Bank"
+    start_date: "2024-01-01"
+    balance_events:
+      - effective_date: "2024-11-15"
+        balance: 25000
+  equipment_financing:
+    name: "Oven Lease Financing"
+    principal: 28000
+    rate: 0.068
+    term_months: 60
+    payment_day: 20
+    lender: "Atlas Community Bank"
+    start_date: "2024-01-01"
+
 sales_tax:
   enabled: true
   rate: 0.0825

@@ -85,6 +85,31 @@ tax_config:
   estimated_tax_rate: 0.30
   tax_vendor: "IRS Estimated Taxes"
 
+financing:
+  term_loan:
+    name: "Clinic Expansion Loan"
+    principal: 120000
+    rate: 0.071
+    term_months: 84
+    payment_day: 10
+    lender: "Atlas Community Bank"
+    start_date: "2024-01-01"
+  line_of_credit:
+    name: "Operating LOC"
+    balance: 30000
+    rate: 0.098
+    billing_day: 5
+    lender: "Atlas Community Bank"
+    start_date: "2024-01-01"
+  equipment_financing:
+    name: "Imaging Equipment"
+    principal: 75000
+    rate: 0.063
+    term_months: 60
+    payment_day: 20
+    lender: "Atlas Community Bank"
+    start_date: "2024-01-01"
+
 year_end:
   accrual_rate: 0.09
   depreciation_rate: 0.12

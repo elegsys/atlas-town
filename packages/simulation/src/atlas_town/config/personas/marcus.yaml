@@ -78,6 +78,31 @@ tax_config:
   estimated_tax_rate: 0.27
   tax_vendor: "IRS Estimated Taxes"
 
+financing:
+  term_loan:
+    name: "Office Buildout Loan"
+    principal: 40000
+    rate: 0.074
+    term_months: 60
+    payment_day: 12
+    lender: "Atlas Community Bank"
+    start_date: "2024-01-01"
+  line_of_credit:
+    name: "Commission Bridge LOC"
+    balance: 22000
+    rate: 0.105
+    billing_day: 5
+    lender: "Atlas Community Bank"
+    start_date: "2024-01-01"
+  equipment_financing:
+    name: "Vehicle Financing"
+    principal: 28000
+    rate: 0.066
+    term_months: 48
+    payment_day: 20
+    lender: "Atlas Community Bank"
+    start_date: "2024-01-01"
+
 year_end:
   accrual_rate: 0.07
   depreciation_rate: 0.10

@@ -86,6 +86,34 @@ tax_config:
   estimated_tax_rate: 0.28
   tax_vendor: "IRS Estimated Taxes"
 
+financing:
+  term_loan:
+    name: "Growth Capital Loan"
+    principal: 85000
+    rate: 0.078
+    term_months: 60
+    payment_day: 12
+    lender: "Atlas Community Bank"
+    start_date: "2024-01-01"
+    rate_adjustments:
+      - effective_date: "2024-09-01"
+        rate: 0.083
+  line_of_credit:
+    name: "Project Float LOC"
+    balance: 25000
+    rate: 0.102
+    billing_day: 5
+    lender: "Atlas Community Bank"
+    start_date: "2024-01-01"
+  equipment_financing:
+    name: "Hardware Refresh"
+    principal: 30000
+    rate: 0.062
+    term_months: 36
+    payment_day: 18
+    lender: "Atlas Community Bank"
+    start_date: "2024-01-01"
+
 year_end:
   accrual_rate: 0.06
   depreciation_rate: 0.25

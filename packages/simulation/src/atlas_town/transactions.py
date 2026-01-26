@@ -4,6 +4,7 @@ This module generates realistic transactions based on business type,
 day of week, and seasonal patterns.
 """
 
+import calendar
 import random
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -19,6 +20,7 @@ from atlas_town.config.personas_loader import (
     WEEKDAY_NAME_TO_INDEX,
     load_persona_day_patterns,
     load_persona_employees,
+    load_persona_financing_configs,
     load_persona_industries,
     load_persona_payroll_configs,
     load_persona_recurring_transactions,
@@ -179,6 +181,309 @@ class RecurringTransactionScheduler:
                 )
             )
             self._last_generated[key] = current_date
+
+        return results
+
+
+@dataclass(frozen=True)
+class FinancingRateAdjustment:
+    """Interest rate change effective on a given date."""
+
+    effective_date: date
+    rate: Decimal
+
+
+@dataclass(frozen=True)
+class LoanSpec:
+    """Fixed principal loan configuration."""
+
+    name: str
+    principal: Decimal
+    annual_rate: Decimal
+    term_months: int
+    payment_day: int
+    lender: str
+    loan_type: str = "term_loan"
+    start_date: date | None = None
+    rate_adjustments: tuple[FinancingRateAdjustment, ...] = ()
+
+
+@dataclass(frozen=True)
+class BalanceEvent:
+    """Line of credit balance event."""
+
+    effective_date: date
+    balance: Decimal
+
+
+@dataclass(frozen=True)
+class LineOfCreditSpec:
+    """Line of credit configuration."""
+
+    name: str
+    annual_rate: Decimal
+    balance: Decimal
+    billing_day: int
+    lender: str
+    start_date: date | None = None
+    rate_adjustments: tuple[FinancingRateAdjustment, ...] = ()
+    balance_events: tuple[BalanceEvent, ...] = ()
+
+
+class FinancingScheduler:
+    """Generate interest expense transactions for loans and credit lines."""
+
+    def __init__(
+        self,
+        term_loans_by_business: dict[str, list[LoanSpec]],
+        locs_by_business: dict[str, list[LineOfCreditSpec]],
+        equipment_financing_by_business: dict[str, list[LoanSpec]],
+    ) -> None:
+        self._term_loans_by_business: dict[str, list[LoanSpec]] = (
+            term_loans_by_business
+        )
+        self._locs_by_business: dict[str, list[LineOfCreditSpec]] = locs_by_business
+        self._equipment_by_business: dict[str, list[LoanSpec]] = (
+            equipment_financing_by_business
+        )
+        self._loan_interest_generated: set[tuple[str, str, int, int]] = set()
+        self._loc_interest_billed: set[tuple[str, str, int, int]] = set()
+        self._loc_accrued_interest: dict[tuple[str, str, int, int], Decimal] = {}
+        self._loc_last_accrual: dict[tuple[str, str], date] = {}
+        self._loc_current_balance: dict[tuple[str, str], Decimal] = {}
+        self._logger = logger.bind(component="financing_scheduler")
+
+    @staticmethod
+    def _find_vendor_id(
+        vendor_name: str, vendors: list[dict[str, Any]]
+    ) -> UUID | None:
+        normalized = vendor_name.strip().lower()
+        for vendor in vendors:
+            name = str(
+                vendor.get("display_name") or vendor.get("name", "")
+            ).strip().lower()
+            if name == normalized:
+                try:
+                    return UUID(vendor["id"])
+                except (KeyError, ValueError, TypeError):
+                    continue
+        return None
+
+    @staticmethod
+    def _rate_for_date(
+        base_rate: Decimal, adjustments: tuple[FinancingRateAdjustment, ...], day: date
+    ) -> Decimal:
+        rate = base_rate
+        for adjustment in adjustments:
+            if adjustment.effective_date <= day:
+                rate = adjustment.rate
+            else:
+                break
+        return rate
+
+    @staticmethod
+    def _effective_day(day_of_month: int, current_date: date) -> int:
+        last_day = calendar.monthrange(current_date.year, current_date.month)[1]
+        return min(max(1, day_of_month), last_day)
+
+    def _loan_interest_due(self, spec: LoanSpec, current_date: date) -> bool:
+        if spec.start_date and current_date < spec.start_date:
+            return False
+        due_day = self._effective_day(spec.payment_day, current_date)
+        return current_date.day == due_day
+
+    def _bill_period_for_loc(
+        self, billing_day: int, current_date: date
+    ) -> tuple[int, int]:
+        last_day = calendar.monthrange(current_date.year, current_date.month)[1]
+        if billing_day >= last_day:
+            return current_date.year, current_date.month
+        month = current_date.month - 1
+        year = current_date.year
+        if month == 0:
+            month = 12
+            year -= 1
+        return year, month
+
+    def _accrue_loc_interest(
+        self,
+        business_key: str,
+        spec: LineOfCreditSpec,
+        current_date: date,
+    ) -> None:
+        if spec.start_date and current_date < spec.start_date:
+            return
+        key = (business_key, spec.name)
+        last_date = self._loc_last_accrual.get(key)
+        if last_date is None:
+            last_date = current_date - timedelta(days=1)
+
+        day = last_date + timedelta(days=1)
+        while day <= current_date:
+            if spec.start_date and day < spec.start_date:
+                day += timedelta(days=1)
+                continue
+            balance = self._loc_current_balance.get(key, spec.balance)
+            for event in spec.balance_events:
+                if event.effective_date == day:
+                    balance = event.balance
+            self._loc_current_balance[key] = balance
+            if balance > 0:
+                rate = self._rate_for_date(spec.annual_rate, spec.rate_adjustments, day)
+                daily_interest = balance * rate / Decimal("365")
+                bucket = (business_key, spec.name, day.year, day.month)
+                self._loc_accrued_interest[bucket] = (
+                    self._loc_accrued_interest.get(bucket, Decimal("0"))
+                    + daily_interest
+                )
+            day += timedelta(days=1)
+
+        self._loc_last_accrual[key] = current_date
+
+    def get_due_transactions(
+        self,
+        business_key: str,
+        current_date: date,
+        vendors: list[dict[str, Any]],
+    ) -> list[GeneratedTransaction]:
+        results: list[GeneratedTransaction] = []
+
+        for loan_spec in self._term_loans_by_business.get(business_key, []):
+            if not self._loan_interest_due(loan_spec, current_date):
+                continue
+            key = (
+                business_key,
+                loan_spec.name,
+                current_date.year,
+                current_date.month,
+            )
+            if key in self._loan_interest_generated:
+                continue
+            vendor_id = self._find_vendor_id(loan_spec.lender, vendors)
+            if vendor_id is None:
+                self._logger.warning(
+                    "loan_interest_vendor_missing",
+                    business=business_key,
+                    loan=loan_spec.name,
+                    vendor=loan_spec.lender,
+                )
+                continue
+            rate = self._rate_for_date(
+                loan_spec.annual_rate, loan_spec.rate_adjustments, current_date
+            )
+            interest = (loan_spec.principal * rate / Decimal("12")).quantize(
+                Decimal("0.01")
+            )
+            if interest <= 0:
+                continue
+            results.append(
+                GeneratedTransaction(
+                    transaction_type=TransactionType.BILL,
+                    description=f"Loan interest - {loan_spec.name}",
+                    amount=interest,
+                    vendor_id=vendor_id,
+                    metadata={
+                        "financing_type": loan_spec.loan_type,
+                        "loan_name": loan_spec.name,
+                        "annual_rate": str(rate),
+                    },
+                )
+            )
+            self._loan_interest_generated.add(key)
+
+        for equipment_spec in self._equipment_by_business.get(business_key, []):
+            if not self._loan_interest_due(equipment_spec, current_date):
+                continue
+            key = (
+                business_key,
+                equipment_spec.name,
+                current_date.year,
+                current_date.month,
+            )
+            if key in self._loan_interest_generated:
+                continue
+            vendor_id = self._find_vendor_id(equipment_spec.lender, vendors)
+            if vendor_id is None:
+                self._logger.warning(
+                    "equipment_interest_vendor_missing",
+                    business=business_key,
+                    loan=equipment_spec.name,
+                    vendor=equipment_spec.lender,
+                )
+                continue
+            rate = self._rate_for_date(
+                equipment_spec.annual_rate, equipment_spec.rate_adjustments, current_date
+            )
+            interest = (equipment_spec.principal * rate / Decimal("12")).quantize(
+                Decimal("0.01")
+            )
+            if interest <= 0:
+                continue
+            results.append(
+                GeneratedTransaction(
+                    transaction_type=TransactionType.BILL,
+                    description=f"Equipment financing interest - {equipment_spec.name}",
+                    amount=interest,
+                    vendor_id=vendor_id,
+                    metadata={
+                        "financing_type": equipment_spec.loan_type,
+                        "loan_name": equipment_spec.name,
+                        "annual_rate": str(rate),
+                    },
+                )
+            )
+            self._loan_interest_generated.add(key)
+
+        for loc_spec in self._locs_by_business.get(business_key, []):
+            self._accrue_loc_interest(business_key, loc_spec, current_date)
+            if loc_spec.start_date and current_date < loc_spec.start_date:
+                continue
+            billing_day = self._effective_day(loc_spec.billing_day, current_date)
+            if current_date.day != billing_day:
+                continue
+            bill_year, bill_month = self._bill_period_for_loc(
+                billing_day, current_date
+            )
+            bill_key = (business_key, loc_spec.name, bill_year, bill_month)
+            if bill_key in self._loc_interest_billed:
+                continue
+            interest = self._loc_accrued_interest.get(bill_key, Decimal("0")).quantize(
+                Decimal("0.01")
+            )
+            if interest <= 0:
+                self._loc_interest_billed.add(bill_key)
+                continue
+            vendor_id = self._find_vendor_id(loc_spec.lender, vendors)
+            if vendor_id is None:
+                self._logger.warning(
+                    "loc_interest_vendor_missing",
+                    business=business_key,
+                    loc=loc_spec.name,
+                    vendor=loc_spec.lender,
+                )
+                continue
+            results.append(
+                GeneratedTransaction(
+                    transaction_type=TransactionType.BILL,
+                    description=f"Line of credit interest - {loc_spec.name}",
+                    amount=interest,
+                    vendor_id=vendor_id,
+                    metadata={
+                        "financing_type": "line_of_credit",
+                        "credit_line": loc_spec.name,
+                        "annual_rate": str(
+                            self._rate_for_date(
+                                loc_spec.annual_rate,
+                                loc_spec.rate_adjustments,
+                                current_date,
+                            )
+                        ),
+                        "interest_period": f"{bill_year:04d}-{bill_month:02d}",
+                    },
+                )
+            )
+            self._loc_interest_billed.add(bill_key)
+            self._loc_accrued_interest.pop(bill_key, None)
 
         return results
 
@@ -1211,6 +1516,12 @@ class TransactionGenerator:
         self._quarterly_tax_scheduler = QuarterlyTaxScheduler(
             self._load_tax_configs()
         )
+        financing = self._load_financing_configs()
+        self._financing_scheduler = FinancingScheduler(
+            financing["term_loans"],
+            financing["lines_of_credit"],
+            financing["equipment_financing"],
+        )
 
     def _load_recurring_transactions(
         self,
@@ -1333,6 +1644,205 @@ class TransactionGenerator:
 
         return tax_by_business
 
+    def _load_financing_configs(self) -> dict[str, dict[str, list[Any]]]:
+        """Load financing configs from persona files."""
+        raw = load_persona_financing_configs()
+        term_loans: dict[str, list[LoanSpec]] = {}
+        lines_of_credit: dict[str, list[LineOfCreditSpec]] = {}
+        equipment_financing: dict[str, list[LoanSpec]] = {}
+
+        for business_key, config in raw.items():
+            term_specs: list[LoanSpec] = []
+            for item in config.get("term_loans", []):
+                try:
+                    principal = Decimal(str(item["principal"]))
+                    rate = Decimal(str(item["rate"]))
+                    term_months = int(item["term_months"])
+                except (KeyError, ValueError, TypeError) as exc:
+                    raise ValueError(
+                        f"Financing term_loan invalid for {business_key}: {item!r}"
+                    ) from exc
+                if term_months < 1:
+                    raise ValueError(
+                        f"Financing term_loan term_months must be >= 1 for {business_key}: {item!r}"
+                    )
+                payment_day = int(item.get("payment_day", 1))
+                if not (1 <= payment_day <= 31):
+                    raise ValueError(
+                        f"Financing term_loan payment_day must be 1-31 for {business_key}: {item!r}"
+                    )
+                lender = str(item.get("lender") or "Bank")
+                name = str(item.get("name") or "Term Loan")
+                start_date = item.get("start_date")
+
+                adjustments = []
+                for adj in item.get("rate_adjustments", []):
+                    try:
+                        effective_date = adj["effective_date"]
+                        rate_adj = Decimal(str(adj["rate"]))
+                    except (KeyError, ValueError, TypeError) as exc:
+                        raise ValueError(
+                            "Financing term_loan rate adjustment invalid for "
+                            f"{business_key}: {adj!r}"
+                        ) from exc
+                    adjustments.append(
+                        FinancingRateAdjustment(
+                            effective_date=effective_date,
+                            rate=rate_adj,
+                        )
+                    )
+                adjustments.sort(key=lambda entry: entry.effective_date)
+
+                term_specs.append(
+                    LoanSpec(
+                        name=name,
+                        principal=principal,
+                        annual_rate=rate,
+                        term_months=term_months,
+                        payment_day=payment_day,
+                        lender=lender,
+                        loan_type="term_loan",
+                        start_date=start_date,
+                        rate_adjustments=tuple(adjustments),
+                    )
+                )
+
+            loc_specs: list[LineOfCreditSpec] = []
+            for item in config.get("lines_of_credit", []):
+                try:
+                    balance = Decimal(str(item["balance"]))
+                    rate = Decimal(str(item["rate"]))
+                except (KeyError, ValueError, TypeError) as exc:
+                    raise ValueError(
+                        f"Financing line_of_credit invalid for {business_key}: {item!r}"
+                    ) from exc
+                billing_day = int(item.get("billing_day", 1))
+                if not (1 <= billing_day <= 31):
+                    raise ValueError(
+                        "Financing line_of_credit billing_day must be 1-31 "
+                        f"for {business_key}: {item!r}"
+                    )
+                lender = str(item.get("lender") or "Bank")
+                name = str(item.get("name") or "Line of Credit")
+                start_date = item.get("start_date")
+
+                adjustments = []
+                for adj in item.get("rate_adjustments", []):
+                    try:
+                        effective_date = adj["effective_date"]
+                        rate_adj = Decimal(str(adj["rate"]))
+                    except (KeyError, ValueError, TypeError) as exc:
+                        raise ValueError(
+                            "Financing line_of_credit rate adjustment invalid "
+                            f"for {business_key}: {adj!r}"
+                        ) from exc
+                    adjustments.append(
+                        FinancingRateAdjustment(
+                            effective_date=effective_date,
+                            rate=rate_adj,
+                        )
+                    )
+                adjustments.sort(key=lambda entry: entry.effective_date)
+
+                balance_events = []
+                for event in item.get("balance_events", []):
+                    try:
+                        effective_date = event["effective_date"]
+                        event_balance = Decimal(str(event["balance"]))
+                    except (KeyError, ValueError, TypeError) as exc:
+                        raise ValueError(
+                            "Financing line_of_credit balance event invalid for "
+                            f"{business_key}: {event!r}"
+                        ) from exc
+                    balance_events.append(
+                        BalanceEvent(
+                            effective_date=effective_date,
+                            balance=event_balance,
+                        )
+                    )
+                balance_events.sort(key=lambda entry: entry.effective_date)
+
+                loc_specs.append(
+                    LineOfCreditSpec(
+                        name=name,
+                        annual_rate=rate,
+                        balance=balance,
+                        billing_day=billing_day,
+                        lender=lender,
+                        start_date=start_date,
+                        rate_adjustments=tuple(adjustments),
+                        balance_events=tuple(balance_events),
+                    )
+                )
+
+            equip_specs: list[LoanSpec] = []
+            for item in config.get("equipment_financing", []):
+                try:
+                    principal = Decimal(str(item["principal"]))
+                    rate = Decimal(str(item["rate"]))
+                    term_months = int(item["term_months"])
+                except (KeyError, ValueError, TypeError) as exc:
+                    raise ValueError(
+                        f"Financing equipment invalid for {business_key}: {item!r}"
+                    ) from exc
+                if term_months < 1:
+                    raise ValueError(
+                        f"Financing equipment term_months must be >= 1 for {business_key}: {item!r}"
+                    )
+                payment_day = int(item.get("payment_day", 1))
+                if not (1 <= payment_day <= 31):
+                    raise ValueError(
+                        f"Financing equipment payment_day must be 1-31 for {business_key}: {item!r}"
+                    )
+                lender = str(item.get("lender") or "Equipment Lender")
+                name = str(item.get("name") or "Equipment Financing")
+                start_date = item.get("start_date")
+
+                adjustments = []
+                for adj in item.get("rate_adjustments", []):
+                    try:
+                        effective_date = adj["effective_date"]
+                        rate_adj = Decimal(str(adj["rate"]))
+                    except (KeyError, ValueError, TypeError) as exc:
+                        raise ValueError(
+                            "Financing equipment rate adjustment invalid for "
+                            f"{business_key}: {adj!r}"
+                        ) from exc
+                    adjustments.append(
+                        FinancingRateAdjustment(
+                            effective_date=effective_date,
+                            rate=rate_adj,
+                        )
+                    )
+                adjustments.sort(key=lambda entry: entry.effective_date)
+
+                equip_specs.append(
+                    LoanSpec(
+                        name=name,
+                        principal=principal,
+                        annual_rate=rate,
+                        term_months=term_months,
+                        payment_day=payment_day,
+                        lender=lender,
+                        loan_type="equipment_financing",
+                        start_date=start_date,
+                        rate_adjustments=tuple(adjustments),
+                    )
+                )
+
+            if term_specs:
+                term_loans[business_key] = term_specs
+            if loc_specs:
+                lines_of_credit[business_key] = loc_specs
+            if equip_specs:
+                equipment_financing[business_key] = equip_specs
+
+        return {
+            "term_loans": term_loans,
+            "lines_of_credit": lines_of_credit,
+            "equipment_financing": equipment_financing,
+        }
+
     def generate_recurring_transactions(
         self,
         business_key: str,
@@ -1357,6 +1867,19 @@ class TransactionGenerator:
     ) -> list[GeneratedTransaction]:
         """Generate payroll and tax deposit transactions for a business."""
         return self._payroll_generator.get_due_transactions(
+            business_key=business_key,
+            current_date=current_date,
+            vendors=vendors,
+        )
+
+    def generate_financing_transactions(
+        self,
+        business_key: str,
+        current_date: date,
+        vendors: list[dict[str, Any]],
+    ) -> list[GeneratedTransaction]:
+        """Generate financing interest transactions for a business."""
+        return self._financing_scheduler.get_due_transactions(
             business_key=business_key,
             current_date=current_date,
             vendors=vendors,

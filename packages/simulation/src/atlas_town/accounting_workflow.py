@@ -1003,6 +1003,14 @@ class AccountingWorkflow:
         if recurring_transactions:
             transactions.extend(recurring_transactions)
 
+        financing_transactions = self._tx_gen.generate_financing_transactions(
+            business_key=business_key,
+            current_date=current_date,
+            vendors=vendors,
+        )
+        if financing_transactions:
+            transactions.extend(financing_transactions)
+
         sales_tax_remittance = await self._generate_sales_tax_remittance(
             business_key=business_key,
             current_date=current_date,
