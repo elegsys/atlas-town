@@ -1658,6 +1658,13 @@ class AccountingWorkflow:
                 reserve_target,
                 cash_policy,
             )
+            cash_position = await self._maybe_build_reserve(
+                business_key,
+                org_id,
+                current_date,
+                cash_position,
+                reserve_target,
+            )
 
         for tx in transactions:
             try:
@@ -2194,6 +2201,79 @@ class AccountingWorkflow:
             loc_name=primary_loc.name,
         )
         return cash_position + draw_amount
+
+    async def _maybe_build_reserve(
+        self,
+        business_key: str,
+        org_id: UUID,
+        current_date: date,
+        cash_position: Decimal,
+        reserve_target: Decimal,
+    ) -> Decimal:
+        if reserve_target <= 0 or cash_position <= reserve_target:
+            return cash_position
+
+        accounts = await self._api.list_accounts(limit=200)
+        bank_account = next(
+            (a for a in accounts if a.get("account_type") == "bank"),
+            None,
+        )
+        if bank_account is None:
+            bank_account = next(
+                (
+                    a
+                    for a in accounts
+                    if a.get("account_type") == "asset"
+                    and (
+                        "cash" in str(a.get("name", "")).lower()
+                        or "checking" in str(a.get("name", "")).lower()
+                    )
+                ),
+                None,
+            )
+        reserve_account = next(
+            (
+                a
+                for a in accounts
+                if a.get("account_type") in {"asset", "bank"}
+                and "reserve" in str(a.get("name", "")).lower()
+            ),
+            None,
+        )
+
+        if not bank_account or not reserve_account:
+            return cash_position
+
+        transfer_amount = (cash_position - reserve_target).quantize(Decimal("0.01"))
+        if transfer_amount <= 0:
+            return cash_position
+
+        await self._api.create_journal_entry(
+            {
+                "entry_date": current_date.isoformat(),
+                "description": f"Transfer to cash reserve{self._run_suffix()}",
+                "lines": [
+                    {
+                        "account_id": str(reserve_account["id"]),
+                        "entry_type": "debit",
+                        "amount": str(transfer_amount),
+                        "description": "Increase cash reserve",
+                    },
+                    {
+                        "account_id": str(bank_account["id"]),
+                        "entry_type": "credit",
+                        "amount": str(transfer_amount),
+                        "description": "Transfer from operating cash",
+                    },
+                ],
+            }
+        )
+        self._logger.info(
+            "cash_reserve_transfer",
+            business=business_key,
+            amount=str(transfer_amount),
+        )
+        return cash_position - transfer_amount
 
     async def _should_pay_bill(
         self,

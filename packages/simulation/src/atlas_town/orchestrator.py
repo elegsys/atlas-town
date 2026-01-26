@@ -1687,7 +1687,103 @@ class Orchestrator:
             amount=str(draw_amount),
             loc_name=primary_loc.name,
         )
+        self._event_publisher.publish(
+            agent_speaking(
+                agent_id=ctx.owner.id if ctx.owner else UUID(int=0),
+                agent_name=ctx.owner.name if ctx.owner else "Owner",
+                message=(
+                    f"{ctx.name}: Drew ${draw_amount:,.2f} from {primary_loc.name} "
+                    f"to maintain cash reserves."
+                ),
+                org_id=ctx.id,
+            )
+        )
         return cash_position + draw_amount
+
+    async def _maybe_build_reserve(
+        self,
+        ctx: OrganizationContext,
+        current_date: date,
+        cash_position: Decimal,
+        reserve_target: Decimal,
+    ) -> Decimal:
+        if reserve_target <= 0 or cash_position <= reserve_target:
+            return cash_position
+        if not self._api_client:
+            return cash_position
+
+        accounts = await self._api_client.list_accounts(limit=200)
+        bank_account = next(
+            (a for a in accounts if a.get("account_type") == "bank"),
+            None,
+        )
+        if bank_account is None:
+            bank_account = next(
+                (
+                    a
+                    for a in accounts
+                    if a.get("account_type") == "asset"
+                    and (
+                        "cash" in str(a.get("name", "")).lower()
+                        or "checking" in str(a.get("name", "")).lower()
+                    )
+                ),
+                None,
+            )
+        reserve_account = next(
+            (
+                a
+                for a in accounts
+                if a.get("account_type") in {"asset", "bank"}
+                and "reserve" in str(a.get("name", "")).lower()
+            ),
+            None,
+        )
+
+        if not bank_account or not reserve_account:
+            return cash_position
+
+        transfer_amount = (cash_position - reserve_target).quantize(Decimal("0.01"))
+        if transfer_amount <= 0:
+            return cash_position
+
+        await self._api_client.create_journal_entry(
+            {
+                "entry_date": current_date.isoformat(),
+                "description": f"Transfer to cash reserve{self._run_suffix()}",
+                "lines": [
+                    {
+                        "account_id": str(reserve_account["id"]),
+                        "entry_type": "debit",
+                        "amount": str(transfer_amount),
+                        "description": "Increase cash reserve",
+                    },
+                    {
+                        "account_id": str(bank_account["id"]),
+                        "entry_type": "credit",
+                        "amount": str(transfer_amount),
+                        "description": "Transfer from operating cash",
+                    },
+                ],
+            }
+        )
+        self._logger.info(
+            "cash_reserve_transfer",
+            org=ctx.name,
+            amount=str(transfer_amount),
+        )
+        self._event_publisher.publish(
+            agent_speaking(
+                agent_id=ctx.owner.id if ctx.owner else UUID(int=0),
+                agent_name=ctx.owner.name if ctx.owner else "Owner",
+                message=(
+                    f"{ctx.name}: Set aside ${transfer_amount:,.2f} into cash reserves "
+                    f"to stay near the target ${reserve_target:,.2f}."
+                ),
+                org_id=ctx.id,
+            )
+        )
+        return cash_position - transfer_amount
 
     async def _should_pay_bill(
         self,
@@ -1727,7 +1823,21 @@ class Orchestrator:
 
         amount_due = self._extract_decimal(bill.get("amount_due")) or Decimal("0")
         projected = cash_position - amount_due
-        return projected >= effective_min
+        if projected >= effective_min:
+            return True
+        self._event_publisher.publish(
+            agent_speaking(
+                agent_id=ctx.owner.id if ctx.owner else UUID(int=0),
+                agent_name=ctx.owner.name if ctx.owner else "Owner",
+                message=(
+                    f"{ctx.name}: Deferring non-essential bill payment to "
+                    f"{vendor_name or 'vendor'} to keep cash above "
+                    f"${effective_min:,.2f}."
+                ),
+                org_id=ctx.id,
+            )
+        )
+        return False
 
     @staticmethod
     def _is_essential_bill(
@@ -2667,6 +2777,9 @@ class Orchestrator:
                     )
                     cash_position = await self._maybe_draw_loc(
                         ctx, sim_date, cash_position, reserve_target, cash_policy
+                    )
+                    cash_position = await self._maybe_build_reserve(
+                        ctx, sim_date, cash_position, reserve_target
                     )
 
                 # Generate transactions (bills and payments)

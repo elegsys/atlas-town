@@ -5,12 +5,17 @@ Covers:
 - Issue #10: Seasonal multipliers (BUSINESS_SEASONALITY)
 """
 
+import asyncio
 from datetime import date
 from decimal import Decimal
+from typing import Any
+from uuid import UUID
 
 import pytest
 
+from atlas_town.accounting_workflow import AccountingWorkflow
 from atlas_town.config.personas_loader import load_persona_day_patterns
+from atlas_town.tools.atlas_api import AtlasAPIClient
 from atlas_town.transactions import (
     BUSINESS_PATTERNS,
     BUSINESS_SEASONALITY,
@@ -1130,3 +1135,37 @@ class TestCashFlowSettings:
         primary = locs[0]
         assert primary.limit == Decimal("50000")
         assert primary.auto_draw_threshold == Decimal("5000")
+
+
+class TestReserveTransfers:
+    def test_reserve_transfer_requires_reserve_account(self, monkeypatch):
+        workflow = AccountingWorkflow(AtlasAPIClient("user", "pass"))
+        org_id = UUID("11111111-1111-1111-1111-111111111111")
+        current_date = date(2024, 6, 15)
+
+        async def fake_list_accounts(limit: int = 200):
+            return [
+                {
+                    "id": str(UUID("22222222-2222-2222-2222-222222222222")),
+                    "account_type": "bank",
+                    "name": "Operating Cash",
+                },
+            ]
+
+        async def fake_create_journal_entry(payload: dict[str, Any]):
+            raise AssertionError("Should not create journal entry without reserve account")
+
+        monkeypatch.setattr(workflow._api, "list_accounts", fake_list_accounts)
+        monkeypatch.setattr(workflow._api, "create_journal_entry", fake_create_journal_entry)
+
+        result = asyncio.run(
+            workflow._maybe_build_reserve(
+                business_key="craig",
+                org_id=org_id,
+                current_date=current_date,
+                cash_position=Decimal("20000"),
+                reserve_target=Decimal("15000"),
+            )
+        )
+
+        assert result == Decimal("20000")
