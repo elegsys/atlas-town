@@ -30,7 +30,7 @@ from uuid import UUID, uuid4
 
 import structlog
 
-from atlas_town.accounting_workflow import AccountingWorkflow
+from atlas_town.accounting_workflow import AccountingWorkflow, CollectionSummary
 from atlas_town.agents import (
     AccountantAgent,
     CustomerAgent,
@@ -235,23 +235,22 @@ class Orchestrator:
         if self._api_client:
             self._tool_executor = ToolExecutor(self._api_client)
 
-        # Create accounting workflow(s) (for FAST and HYBRID modes)
-        if self._mode in (SimulationMode.FAST, SimulationMode.HYBRID):
-            if self._multi_org_enabled:
-                for org_id, client in self._org_clients_by_id.items():
-                    self._accounting_workflows[org_id] = AccountingWorkflow(
-                        api_client=client,
-                        transaction_generator=self._tx_generator,
-                        run_id=self._run_id,
-                    )
-            else:
-                assert self._api_client is not None
-                self._accounting_workflow = AccountingWorkflow(
-                    api_client=self._api_client,
+        # Create accounting workflow(s) (used across all modes for shared logic)
+        if self._multi_org_enabled:
+            for org_id, client in self._org_clients_by_id.items():
+                self._accounting_workflows[org_id] = AccountingWorkflow(
+                    api_client=client,
                     transaction_generator=self._tx_generator,
                     run_id=self._run_id,
                 )
-            self._logger.info("accounting_workflow_initialized", mode=self._mode.value)
+        else:
+            assert self._api_client is not None
+            self._accounting_workflow = AccountingWorkflow(
+                api_client=self._api_client,
+                transaction_generator=self._tx_generator,
+                run_id=self._run_id,
+            )
+        self._logger.info("accounting_workflow_initialized", mode=self._mode.value)
 
         # Initialize B2B coordinator and seed vendors
         self._initialize_b2b()
@@ -2720,11 +2719,36 @@ Please provide specific recommendations for addressing each issue."""
                 )
             )
 
+        collection_summary: CollectionSummary | None = None
+        collection_issues: list[str] = []
+        try:
+            workflow = self._get_accounting_workflow(org_id)
+            collection_summary = await workflow.run_collection_workflow(
+                business_key=ctx.owner_key,
+                org_id=org_id,
+                current_date=sim_date,
+            )
+            if collection_summary is not None:
+                collection_issues = workflow.format_collection_issues(collection_summary)
+        except Exception as exc:
+            self._logger.warning(
+                "llm_collection_workflow_failed",
+                org=ctx.name,
+                error=str(exc),
+            )
+
         # End of day accounting task (LLM reasoning)
+        collection_note = ""
+        if collection_issues:
+            collection_note = (
+                "Collection workflow summary: " + "; ".join(collection_issues) + "\n"
+            )
         task = f"""End of day for {ctx.name}. Please:
         1. Run a trial balance to ensure books are balanced
         2. Provide a quick summary of today's activity
-        3. Note any issues that need attention tomorrow"""
+        3. Note any issues that need attention tomorrow
+
+{collection_note}"""
 
         response = await self.run_single_task(task)
 
@@ -2732,6 +2756,8 @@ Please provide specific recommendations for addressing each issue."""
             "org": ctx.name,
             "mode": "llm",
             "invoices_created": invoices_created,
+            "collection_issues": collection_issues,
+            "collection_summary": collection_summary,
             "response": response[:200],
         }
 

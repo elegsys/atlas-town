@@ -2403,6 +2403,24 @@ class AccountingWorkflow:
 
         return summary
 
+    async def run_collection_workflow(
+        self,
+        business_key: str,
+        org_id: UUID,
+        current_date: date,
+    ) -> CollectionSummary:
+        """Run collection workflow in isolation (used by LLM mode)."""
+        await self._api.switch_organization(org_id)
+        return await self._run_collection_workflow(
+            business_key=business_key,
+            org_id=org_id,
+            current_date=current_date,
+        )
+
+    def format_collection_issues(self, summary: CollectionSummary) -> list[str]:
+        """Public wrapper for collection issue formatting."""
+        return self._format_collection_issues(summary)
+
     def _format_collection_issues(self, summary: CollectionSummary) -> list[str]:
         issues: list[str] = []
         reminders = int(summary.get("reminders", 0))

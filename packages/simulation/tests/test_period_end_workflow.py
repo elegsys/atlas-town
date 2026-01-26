@@ -15,6 +15,7 @@ from atlas_town.accounting_workflow import AccountingWorkflow
 @dataclass
 class FakeAPI:
     accounts: list[dict[str, Any]] = field(default_factory=list)
+    invoices: list[dict[str, Any]] = field(default_factory=list)
     bills: list[dict[str, Any]] = field(default_factory=list)
     bank_transactions: list[dict[str, Any]] = field(default_factory=list)
     bank_accounts: list[dict[str, Any]] = field(default_factory=list)
@@ -31,6 +32,11 @@ class FakeAPI:
     ar_aging: dict[str, Any] = field(default_factory=dict)
     ap_aging: dict[str, Any] = field(default_factory=dict)
     journal_entries: list[dict[str, Any]] = field(default_factory=list)
+    collection_events: list[dict[str, Any]] = field(default_factory=list)
+    late_fees: list[dict[str, Any]] = field(default_factory=list)
+    write_offs: list[dict[str, Any]] = field(default_factory=list)
+    current_company_id: UUID | None = None
+    current_user_id: UUID | None = None
 
     async def switch_organization(self, org_id: UUID) -> None:  # noqa: ARG002
         return None
@@ -49,7 +55,9 @@ class FakeAPI:
     async def list_invoices(
         self, offset: int = 0, limit: int = 100, status: str | None = None  # noqa: ARG002
     ) -> list[dict[str, Any]]:
-        return []
+        if status is None:
+            return self.invoices
+        return [inv for inv in self.invoices if inv.get("status") == status]
 
     async def list_bank_transactions(
         self,
@@ -134,6 +142,54 @@ class FakeAPI:
         self.journal_entries.append(entry)
         return entry
 
+    async def record_collection_event(
+        self,
+        company_id: UUID,  # noqa: ARG002
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        event = {"id": str(uuid4()), **data}
+        self.collection_events.append(event)
+        return event
+
+    async def list_collection_events(
+        self,
+        params: dict[str, Any] | None = None,  # noqa: ARG002
+    ) -> list[dict[str, Any]]:
+        return self.collection_events
+
+    async def check_collection_event(
+        self,
+        invoice_id: UUID,
+        event_type: str,
+    ) -> dict[str, Any]:
+        exists = any(
+            evt.get("invoice_id") == str(invoice_id) and evt.get("event_type") == event_type
+            for evt in self.collection_events
+        )
+        return {"exists": exists}
+
+    async def assess_late_fee(
+        self,
+        company_id: UUID,  # noqa: ARG002
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        fee = {"id": str(uuid4()), **data, "amount_assessed": data.get("fee_amount")}
+        self.late_fees.append(fee)
+        return fee
+
+    async def write_off_bad_debt(
+        self,
+        company_id: UUID,  # noqa: ARG002
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        writeoff = {
+            "id": str(uuid4()),
+            **data,
+            "amount_writeoff": data.get("amount"),
+        }
+        self.write_offs.append(writeoff)
+        return writeoff
+
 
 def _accounts() -> list[dict[str, Any]]:
     return [
@@ -191,6 +247,31 @@ def _accounts() -> list[dict[str, Any]]:
             "id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
             "name": "Retained Earnings",
             "account_type": "equity",
+        },
+    ]
+
+
+def _collection_accounts() -> list[dict[str, Any]]:
+    return [
+        {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "name": "Accounts Receivable",
+            "account_type": "accounts_receivable",
+        },
+        {
+            "id": "22222222-2222-2222-2222-222222222222",
+            "name": "Late Fee Revenue",
+            "account_type": "revenue",
+        },
+        {
+            "id": "33333333-3333-3333-3333-333333333333",
+            "name": "Bad Debt Expense",
+            "account_type": "expense",
+        },
+        {
+            "id": "44444444-4444-4444-4444-444444444444",
+            "name": "Allowance for Doubtful Accounts",
+            "account_type": "asset",
         },
     ]
 
@@ -324,3 +405,45 @@ async def test_year_end_reporting_counts_1099_bills():
     assert result["year_end_reporting"]["tax_year"] == 2024
     assert result["year_end_reporting"]["vendors_over_threshold"] == 1
     assert result["year_end_reporting"]["vendors_missing_w9"] == 1
+
+
+@pytest.mark.asyncio
+async def test_collection_workflow_applies_actions():
+    company_id = uuid4()
+    invoice_reminder = str(uuid4())
+    invoice_writeoff = str(uuid4())
+
+    api = FakeAPI(
+        accounts=_collection_accounts(),
+        invoices=[
+            {
+                "id": invoice_reminder,
+                "status": "overdue",
+                "due_date": "2024-12-10",
+                "balance": "100.00",
+            },
+            {
+                "id": invoice_writeoff,
+                "status": "overdue",
+                "due_date": "2024-09-10",
+                "balance": "200.00",
+            },
+        ],
+        current_company_id=company_id,
+        current_user_id=uuid4(),
+    )
+    workflow = AccountingWorkflow(api_client=api)
+
+    summary = await workflow.run_collection_workflow(
+        business_key="tony",
+        org_id=uuid4(),
+        current_date=date(2025, 1, 15),
+    )
+
+    issues = workflow.format_collection_issues(summary)
+
+    assert summary["reminders"] == 1
+    assert summary["late_fee_count"] == 2
+    assert summary["write_off_count"] == 1
+    assert len(api.collection_events) == 1
+    assert any("Late fees applied" in issue for issue in issues)
