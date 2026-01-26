@@ -23,6 +23,7 @@ from atlas_town.config.personas_loader import (
     load_persona_employees,
     load_persona_financing_configs,
     load_persona_industries,
+    load_persona_payment_behaviors,
     load_persona_payroll_configs,
     load_persona_recurring_transactions,
     load_persona_tax_configs,
@@ -70,6 +71,16 @@ class GeneratedTransaction:
     customer_id: UUID | None = None
     vendor_id: UUID | None = None
     metadata: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class PaymentDecision:
+    """Result of determining how much to pay toward a document."""
+
+    amount: Decimal | None
+    take_discount: bool
+    discount_amount: Decimal
+    is_partial: bool
 
 
 @dataclass(frozen=True)
@@ -1366,6 +1377,12 @@ BUSINESS_PATTERNS: dict[str, list[TransactionPattern]] = {
             Decimal("0"), Decimal("0"),  # Will match existing invoices
             probability=0.4,
         ),
+        TransactionPattern(
+            TransactionType.BILL_PAYMENT,
+            "Vendor payment",
+            Decimal("0"), Decimal("0"),
+            probability=0.3,
+        ),
     ],
     "tony": [
         # Pizzeria - time-of-day aware patterns for realistic restaurant activity
@@ -1424,6 +1441,12 @@ BUSINESS_PATTERNS: dict[str, list[TransactionPattern]] = {
             Decimal("0"), Decimal("0"),
             probability=0.5,
         ),
+        TransactionPattern(
+            TransactionType.BILL_PAYMENT,
+            "Vendor payment",
+            Decimal("0"), Decimal("0"),
+            probability=0.35,
+        ),
     ],
     "maya": [
         # Tech Consulting - high value, lower volume
@@ -1464,6 +1487,12 @@ BUSINESS_PATTERNS: dict[str, list[TransactionPattern]] = {
             "Payment from {customer}",
             Decimal("0"), Decimal("0"),
             probability=0.3,
+        ),
+        TransactionPattern(
+            TransactionType.BILL_PAYMENT,
+            "Vendor payment",
+            Decimal("0"), Decimal("0"),
+            probability=0.25,
         ),
     ],
     "chen": [
@@ -1506,6 +1535,12 @@ BUSINESS_PATTERNS: dict[str, list[TransactionPattern]] = {
             Decimal("0"), Decimal("0"),
             probability=0.4,
         ),
+        TransactionPattern(
+            TransactionType.BILL_PAYMENT,
+            "Vendor payment",
+            Decimal("0"), Decimal("0"),
+            probability=0.3,
+        ),
     ],
     "marcus": [
         # Real Estate - low volume, high value
@@ -1544,6 +1579,12 @@ BUSINESS_PATTERNS: dict[str, list[TransactionPattern]] = {
             "Commission payment",
             Decimal("0"), Decimal("0"),
             probability=0.2,
+        ),
+        TransactionPattern(
+            TransactionType.BILL_PAYMENT,
+            "Vendor payment",
+            Decimal("0"), Decimal("0"),
+            probability=0.25,
         ),
     ],
 }
@@ -1649,6 +1690,26 @@ DEFAULT_BUSINESS_DAY_PATTERNS: dict[str, dict[int, float]] = {
     },
 }
 
+# Default partial payment behavior (override per persona in YAML)
+DEFAULT_PAYMENT_BEHAVIOR: dict[str, dict[str, Any]] = {
+    "invoice": {
+        "base_probability": 0.15,
+        "max_probability": 0.7,
+        "amount_thresholds": [(Decimal("1000"), 0.2), (Decimal("5000"), 0.2)],
+        "overdue_bonus": [(30, 0.1), (60, 0.1)],
+        "amount_ratio_min": 0.25,
+        "amount_ratio_max": 0.8,
+    },
+    "bill": {
+        "base_probability": 0.1,
+        "max_probability": 0.6,
+        "amount_thresholds": [(Decimal("1000"), 0.15), (Decimal("5000"), 0.15)],
+        "overdue_bonus": [(30, 0.05), (60, 0.1)],
+        "amount_ratio_min": 0.3,
+        "amount_ratio_max": 0.85,
+    },
+}
+
 
 def get_business_day_patterns() -> dict[str, dict[int, float]]:
     """Get business day-of-week multipliers, merged with persona overrides."""
@@ -1719,6 +1780,7 @@ class TransactionGenerator:
         self._day_patterns = get_business_day_patterns()
         self._inflation = inflation or get_inflation_model()
         self._holiday_calendar = load_holiday_calendar()
+        self._payment_behaviors = self._load_payment_behaviors()
         self._recurring_scheduler = RecurringTransactionScheduler(
             self._load_recurring_transactions()
         )
@@ -1739,6 +1801,84 @@ class TransactionGenerator:
             rng=self._rng,
         )
 
+    def _load_payment_behaviors(self) -> dict[str, dict[str, dict[str, Any]]]:
+        raw = load_persona_payment_behaviors()
+        behaviors: dict[str, dict[str, dict[str, Any]]] = {}
+
+        for business_key, items in raw.items():
+            normalized_by_kind: dict[str, dict[str, Any]] = {}
+            for kind, behavior in items.items():
+                if not isinstance(behavior, dict):
+                    continue
+                normalized: dict[str, Any] = {}
+                for key in (
+                    "base_probability",
+                    "max_probability",
+                    "amount_ratio_min",
+                    "amount_ratio_max",
+                ):
+                    if key in behavior:
+                        normalized[key] = float(behavior[key])
+
+                thresholds_raw = behavior.get("amount_thresholds")
+                if thresholds_raw:
+                    thresholds: list[tuple[Decimal, float]] = []
+                    for threshold_str, bonus in thresholds_raw:
+                        try:
+                            threshold = Decimal(str(threshold_str))
+                            bonus_value = float(bonus)
+                        except (TypeError, ValueError) as exc:
+                            raise ValueError(
+                                f"Invalid payment_behavior amount_thresholds for "
+                                f"{business_key}.{kind}: {threshold_str!r}:{bonus!r}"
+                            ) from exc
+                        thresholds.append((threshold, bonus_value))
+                    thresholds.sort(key=lambda item: item[0])
+                    normalized["amount_thresholds"] = thresholds
+
+                overdue_raw = behavior.get("overdue_bonus")
+                if overdue_raw:
+                    overdue: list[tuple[int, float]] = []
+                    for days, bonus in overdue_raw:
+                        try:
+                            overdue.append((int(days), float(bonus)))
+                        except (TypeError, ValueError) as exc:
+                            raise ValueError(
+                                f"Invalid payment_behavior overdue_bonus for "
+                                f"{business_key}.{kind}: {days!r}:{bonus!r}"
+                            ) from exc
+                    overdue.sort(key=lambda item: item[0])
+                    normalized["overdue_bonus"] = overdue
+
+                if normalized:
+                    normalized_by_kind[kind] = normalized
+
+            if normalized_by_kind:
+                behaviors[business_key] = normalized_by_kind
+
+        return behaviors
+
+    def _payment_behavior_for(self, business_key: str, kind: str) -> dict[str, Any]:
+        base = DEFAULT_PAYMENT_BEHAVIOR.get(kind, {})
+        behavior: dict[str, Any] = {
+            "base_probability": base.get("base_probability", 0.0),
+            "max_probability": base.get("max_probability", 1.0),
+            "amount_thresholds": list(base.get("amount_thresholds", [])),
+            "overdue_bonus": list(base.get("overdue_bonus", [])),
+            "amount_ratio_min": base.get("amount_ratio_min", 0.25),
+            "amount_ratio_max": base.get("amount_ratio_max", 0.8),
+        }
+
+        overrides = self._payment_behaviors.get(business_key, {}).get(kind, {})
+        for key in ("base_probability", "max_probability", "amount_ratio_min", "amount_ratio_max"):
+            if key in overrides:
+                behavior[key] = overrides[key]
+        if "amount_thresholds" in overrides:
+            behavior["amount_thresholds"] = overrides["amount_thresholds"]
+        if "overdue_bonus" in overrides:
+            behavior["overdue_bonus"] = overrides["overdue_bonus"]
+
+        return behavior
     def _load_recurring_transactions(
         self,
     ) -> dict[str, list[RecurringTransactionSpec]]:
@@ -2238,6 +2378,42 @@ class TransactionGenerator:
             return None
         return (current_date - due_date).days
 
+    def _bill_days_overdue(
+        self,
+        bill: dict[str, Any],
+        current_date: date,
+    ) -> int | None:
+        due_date = self._parse_date(bill.get("due_date")) or self._parse_date(
+            bill.get("bill_date")
+        )
+        if not due_date:
+            return None
+        return (current_date - due_date).days
+
+    @staticmethod
+    def _invoice_amount_due(invoice: dict[str, Any]) -> Decimal | None:
+        for key in ("amount_due", "balance", "total_amount", "total"):
+            if key in invoice and invoice.get(key) is not None:
+                try:
+                    amount = Decimal(str(invoice[key]))
+                except (ValueError, TypeError):
+                    continue
+                if amount > 0:
+                    return amount
+        return None
+
+    @staticmethod
+    def _bill_amount_due(bill: dict[str, Any]) -> Decimal | None:
+        for key in ("amount_due", "balance", "total_amount", "total"):
+            if key in bill and bill.get(key) is not None:
+                try:
+                    amount = Decimal(str(bill[key]))
+                except (ValueError, TypeError):
+                    continue
+                if amount > 0:
+                    return amount
+        return None
+
     def _payment_probability_for_invoice(
         self,
         invoice: dict[str, Any],
@@ -2254,6 +2430,81 @@ class TransactionGenerator:
             if minimum <= days_overdue <= maximum:
                 return probability
         return 0.0
+
+    def _payment_probability_for_bill(
+        self,
+        bill: dict[str, Any],
+        current_date: date,
+    ) -> float:
+        days_overdue = self._bill_days_overdue(bill, current_date)
+        if days_overdue is None:
+            return 0.0
+        if days_overdue < 0:
+            days_overdue = 0
+        for minimum, maximum, probability in self._AGING_BUCKETS:
+            if maximum is None:
+                return probability
+            if minimum <= days_overdue <= maximum:
+                return probability
+        return 0.0
+
+    def _partial_payment_probability(
+        self,
+        business_key: str,
+        kind: str,
+        amount_due: Decimal,
+        days_overdue: int | None,
+    ) -> float:
+        if amount_due <= Decimal("50"):
+            return 0.0
+        behavior = self._payment_behavior_for(business_key, kind)
+        probability = float(behavior.get("base_probability", 0.0))
+        for threshold, bonus in behavior.get("amount_thresholds", []):
+            if amount_due >= threshold:
+                probability += float(bonus)
+        if days_overdue is not None:
+            for threshold, bonus in behavior.get("overdue_bonus", []):
+                if days_overdue >= threshold:
+                    probability += float(bonus)
+        return min(float(behavior.get("max_probability", 1.0)), probability)
+
+    def _should_partial_payment(
+        self,
+        business_key: str,
+        kind: str,
+        amount_due: Decimal,
+        days_overdue: int | None,
+    ) -> bool:
+        probability = self._partial_payment_probability(
+            business_key, kind, amount_due, days_overdue
+        )
+        if probability <= 0:
+            return False
+        return self._rng.random() < probability
+
+    def _partial_payment_amount(
+        self,
+        business_key: str,
+        kind: str,
+        amount_due: Decimal,
+    ) -> Decimal:
+        if amount_due <= 0:
+            return Decimal("0")
+        behavior = self._payment_behavior_for(business_key, kind)
+        min_ratio = Decimal(str(behavior.get("amount_ratio_min", 0.25)))
+        max_ratio = Decimal(str(behavior.get("amount_ratio_max", 0.8)))
+        if max_ratio <= 0 or min_ratio <= 0 or max_ratio <= min_ratio:
+            min_ratio = Decimal("0.25")
+            max_ratio = Decimal("0.8")
+        ratio = Decimal(str(self._rng.uniform(float(min_ratio), float(max_ratio))))
+        amount = (amount_due * ratio).quantize(Decimal("0.01"))
+        if amount <= 0 or amount >= amount_due:
+            amount = (amount_due * Decimal("0.5")).quantize(Decimal("0.01"))
+        if amount <= 0:
+            return amount_due
+        if amount >= amount_due and amount_due > Decimal("0.01"):
+            return (amount_due - Decimal("0.01")).quantize(Decimal("0.01"))
+        return amount
 
     def _discount_take_probability(self, discount_percent: Decimal) -> float:
         """Probability of taking an early payment discount."""
@@ -2281,12 +2532,69 @@ class TransactionGenerator:
             return False, Decimal("0")
         if self._rng.random() > self._discount_take_probability(percent_value):
             return False, Decimal("0")
-        discount_amount = (amount_due * percent_value / Decimal("100")).quantize(
-            Decimal("0.0001")
+        discount_amount = self._quantize_amount_like(
+            amount_due * percent_value / Decimal("100"), amount_due
         )
         if discount_amount <= 0:
             return False, Decimal("0")
         return True, discount_amount
+
+    @staticmethod
+    def _quantize_amount_like(amount: Decimal, reference: Decimal) -> Decimal:
+        exponent = reference.as_tuple().exponent
+        if not isinstance(exponent, int) or exponent >= 0:
+            return amount
+        quantizer = Decimal("1").scaleb(exponent)
+        return amount.quantize(quantizer)
+
+    def _payment_details_for_invoice(
+        self,
+        invoice: dict[str, Any],
+        current_date: date,
+        business_key: str,
+    ) -> PaymentDecision:
+        amount_due = self._invoice_amount_due(invoice)
+        if amount_due is None or amount_due <= 0:
+            return PaymentDecision(None, False, Decimal("0"), False)
+        days_overdue = self._invoice_days_overdue(invoice, current_date)
+        if self._should_partial_payment(business_key, "invoice", amount_due, days_overdue):
+            payment_amount = self._partial_payment_amount(
+                business_key, "invoice", amount_due
+            )
+            if payment_amount <= 0:
+                return PaymentDecision(None, False, Decimal("0"), False)
+            return PaymentDecision(payment_amount, False, Decimal("0"), True)
+
+        take_discount, discount_amount = self._discount_for_invoice(
+            invoice, current_date, amount_due
+        )
+        if take_discount:
+            payment_amount = self._quantize_amount_like(
+                amount_due - discount_amount, amount_due
+            )
+            if payment_amount <= 0:
+                return PaymentDecision(amount_due, False, Decimal("0"), False)
+            return PaymentDecision(payment_amount, True, discount_amount, False)
+        return PaymentDecision(amount_due, False, Decimal("0"), False)
+
+    def _payment_details_for_bill(
+        self,
+        bill: dict[str, Any],
+        current_date: date,
+        business_key: str,
+    ) -> PaymentDecision:
+        amount_due = self._bill_amount_due(bill)
+        if amount_due is None or amount_due <= 0:
+            return PaymentDecision(None, False, Decimal("0"), False)
+        days_overdue = self._bill_days_overdue(bill, current_date)
+        if self._should_partial_payment(business_key, "bill", amount_due, days_overdue):
+            payment_amount = self._partial_payment_amount(
+                business_key, "bill", amount_due
+            )
+            if payment_amount <= 0:
+                return PaymentDecision(None, False, Decimal("0"), False)
+            return PaymentDecision(payment_amount, False, Decimal("0"), True)
+        return PaymentDecision(amount_due, False, Decimal("0"), False)
 
     def _maybe_discount_terms(self) -> dict[str, Any] | None:
         """Optionally attach early payment discount terms to an invoice."""
@@ -2408,6 +2716,7 @@ class TransactionGenerator:
         customers: list[dict[str, Any]],
         vendors: list[dict[str, Any]],
         pending_invoices: list[dict[str, Any]] | None = None,
+        pending_bills: list[dict[str, Any]] | None = None,
         current_hour: int | None = None,
         current_phase: str | None = None,
         hourly: bool = False,
@@ -2420,6 +2729,7 @@ class TransactionGenerator:
             customers: List of customer records from the API
             vendors: List of vendor records from the API
             pending_invoices: Optional list of unpaid invoices for payment generation
+            pending_bills: Optional list of unpaid bills for payment generation
             current_hour: Optional hour (0-23) for time-based transaction patterns
             current_phase: Optional phase name (e.g., "evening") for phase multipliers
             hourly: If true, generate transactions per hour across the phase
@@ -2431,6 +2741,8 @@ class TransactionGenerator:
         transactions: list[GeneratedTransaction] = []
         pending_pool = list(pending_invoices) if pending_invoices else []
         payable_pool: list[dict[str, Any]] = []
+        pending_bill_pool = list(pending_bills) if pending_bills else []
+        payable_bill_pool: list[dict[str, Any]] = []
 
         if pending_pool:
             for invoice in pending_pool:
@@ -2442,6 +2754,16 @@ class TransactionGenerator:
                 if self._rng.random() < probability:
                     payable_pool.append(invoice)
 
+        if pending_bill_pool:
+            for bill in pending_bill_pool:
+                probability = self._payment_probability_for_bill(
+                    bill, current_date
+                )
+                if probability <= 0:
+                    continue
+                if self._rng.random() < probability:
+                    payable_bill_pool.append(bill)
+
         def pop_pending_invoice() -> dict[str, Any] | None:
             if not payable_pool:
                 return None
@@ -2451,32 +2773,14 @@ class TransactionGenerator:
                 pending_pool.remove(invoice)
             return invoice
 
-        def invoice_amount(invoice: dict[str, Any]) -> Decimal | None:
-            for key in ("amount_due", "balance", "total_amount", "total"):
-                if key in invoice and invoice.get(key) is not None:
-                    try:
-                        amount = Decimal(str(invoice[key]))
-                    except (ValueError, TypeError):
-                        continue
-                    if amount > 0:
-                        return amount
-            return None
-
-        def payment_details(
-            invoice: dict[str, Any],
-        ) -> tuple[Decimal | None, bool, Decimal]:
-            amount_due = invoice_amount(invoice)
-            if amount_due is None or amount_due <= 0:
-                return None, False, Decimal("0")
-            take_discount, discount_amount = self._discount_for_invoice(
-                invoice, current_date, amount_due
-            )
-            if not take_discount:
-                return amount_due, False, Decimal("0")
-            payment_amount = (amount_due - discount_amount).quantize(Decimal("0.0001"))
-            if payment_amount <= 0:
-                return amount_due, False, Decimal("0")
-            return payment_amount, True, discount_amount
+        def pop_pending_bill() -> dict[str, Any] | None:
+            if not payable_bill_pool:
+                return None
+            idx = self._rng.randrange(len(payable_bill_pool))
+            bill = payable_bill_pool.pop(idx)
+            if bill in pending_bill_pool:
+                pending_bill_pool.remove(bill)
+            return bill
 
         if hourly:
             hours = self._get_phase_hours(current_phase)
@@ -2528,27 +2832,75 @@ class TransactionGenerator:
                     if pattern.transaction_type == TransactionType.PAYMENT_RECEIVED:
                         selected_invoice = pop_pending_invoice()
                         if selected_invoice:
-                            amount, take_discount, discount_amount = payment_details(
-                                selected_invoice
+                            decision = self._payment_details_for_invoice(
+                                selected_invoice, current_date, business_key
                             )
                             invoice_id = selected_invoice.get("id")
-                            if amount and invoice_id:
+                            if decision.amount and invoice_id:
                                 invoice_number = selected_invoice.get("invoice_number", "N/A")
                                 customer_id_value = (
                                     UUID(selected_invoice["customer_id"])
                                     if selected_invoice.get("customer_id")
                                     else None
                                 )
+                                amount_due = self._invoice_amount_due(selected_invoice)
                                 metadata = {"invoice_id": invoice_id}
-                                if take_discount:
+                                if decision.take_discount:
                                     metadata["take_discount"] = True
-                                    metadata["discount_amount"] = str(discount_amount)
+                                    metadata["discount_amount"] = str(decision.discount_amount)
+                                if decision.is_partial:
+                                    metadata["is_partial"] = True
+                                if amount_due is not None:
+                                    remaining = (amount_due - decision.amount).quantize(
+                                        Decimal("0.01")
+                                    )
+                                    metadata["amount_due"] = str(amount_due)
+                                    metadata["remaining_balance_estimate"] = str(
+                                        max(Decimal("0.00"), remaining)
+                                    )
                                 hour_transactions.append(
                                     GeneratedTransaction(
                                         transaction_type=pattern.transaction_type,
                                         description=f"Payment received - Invoice #{invoice_number}",
-                                        amount=amount,
+                                        amount=decision.amount,
                                         customer_id=customer_id_value,
+                                        metadata=metadata,
+                                    )
+                                )
+                        continue
+
+                    if pattern.transaction_type == TransactionType.BILL_PAYMENT:
+                        selected_bill = pop_pending_bill()
+                        if selected_bill:
+                            decision = self._payment_details_for_bill(
+                                selected_bill, current_date, business_key
+                            )
+                            bill_id = selected_bill.get("id")
+                            if decision.amount and bill_id:
+                                bill_number = selected_bill.get("bill_number", "N/A")
+                                vendor_id_value = (
+                                    UUID(selected_bill["vendor_id"])
+                                    if selected_bill.get("vendor_id")
+                                    else None
+                                )
+                                amount_due = self._bill_amount_due(selected_bill)
+                                metadata = {"bill_id": bill_id}
+                                if decision.is_partial:
+                                    metadata["is_partial"] = True
+                                if amount_due is not None:
+                                    remaining = (amount_due - decision.amount).quantize(
+                                        Decimal("0.01")
+                                    )
+                                    metadata["amount_due"] = str(amount_due)
+                                    metadata["remaining_balance_estimate"] = str(
+                                        max(Decimal("0.00"), remaining)
+                                    )
+                                hour_transactions.append(
+                                    GeneratedTransaction(
+                                        transaction_type=pattern.transaction_type,
+                                        description=f"Bill payment - {bill_number}",
+                                        amount=decision.amount,
+                                        vendor_id=vendor_id_value,
                                         metadata=metadata,
                                     )
                                 )
@@ -2619,27 +2971,75 @@ class TransactionGenerator:
             if pattern.transaction_type == TransactionType.PAYMENT_RECEIVED:
                 selected_invoice = pop_pending_invoice()
                 if selected_invoice:
-                    amount, take_discount, discount_amount = payment_details(
-                        selected_invoice
+                    decision = self._payment_details_for_invoice(
+                        selected_invoice, current_date, business_key
                     )
                     invoice_id = selected_invoice.get("id")
-                    if amount and invoice_id:
+                    if decision.amount and invoice_id:
                         invoice_number = selected_invoice.get("invoice_number", "N/A")
                         customer_id_value = (
                             UUID(selected_invoice["customer_id"])
                             if selected_invoice.get("customer_id")
                             else None
                         )
+                        amount_due = self._invoice_amount_due(selected_invoice)
                         metadata = {"invoice_id": invoice_id}
-                        if take_discount:
+                        if decision.take_discount:
                             metadata["take_discount"] = True
-                            metadata["discount_amount"] = str(discount_amount)
+                            metadata["discount_amount"] = str(decision.discount_amount)
+                        if decision.is_partial:
+                            metadata["is_partial"] = True
+                        if amount_due is not None:
+                            remaining = (amount_due - decision.amount).quantize(
+                                Decimal("0.01")
+                            )
+                            metadata["amount_due"] = str(amount_due)
+                            metadata["remaining_balance_estimate"] = str(
+                                max(Decimal("0.00"), remaining)
+                            )
                         transactions.append(
                             GeneratedTransaction(
                                 transaction_type=pattern.transaction_type,
                                 description=f"Payment received - Invoice #{invoice_number}",
-                                amount=amount,
+                                amount=decision.amount,
                                 customer_id=customer_id_value,
+                                metadata=metadata,
+                            )
+                        )
+                continue
+
+            if pattern.transaction_type == TransactionType.BILL_PAYMENT:
+                selected_bill = pop_pending_bill()
+                if selected_bill:
+                    decision = self._payment_details_for_bill(
+                        selected_bill, current_date, business_key
+                    )
+                    bill_id = selected_bill.get("id")
+                    if decision.amount and bill_id:
+                        bill_number = selected_bill.get("bill_number", "N/A")
+                        vendor_id_value = (
+                            UUID(selected_bill["vendor_id"])
+                            if selected_bill.get("vendor_id")
+                            else None
+                        )
+                        amount_due = self._bill_amount_due(selected_bill)
+                        metadata = {"bill_id": bill_id}
+                        if decision.is_partial:
+                            metadata["is_partial"] = True
+                        if amount_due is not None:
+                            remaining = (amount_due - decision.amount).quantize(
+                                Decimal("0.01")
+                            )
+                            metadata["amount_due"] = str(amount_due)
+                            metadata["remaining_balance_estimate"] = str(
+                                max(Decimal("0.00"), remaining)
+                            )
+                        transactions.append(
+                            GeneratedTransaction(
+                                transaction_type=pattern.transaction_type,
+                                description=f"Bill payment - {bill_number}",
+                                amount=decision.amount,
+                                vendor_id=vendor_id_value,
                                 metadata=metadata,
                             )
                         )

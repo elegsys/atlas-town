@@ -1020,10 +1020,18 @@ class AccountingWorkflow:
         vendors = await self._api.list_vendors()
         pending_sent = await self._fetch_all_invoices(status="sent")
         pending_overdue = await self._fetch_all_invoices(status="overdue")
+        pending_partial = await self._fetch_all_invoices(status="partial")
         pending_invoices = list({
             str(inv.get("id")): inv
-            for inv in pending_sent + pending_overdue
+            for inv in pending_sent + pending_overdue + pending_partial
             if inv.get("id")
+        }.values())
+        pending_approved_bills = await self._fetch_all_bills(status="approved")
+        pending_partial_bills = await self._fetch_all_bills(status="partial")
+        pending_bills = list({
+            str(bill.get("id")): bill
+            for bill in pending_approved_bills + pending_partial_bills
+            if bill.get("id")
         }.values())
 
         transactions = self._tx_gen.generate_daily_transactions(
@@ -1032,6 +1040,7 @@ class AccountingWorkflow:
             customers=customers,
             vendors=vendors,
             pending_invoices=pending_invoices,
+            pending_bills=pending_bills,
             current_hour=current_hour,
             current_phase=current_phase,
             hourly=True,
@@ -1802,7 +1811,7 @@ class AccountingWorkflow:
                 amount=str(tax_amount),
             )
 
-        invoice_payload = {
+        invoice_payload: dict[str, Any] = {
             "customer_id": str(tx.customer_id),
             "invoice_date": invoice_date.isoformat(),
             "lines": lines,
@@ -2043,6 +2052,12 @@ class AccountingWorkflow:
 
         # Check for overdue invoices
         overdue_invoices = await self._api.list_invoices(status="overdue")
+        partial_invoices = await self._api.list_invoices(status="partial")
+        if partial_invoices:
+            for invoice in partial_invoices:
+                days_overdue = self._invoice_days_overdue(invoice, current_date)
+                if days_overdue is not None and days_overdue > 0:
+                    overdue_invoices.append(invoice)
         if overdue_invoices:
             total_overdue = sum(
                 Decimal(str(inv.get("balance", 0))) for inv in overdue_invoices
@@ -2136,7 +2151,10 @@ class AccountingWorkflow:
         aging_totals = {bucket: Decimal("0") for bucket, _, _ in self._AGING_BUCKETS}
         sent = await self._fetch_all_invoices(status="sent")
         overdue = await self._fetch_all_invoices(status="overdue")
-        invoices_by_id = {str(inv.get("id")): inv for inv in sent + overdue if inv.get("id")}
+        partial = await self._fetch_all_invoices(status="partial")
+        invoices_by_id = {
+            str(inv.get("id")): inv for inv in sent + overdue + partial if inv.get("id")
+        }
         for invoice in invoices_by_id.values():
             days_overdue = self._invoice_days_overdue(invoice, current_date)
             if days_overdue is None:

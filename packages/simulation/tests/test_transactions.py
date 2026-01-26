@@ -1038,3 +1038,73 @@ class TestHolidayModifiers:
             pattern, christmas, business_key="tony"
         )
         assert should_generate is False
+
+
+class SequenceRandom:
+    """Deterministic RNG for testing payment decisions."""
+
+    def __init__(self, values: list[float], uniform_value: float = 0.5) -> None:
+        self._values = list(values)
+        self._uniform_value = uniform_value
+
+    def random(self) -> float:
+        if self._values:
+            return self._values.pop(0)
+        return 0.0
+
+    def uniform(self, _a: float, _b: float) -> float:
+        return self._uniform_value
+
+
+class TestPaymentDecisions:
+    def test_partial_payment_for_invoice(self):
+        generator = TransactionGenerator(seed=1)
+        generator._rng = SequenceRandom([0.0], uniform_value=0.5)
+        invoice = {
+            "amount_due": "1000.00",
+            "invoice_date": "2024-01-01",
+            "due_date": "2024-01-15",
+            "discount_percent": "2",
+            "discount_cutoff_date": "2024-01-10",
+        }
+        decision = generator._payment_details_for_invoice(
+            invoice, date(2024, 2, 15), "maya"
+        )
+
+        assert decision.is_partial is True
+        assert decision.take_discount is False
+        assert decision.amount == Decimal("500.00")
+
+    def test_discounted_full_payment_for_invoice(self):
+        generator = TransactionGenerator(seed=2)
+        generator._rng = SequenceRandom([1.0, 0.0], uniform_value=0.5)
+        invoice = {
+            "amount_due": "1000.00",
+            "invoice_date": "2024-03-01",
+            "due_date": "2024-03-30",
+            "discount_percent": "2",
+            "discount_cutoff_date": "2024-04-01",
+        }
+        decision = generator._payment_details_for_invoice(
+            invoice, date(2024, 3, 15), "tony"
+        )
+
+        assert decision.is_partial is False
+        assert decision.take_discount is True
+        assert decision.amount == Decimal("980.00")
+
+    def test_partial_payment_for_bill(self):
+        generator = TransactionGenerator(seed=3)
+        generator._rng = SequenceRandom([0.0], uniform_value=0.4)
+        bill = {
+            "amount_due": "2000.00",
+            "bill_date": "2024-01-01",
+            "due_date": "2024-01-20",
+        }
+        decision = generator._payment_details_for_bill(
+            bill, date(2024, 2, 20), "craig"
+        )
+
+        assert decision.is_partial is True
+        assert decision.amount is not None
+        assert decision.amount < Decimal("2000.00")

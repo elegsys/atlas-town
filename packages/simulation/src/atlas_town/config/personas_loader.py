@@ -243,6 +243,95 @@ def load_persona_employees() -> dict[str, list[dict[str, Any]]]:
 
 
 @lru_cache
+def load_persona_payment_behaviors() -> dict[str, dict[str, dict[str, Any]]]:
+    """Load payment behavior configs from persona YAML files."""
+    personas_dir = Path(__file__).resolve().parent / "personas"
+    if not personas_dir.exists():
+        return {}
+
+    behaviors: dict[str, dict[str, dict[str, Any]]] = {}
+
+    for path in sorted(personas_dir.glob("*.yaml")):
+        raw = path.read_text(encoding="utf-8")
+        data = yaml.safe_load(raw) or {}
+        payment_behavior = data.get("payment_behavior")
+
+        if payment_behavior is None:
+            continue
+        if not isinstance(payment_behavior, dict):
+            raise ValueError(f"{path.name}: payment_behavior must be a mapping")
+
+        normalized: dict[str, dict[str, Any]] = {}
+        for kind in ("invoice", "bill"):
+            behavior = payment_behavior.get(kind)
+            if behavior is None:
+                continue
+            if not isinstance(behavior, dict):
+                raise ValueError(f"{path.name}: payment_behavior.{kind} must be a mapping")
+
+            normalized_behavior: dict[str, Any] = {}
+            for key in (
+                "base_probability",
+                "max_probability",
+                "amount_ratio_min",
+                "amount_ratio_max",
+            ):
+                if key in behavior:
+                    try:
+                        normalized_behavior[key] = float(behavior[key])
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError(
+                            f"{path.name}: payment_behavior.{kind}.{key} must be a number"
+                        ) from exc
+
+            amount_thresholds = behavior.get("amount_thresholds")
+            if amount_thresholds is not None:
+                if not isinstance(amount_thresholds, dict):
+                    raise ValueError(
+                        f"{path.name}: payment_behavior.{kind}.amount_thresholds must be a mapping"
+                    )
+                normalized_thresholds: list[tuple[str, float]] = []
+                for raw_threshold, bonus in amount_thresholds.items():
+                    try:
+                        threshold = str(raw_threshold)
+                        bonus_value = float(bonus)
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError(
+                            f"{path.name}: payment_behavior.{kind}.amount_thresholds "
+                            f"invalid entry {raw_threshold!r}:{bonus!r}"
+                        ) from exc
+                    normalized_thresholds.append((threshold, bonus_value))
+                normalized_behavior["amount_thresholds"] = normalized_thresholds
+
+            overdue_bonus = behavior.get("overdue_bonus")
+            if overdue_bonus is not None:
+                if not isinstance(overdue_bonus, dict):
+                    raise ValueError(
+                        f"{path.name}: payment_behavior.{kind}.overdue_bonus must be a mapping"
+                    )
+                normalized_overdue: list[tuple[int, float]] = []
+                for raw_days, bonus in overdue_bonus.items():
+                    try:
+                        days_value = int(raw_days)
+                        bonus_value = float(bonus)
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError(
+                            f"{path.name}: payment_behavior.{kind}.overdue_bonus "
+                            f"invalid entry {raw_days!r}:{bonus!r}"
+                        ) from exc
+                    normalized_overdue.append((days_value, bonus_value))
+                normalized_behavior["overdue_bonus"] = normalized_overdue
+
+            if normalized_behavior:
+                normalized[kind] = normalized_behavior
+
+        if normalized:
+            behaviors[path.stem] = normalized
+
+    return behaviors
+
+
+@lru_cache
 def load_persona_industries() -> dict[str, str]:
     """Load persona industries from YAML files.
 

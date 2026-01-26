@@ -1258,7 +1258,7 @@ class Orchestrator:
                 if isinstance(notes_value, str) and notes_value.strip():
                     notes = notes_value.strip()
 
-            invoice_data = {
+            invoice_data: dict[str, Any] = {
                 "customer_id": str(tx.customer_id),
                 "invoice_date": sim_date.isoformat(),
                 "lines": [{
@@ -1537,6 +1537,59 @@ class Orchestrator:
         )
 
         self._logger.info("payment_received", org=ctx.name, amount=str(tx.amount))
+        return result
+
+    async def _pay_bill(
+        self,
+        ctx: OrganizationContext,
+        tx: GeneratedTransaction,
+    ) -> dict[str, Any] | None:
+        """Record a payment made for a bill."""
+        if not self._api_client or not tx.metadata:
+            return None
+
+        bill_id = tx.metadata.get("bill_id")
+        if not bill_id:
+            return None
+
+        payment_data = {
+            "bill_id": bill_id,
+            "amount": str(tx.amount),
+            "payment_date": self._get_simulation_date().isoformat(),
+            "payment_method": "check",
+        }
+
+        try:
+            result = await self._api_client.create_bill_payment(payment_data)
+        except Exception as e:
+            details = e.details if isinstance(e, AtlasAPIError) else None
+            self._logger.error(
+                "bill_payment_failed",
+                error=str(e),
+                details=details,
+                org=ctx.name,
+            )
+            return None
+
+        counterparty = (
+            tx.description.split(" - ")[0]
+            if " - " in tx.description
+            else "Vendor"
+        )
+        event_metadata = self._extract_event_metadata(tx.metadata)
+        self._event_publisher.publish(
+            transaction_created(
+                org_id=ctx.id,
+                org_name=ctx.name,
+                transaction_type="payment_sent",
+                amount=float(tx.amount),
+                counterparty=counterparty,
+                description=tx.description,
+                metadata=event_metadata,
+            )
+        )
+
+        self._logger.info("bill_payment_sent", org=ctx.name, amount=str(tx.amount))
         return result
 
     async def _b2b_pair_already_recorded(self, pair_id: str) -> bool:
@@ -2367,13 +2420,22 @@ class Orchestrator:
                 if self._api_client:
                     pending_sent = await self._api_client.list_invoices(status="sent")
                     pending_overdue = await self._api_client.list_invoices(status="overdue")
+                    pending_partial = await self._api_client.list_invoices(status="partial")
                     pending_invoices = list({
                         str(inv.get("id")): inv
-                        for inv in pending_sent + pending_overdue
+                        for inv in pending_sent + pending_overdue + pending_partial
                         if inv.get("id")
+                    }.values())
+                    pending_approved_bills = await self._api_client.list_bills(status="approved")
+                    pending_partial_bills = await self._api_client.list_bills(status="partial")
+                    pending_bills = list({
+                        str(bill.get("id")): bill
+                        for bill in pending_approved_bills + pending_partial_bills
+                        if bill.get("id")
                     }.values())
                 else:
                     pending_invoices = []
+                    pending_bills = []
 
                 # Generate transactions (bills and payments)
                 transactions = self._tx_generator.generate_daily_transactions(
@@ -2382,6 +2444,7 @@ class Orchestrator:
                     customers=customers,
                     vendors=vendors,
                     pending_invoices=pending_invoices,
+                    pending_bills=pending_bills,
                     current_hour=self._scheduler.current_time.hour,
                     current_phase=phase.value,
                     hourly=True,
@@ -2389,6 +2452,7 @@ class Orchestrator:
 
                 bills_created = 0
                 payments_received = 0
+                bills_paid = 0
 
                 for tx in transactions:
                     if tx.transaction_type == TransactionType.BILL:
@@ -2398,8 +2462,12 @@ class Orchestrator:
                         if tx.metadata and tx.metadata.get("invoice_id"):
                             await self._record_payment(ctx, tx)
                             payments_received += 1
+                    elif tx.transaction_type == TransactionType.BILL_PAYMENT:
+                        if tx.metadata and tx.metadata.get("bill_id"):
+                            await self._pay_bill(ctx, tx)
+                            bills_paid += 1
 
-                if bills_created > 0 or payments_received > 0:
+                if bills_created > 0 or payments_received > 0 or bills_paid > 0:
                     self._event_publisher.publish(
                         agent_speaking(
                             agent_id=(
@@ -2410,7 +2478,8 @@ class Orchestrator:
                             agent_name="Sarah Chen",
                             message=(
                                 f"{ctx.name}: Recorded {bills_created} bill(s), "
-                                f"received {payments_received} payment(s)."
+                                f"received {payments_received} payment(s), "
+                                f"paid {bills_paid} bill(s)."
                             ),
                             org_id=org_id,
                         )
@@ -2420,6 +2489,7 @@ class Orchestrator:
                     "org": ctx.name,
                     "bills_created": bills_created,
                     "payments_received": payments_received,
+                    "bills_paid": bills_paid,
                 })
 
             except Exception as e:
