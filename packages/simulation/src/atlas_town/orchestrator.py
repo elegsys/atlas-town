@@ -2354,11 +2354,16 @@ class Orchestrator:
                 vendors = (
                     await self._api_client.list_vendors() if self._api_client else []
                 )
-                pending_invoices = (
-                    await self._api_client.list_invoices(status="sent")
-                    if self._api_client
-                    else []
-                )
+                if self._api_client:
+                    pending_sent = await self._api_client.list_invoices(status="sent")
+                    pending_overdue = await self._api_client.list_invoices(status="overdue")
+                    pending_invoices = list({
+                        str(inv.get("id")): inv
+                        for inv in pending_sent + pending_overdue
+                        if inv.get("id")
+                    }.values())
+                else:
+                    pending_invoices = []
 
                 # Generate transactions (bills and payments)
                 transactions = self._tx_generator.generate_daily_transactions(

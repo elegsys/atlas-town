@@ -170,6 +170,18 @@ class WorkflowResults(TypedDict):
     bills_paid_total: Decimal
 
 
+class CollectionSummary(TypedDict):
+    """Typed summary for collection workflow actions."""
+
+    reminders: int
+    calls: int
+    final_notices: int
+    late_fees: Decimal
+    late_fee_count: int
+    write_offs: Decimal
+    write_off_count: int
+
+
 # =============================================================================
 # DETERMINISTIC ACCOUNTING WORKFLOW
 # =============================================================================
@@ -182,6 +194,28 @@ class AccountingWorkflow:
     with deterministic logic. It replaces the think-act-observe loop of
     the LLM agent with explicit, predictable code paths.
     """
+
+    _AGING_BUCKETS: tuple[tuple[str, int, int | None], ...] = (
+        ("current", 0, 30),
+        ("30_days", 31, 60),
+        ("60_days", 61, 90),
+        ("90_days", 91, 120),
+        ("past_due", 121, None),
+    )
+    _LATE_FEE_RATE = Decimal("0.015")
+    _LATE_FEE_EVENT = "late_fee_assessed"
+    _WRITE_OFF_EVENT = "bad_debt_writeoff"
+    _COLLECTION_EVENT_TYPES: dict[str, str] = {
+        "send_reminder": "reminder_1",
+        "log_collection_call": "collection_call",
+        "send_final_notice": "reminder_final",
+    }
+    _COLLECTION_ACTIONS: tuple[tuple[int, str, str], ...] = (
+        (120, "consider_write_off", "Bad debt review"),
+        (90, "send_final_notice", "Final notice"),
+        (60, "log_collection_call", "Collection call"),
+        (30, "send_reminder", "Reminder email"),
+    )
 
     def __init__(
         self,
@@ -983,7 +1017,13 @@ class AccountingWorkflow:
         # Step 1: Generate transactions (probabilistic layer - unchanged)
         customers = await self._api.list_customers()
         vendors = await self._api.list_vendors()
-        pending_invoices = await self._api.list_invoices(status="sent")
+        pending_sent = await self._fetch_all_invoices(status="sent")
+        pending_overdue = await self._fetch_all_invoices(status="overdue")
+        pending_invoices = list({
+            str(inv.get("id")): inv
+            for inv in pending_sent + pending_overdue
+            if inv.get("id")
+        }.values())
 
         transactions = self._tx_gen.generate_daily_transactions(
             business_key=business_key,
@@ -1039,6 +1079,12 @@ class AccountingWorkflow:
             transactions, current_date, org_id, business_key
         )
 
+        collection_summary = await self._run_collection_workflow(
+            business_key=business_key,
+            org_id=org_id,
+            current_date=current_date,
+        )
+
         # Step 6: Verify books are balanced
         trial_balance = await self._api.get_trial_balance(
             as_of_date=current_date.isoformat()
@@ -1047,6 +1093,7 @@ class AccountingWorkflow:
 
         # Step 7: Identify any issues
         issues = await self._identify_issues(org_id, current_date)
+        issues.extend(self._format_collection_issues(collection_summary))
 
         summary = DailySummary(
             org_name=org_name,
@@ -2007,6 +2054,17 @@ class AccountingWorkflow:
             if over_90 > Decimal("1000"):
                 issues.append(f"${over_90:,.2f} in receivables over 90 days old")
 
+        aging_totals = await self._summarize_invoice_aging(current_date)
+        if any(total > 0 for total in aging_totals.values()):
+            issues.append(
+                "AR aging: "
+                f"current ${aging_totals['current']:,.2f}, "
+                f"30 days ${aging_totals['30_days']:,.2f}, "
+                f"60 days ${aging_totals['60_days']:,.2f}, "
+                f"90 days ${aging_totals['90_days']:,.2f}, "
+                f"120+ days ${aging_totals['past_due']:,.2f}"
+            )
+
         return issues
 
     def _is_due_within_days(
@@ -2023,6 +2081,352 @@ class AccountingWorkflow:
             return current_date <= due_date <= current_date + timedelta(days=days)
         except (ValueError, TypeError):
             return False
+
+    def _invoice_amount_due(self, invoice: dict[str, Any]) -> Decimal:
+        for key in ("amount_due", "balance", "total_amount", "total"):
+            value = self._extract_decimal(invoice.get(key))
+            if value is not None and value > 0:
+                return value
+        return Decimal("0")
+
+    def _invoice_days_overdue(
+        self,
+        invoice: dict[str, Any],
+        current_date: date,
+    ) -> int | None:
+        due_date = self._parse_date(invoice.get("due_date")) or self._parse_date(
+            invoice.get("invoice_date")
+        )
+        if not due_date:
+            return None
+        return (current_date - due_date).days
+
+    def _aging_bucket_for_days(self, days_overdue: int) -> str:
+        if days_overdue < 0:
+            days_overdue = 0
+        for bucket, minimum, maximum in self._AGING_BUCKETS:
+            if maximum is None:
+                return bucket
+            if minimum <= days_overdue <= maximum:
+                return bucket
+        return "current"
+
+    async def _summarize_invoice_aging(
+        self,
+        current_date: date,
+    ) -> dict[str, Decimal]:
+        aging_totals = {bucket: Decimal("0") for bucket, _, _ in self._AGING_BUCKETS}
+        sent = await self._fetch_all_invoices(status="sent")
+        overdue = await self._fetch_all_invoices(status="overdue")
+        invoices_by_id = {str(inv.get("id")): inv for inv in sent + overdue if inv.get("id")}
+        for invoice in invoices_by_id.values():
+            days_overdue = self._invoice_days_overdue(invoice, current_date)
+            if days_overdue is None:
+                continue
+            bucket = self._aging_bucket_for_days(days_overdue)
+            aging_totals[bucket] += self._invoice_amount_due(invoice)
+        return aging_totals
+
+    def _collection_action_for_days(self, days_overdue: int) -> tuple[str, str] | None:
+        for threshold, action_key, label in self._COLLECTION_ACTIONS:
+            if days_overdue >= threshold:
+                return action_key, label
+        return None
+
+    def _get_company_id(self) -> UUID | None:
+        company_id = self._api.current_company_id
+        if not company_id:
+            self._logger.warning("collection_missing_company_id")
+        return company_id
+
+    async def _collection_event_exists(
+        self,
+        invoice_id: UUID,
+        event_type: str,
+    ) -> bool:
+        try:
+            result = await self._api.check_collection_event(invoice_id, event_type)
+        except Exception as exc:
+            self._logger.warning(
+                "collection_check_failed",
+                invoice_id=str(invoice_id),
+                event_type=event_type,
+                error=str(exc),
+            )
+            return False
+        if isinstance(result, dict):
+            return bool(result.get("exists"))
+        return bool(result)
+
+    async def _record_collection_event(
+        self,
+        company_id: UUID,
+        invoice_id: UUID,
+        event_type: str,
+        event_date: date,
+        notes: str,
+    ) -> dict[str, Any] | None:
+        payload: dict[str, Any] = {
+            "invoice_id": str(invoice_id),
+            "event_type": event_type,
+            "event_date": event_date.isoformat(),
+            "notes": notes,
+            "is_automated": True,
+        }
+        performed_by = self._api.current_user_id
+        if performed_by:
+            payload["performed_by"] = str(performed_by)
+        try:
+            event = await self._api.record_collection_event(company_id, payload)
+        except Exception as exc:
+            self._logger.warning(
+                "collection_record_failed",
+                invoice_id=str(invoice_id),
+                event_type=event_type,
+                error=str(exc),
+            )
+            return None
+        return event
+
+    async def _apply_late_fee(
+        self,
+        invoice: dict[str, Any],
+        business_key: str,
+        org_id: UUID,
+        current_date: date,
+    ) -> tuple[dict[str, Any], Decimal] | None:
+        invoice_id = str(invoice.get("id") or "")
+        if not invoice_id:
+            return None
+        try:
+            invoice_uuid = UUID(invoice_id)
+        except (TypeError, ValueError):
+            return None
+        if await self._collection_event_exists(invoice_uuid, self._LATE_FEE_EVENT):
+            return None
+        amount_due = self._invoice_amount_due(invoice)
+        if amount_due <= 0:
+            return None
+        fee_amount = (amount_due * self._LATE_FEE_RATE).quantize(Decimal("0.01"))
+        if fee_amount <= 0:
+            return None
+        company_id = self._get_company_id()
+        if not company_id:
+            return None
+        account_info = await self._get_accounts_for_org(org_id)
+        ar_account_id = account_info.get("ar_account_id")
+        accounts = account_info.get("all_accounts", [])
+        late_fee_revenue = self._find_account_with_fallback(
+            accounts,
+            ("late fee", "finance charge", "interest income", "penalty"),
+            "revenue",
+        )
+        if not late_fee_revenue:
+            late_fee_revenue = (
+                {"id": account_info.get("revenue_account_id")}
+                if account_info.get("revenue_account_id")
+                else None
+            )
+        if not ar_account_id or not late_fee_revenue or not late_fee_revenue.get("id"):
+            self._logger.warning(
+                "late_fee_skipped_missing_accounts",
+                invoice_id=invoice_id,
+                ar_account=ar_account_id,
+                revenue_account=late_fee_revenue,
+            )
+            return None
+        payload = {
+            "invoice_id": str(invoice_uuid),
+            "fee_amount": str(fee_amount),
+            "fee_reason": f"Late fee for overdue invoice{self._run_suffix()}",
+            "late_fee_revenue_account_id": str(late_fee_revenue["id"]),
+            "ar_account_id": str(ar_account_id),
+            "is_automated": True,
+        }
+        try:
+            result = await self._api.assess_late_fee(company_id, payload)
+        except Exception as exc:
+            self._logger.warning(
+                "late_fee_assess_failed",
+                invoice_id=invoice_id,
+                error=str(exc),
+            )
+            return None
+        return result, fee_amount
+
+    async def _write_off_bad_debt(
+        self,
+        invoice: dict[str, Any],
+        org_id: UUID,
+        current_date: date,
+    ) -> dict[str, Any] | None:
+        invoice_id = str(invoice.get("id") or "")
+        if not invoice_id:
+            return None
+        try:
+            invoice_uuid = UUID(invoice_id)
+        except (TypeError, ValueError):
+            return None
+        if await self._collection_event_exists(invoice_uuid, self._WRITE_OFF_EVENT):
+            return None
+        amount_due = self._invoice_amount_due(invoice)
+        if amount_due <= 0:
+            return None
+        company_id = self._get_company_id()
+        if not company_id:
+            return None
+        account_info = await self._get_accounts_for_org(org_id)
+        ar_account_id = account_info.get("ar_account_id")
+        accounts = account_info.get("all_accounts", [])
+        bad_debt_account = self._find_account_with_fallback(
+            accounts, ("bad debt", "doubtful", "uncollectible"), "expense"
+        )
+        allowance_account = self._find_account_with_fallback(
+            accounts, ("allowance", "doubtful", "bad debt reserve"), "asset"
+        )
+        if not ar_account_id or not bad_debt_account or not allowance_account:
+            self._logger.warning(
+                "bad_debt_writeoff_skipped_missing_accounts",
+                invoice_id=invoice_id,
+                ar_account=ar_account_id,
+                bad_debt_account=bad_debt_account,
+                allowance_account=allowance_account,
+            )
+            return None
+        payload = {
+            "invoice_id": str(invoice_uuid),
+            "writeoff_reason": f"Bad debt write-off{self._run_suffix()}",
+            "bad_debt_expense_account_id": str(bad_debt_account["id"]),
+            "allowance_account_id": str(allowance_account["id"]),
+            "ar_account_id": str(ar_account_id),
+        }
+        try:
+            result = await self._api.write_off_bad_debt(company_id, payload)
+        except Exception as exc:
+            self._logger.warning(
+                "bad_debt_writeoff_failed",
+                invoice_id=invoice_id,
+                error=str(exc),
+            )
+            return None
+        return result
+
+    async def _run_collection_workflow(
+        self,
+        business_key: str,
+        org_id: UUID,
+        current_date: date,
+    ) -> CollectionSummary:
+        overdue_invoices = await self._fetch_all_invoices(status="overdue")
+        summary: CollectionSummary = {
+            "reminders": 0,
+            "calls": 0,
+            "final_notices": 0,
+            "late_fees": Decimal("0"),
+            "late_fee_count": 0,
+            "write_offs": Decimal("0"),
+            "write_off_count": 0,
+        }
+
+        company_id = self._get_company_id()
+        if not company_id:
+            return summary
+
+        for invoice in overdue_invoices:
+            invoice_id = str(invoice.get("id") or "")
+            if not invoice_id:
+                continue
+            try:
+                invoice_uuid = UUID(invoice_id)
+            except (TypeError, ValueError):
+                continue
+            days_overdue = self._invoice_days_overdue(invoice, current_date)
+            if days_overdue is None or days_overdue < 0:
+                continue
+
+            if days_overdue >= 30:
+                late_fee_result = await self._apply_late_fee(
+                    invoice=invoice,
+                    business_key=business_key,
+                    org_id=org_id,
+                    current_date=current_date,
+                )
+                if late_fee_result:
+                    _, fee_amount = late_fee_result
+                    summary["late_fee_count"] += 1
+                    summary["late_fees"] += fee_amount
+
+            action_info = self._collection_action_for_days(days_overdue)
+            if action_info:
+                action_key, label = action_info
+                event_type = self._COLLECTION_EVENT_TYPES.get(action_key)
+                if (
+                    event_type
+                    and action_key != "consider_write_off"
+                    and not await self._collection_event_exists(invoice_uuid, event_type)
+                ):
+                    event = await self._record_collection_event(
+                        company_id=company_id,
+                        invoice_id=invoice_uuid,
+                        event_type=event_type,
+                        event_date=current_date,
+                        notes=label,
+                    )
+                    if event:
+                        if action_key == "send_reminder":
+                            summary["reminders"] += 1
+                        elif action_key == "log_collection_call":
+                            summary["calls"] += 1
+                        elif action_key == "send_final_notice":
+                            summary["final_notices"] += 1
+                        self._logger.info(
+                            "collection_action_triggered",
+                            invoice_id=invoice_id,
+                            action=label,
+                            days_overdue=days_overdue,
+                        )
+
+            if days_overdue >= 120:
+                write_off = await self._write_off_bad_debt(
+                    invoice=invoice,
+                    org_id=org_id,
+                    current_date=current_date,
+                )
+                if write_off:
+                    amount_writeoff = (
+                        self._extract_decimal(write_off.get("amount_writeoff"))
+                        or self._extract_decimal(write_off.get("amount_assessed"))
+                        or self._invoice_amount_due(invoice)
+                    )
+                    summary["write_off_count"] += 1
+                    summary["write_offs"] += amount_writeoff
+
+        return summary
+
+    def _format_collection_issues(self, summary: CollectionSummary) -> list[str]:
+        issues: list[str] = []
+        reminders = int(summary.get("reminders", 0))
+        calls = int(summary.get("calls", 0))
+        final_notices = int(summary.get("final_notices", 0))
+        late_fee_count = int(summary.get("late_fee_count", 0))
+        late_fees = self._extract_decimal(summary.get("late_fees")) or Decimal("0")
+        write_off_count = int(summary.get("write_off_count", 0))
+        write_offs = self._extract_decimal(summary.get("write_offs")) or Decimal("0")
+
+        if reminders or calls or final_notices:
+            issues.append(
+                "Collection actions: "
+                f"{reminders} reminder(s), {calls} call(s), {final_notices} final notice(s)"
+            )
+        if late_fee_count:
+            issues.append(
+                f"Late fees applied: {late_fee_count} invoice(s), ${late_fees:,.2f}"
+            )
+        if write_off_count:
+            issues.append(
+                f"Bad debts written off: {write_off_count} invoice(s), ${write_offs:,.2f}"
+            )
+        return issues
 
     async def _generate_overdue_followups(
         self, period_end: date

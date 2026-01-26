@@ -1700,6 +1700,14 @@ TEMPLATE_DATA = {
 class TransactionGenerator:
     """Generates realistic daily transactions for each business."""
 
+    _AGING_BUCKETS: tuple[tuple[int, int | None, float], ...] = (
+        (0, 30, 0.80),
+        (31, 60, 0.60),
+        (61, 90, 0.40),
+        (91, 120, 0.20),
+        (121, None, 0.05),
+    )
+
     def __init__(
         self,
         seed: int | None = None,
@@ -2209,6 +2217,44 @@ class TransactionGenerator:
         """
         return self._day_patterns.get(business_key, {}).get(weekday, 1.0)
 
+    @staticmethod
+    def _parse_date(value: str | None) -> date | None:
+        if not value:
+            return None
+        try:
+            return date.fromisoformat(str(value)[:10])
+        except (TypeError, ValueError):
+            return None
+
+    def _invoice_days_overdue(
+        self,
+        invoice: dict[str, Any],
+        current_date: date,
+    ) -> int | None:
+        due_date = self._parse_date(invoice.get("due_date")) or self._parse_date(
+            invoice.get("invoice_date")
+        )
+        if not due_date:
+            return None
+        return (current_date - due_date).days
+
+    def _payment_probability_for_invoice(
+        self,
+        invoice: dict[str, Any],
+        current_date: date,
+    ) -> float:
+        days_overdue = self._invoice_days_overdue(invoice, current_date)
+        if days_overdue is None:
+            return 0.0
+        if days_overdue < 0:
+            days_overdue = 0
+        for minimum, maximum, probability in self._AGING_BUCKETS:
+            if maximum is None:
+                return probability
+            if minimum <= days_overdue <= maximum:
+                return probability
+        return 0.0
+
     def _should_generate(
         self,
         pattern: TransactionPattern,
@@ -2343,12 +2389,26 @@ class TransactionGenerator:
         patterns = BUSINESS_PATTERNS.get(business_key, [])
         transactions: list[GeneratedTransaction] = []
         pending_pool = list(pending_invoices) if pending_invoices else []
+        payable_pool: list[dict[str, Any]] = []
+
+        if pending_pool:
+            for invoice in pending_pool:
+                probability = self._payment_probability_for_invoice(
+                    invoice, current_date
+                )
+                if probability <= 0:
+                    continue
+                if self._rng.random() < probability:
+                    payable_pool.append(invoice)
 
         def pop_pending_invoice() -> dict[str, Any] | None:
-            if not pending_pool:
+            if not payable_pool:
                 return None
-            idx = self._rng.randrange(len(pending_pool))
-            return pending_pool.pop(idx)
+            idx = self._rng.randrange(len(payable_pool))
+            invoice = payable_pool.pop(idx)
+            if invoice in pending_pool:
+                pending_pool.remove(invoice)
+            return invoice
 
         def invoice_amount(invoice: dict[str, Any]) -> Decimal | None:
             for key in ("amount_due", "balance", "total_amount", "total"):
@@ -2409,15 +2469,15 @@ class TransactionGenerator:
 
                     # Handle payment transactions specially
                     if pattern.transaction_type == TransactionType.PAYMENT_RECEIVED:
-                        invoice = pop_pending_invoice()
-                        if invoice:
-                            amount = invoice_amount(invoice)
-                            invoice_id = invoice.get("id")
+                        selected_invoice = pop_pending_invoice()
+                        if selected_invoice:
+                            amount = invoice_amount(selected_invoice)
+                            invoice_id = selected_invoice.get("id")
                             if amount and invoice_id:
-                                invoice_number = invoice.get("invoice_number", "N/A")
+                                invoice_number = selected_invoice.get("invoice_number", "N/A")
                                 customer_id_value = (
-                                    UUID(invoice["customer_id"])
-                                    if invoice.get("customer_id")
+                                    UUID(selected_invoice["customer_id"])
+                                    if selected_invoice.get("customer_id")
                                     else None
                                 )
                                 hour_transactions.append(
@@ -2488,15 +2548,15 @@ class TransactionGenerator:
 
             # Handle payment transactions specially
             if pattern.transaction_type == TransactionType.PAYMENT_RECEIVED:
-                invoice = pop_pending_invoice()
-                if invoice:
-                    amount = invoice_amount(invoice)
-                    invoice_id = invoice.get("id")
+                selected_invoice = pop_pending_invoice()
+                if selected_invoice:
+                    amount = invoice_amount(selected_invoice)
+                    invoice_id = selected_invoice.get("id")
                     if amount and invoice_id:
-                        invoice_number = invoice.get("invoice_number", "N/A")
+                        invoice_number = selected_invoice.get("invoice_number", "N/A")
                         customer_id_value = (
-                            UUID(invoice["customer_id"])
-                            if invoice.get("customer_id")
+                            UUID(selected_invoice["customer_id"])
+                            if selected_invoice.get("customer_id")
                             else None
                         )
                         transactions.append(

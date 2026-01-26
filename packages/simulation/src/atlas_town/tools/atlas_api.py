@@ -60,6 +60,7 @@ class AtlasAPIClient:
             # Assume token is fresh, set expiry to 55 minutes from now
             self._token_expires_at = datetime.now(UTC) + timedelta(minutes=55)
 
+        self._current_user_id: UUID | None = None
         self._current_org_id: UUID | None = None
         self._current_company_id: UUID | None = None
         self._organizations: list[dict[str, Any]] = []
@@ -113,6 +114,7 @@ class AtlasAPIClient:
         self._access_token = data["tokens"]["access_token"]
         self._refresh_token = data["tokens"]["refresh_token"]
         self._organizations = data.get("organizations", [])
+        self._current_user_id = self._extract_user_id(data)
 
         # Set default org if available
         if self._organizations and not self._current_org_id:
@@ -222,9 +224,27 @@ class AtlasAPIClient:
         return self._current_company_id
 
     @property
+    def current_user_id(self) -> UUID | None:
+        """Get current user ID."""
+        return self._current_user_id
+
+    @property
     def organizations(self) -> list[dict[str, Any]]:
         """Get list of available organizations."""
         return self._organizations
+
+    @staticmethod
+    def _extract_user_id(data: dict[str, Any]) -> UUID | None:
+        user = data.get("user") if isinstance(data.get("user"), dict) else None
+        if not user:
+            return None
+        user_id = user.get("id") or user.get("user_id")
+        if not user_id:
+            return None
+        try:
+            return UUID(str(user_id))
+        except (TypeError, ValueError):
+            return None
 
     async def get_organization(self, org_id: UUID) -> dict[str, Any]:
         """Get organization details by ID."""
@@ -857,6 +877,66 @@ class AtlasAPIClient:
     async def get_ap_aging(self) -> dict[str, Any]:
         """Get accounts payable aging report."""
         result = await self.get("/api/v1/reports/ap-aging")
+        return result if isinstance(result, dict) else {}
+
+    # === Collection Events Endpoints ===
+
+    async def record_collection_event(
+        self,
+        company_id: UUID,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Record a collection event for an invoice."""
+        result = await self.post(
+            "/api/v1/collection-events/",
+            params={"company_id": str(company_id)},
+            json=data,
+        )
+        return result if isinstance(result, dict) else {}
+
+    async def list_collection_events(
+        self,
+        params: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """List collection events with optional filtering."""
+        result = await self.get("/api/v1/collection-events/", params=params)
+        return self._extract_items(result)
+
+    async def check_collection_event(
+        self,
+        invoice_id: UUID,
+        event_type: str,
+    ) -> dict[str, Any]:
+        """Check if a collection event exists for an invoice."""
+        result = await self.get(
+            f"/api/v1/collection-events/invoice/{invoice_id}/check-event/{event_type}",
+        )
+        return result if isinstance(result, dict) else {}
+
+    async def assess_late_fee(
+        self,
+        company_id: UUID,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Assess a late fee for an invoice (creates JE)."""
+        result = await self.post(
+            "/api/v1/collection-events/assess-late-fee",
+            params={"company_id": str(company_id)},
+            json=data,
+        )
+        return result if isinstance(result, dict) else {}
+
+    async def write_off_bad_debt(
+        self,
+        company_id: UUID,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Write off bad debt for an invoice (creates JE)."""
+        result = await self.post(
+            "/api/v1/collection-events/write-off-bad-debt",
+            params={"company_id": str(company_id)},
+            json=data,
+        )
         return result if isinstance(result, dict) else {}
 
     # === Tax Form Endpoints ===
