@@ -16,6 +16,7 @@ from uuid import UUID
 import structlog
 
 from atlas_town.agents.vendor import VENDOR_ARCHETYPES, VendorType
+from atlas_town.config.holidays import load_holiday_calendar
 from atlas_town.config.personas_loader import (
     WEEKDAY_NAME_TO_INDEX,
     load_persona_day_patterns,
@@ -1709,6 +1710,7 @@ class TransactionGenerator:
         self._logger = logger.bind(component="transaction_generator")
         self._day_patterns = get_business_day_patterns()
         self._inflation = inflation or get_inflation_model()
+        self._holiday_calendar = load_holiday_calendar()
         self._recurring_scheduler = RecurringTransactionScheduler(
             self._load_recurring_transactions()
         )
@@ -2172,6 +2174,18 @@ class TransactionGenerator:
         # Fall back to business-wide seasonality
         return BUSINESS_SEASONALITY.get(business_key, {}).get(month, 1.0)
 
+    def _get_holiday_multiplier(self, business_key: str, current_date: date) -> float:
+        """Get holiday/event multiplier for a business on a given date."""
+        multiplier = 1.0
+        for holiday in self._holiday_calendar:
+            if not holiday.matches(current_date):
+                continue
+            value = holiday.modifier_for(business_key)
+            if value <= 0:
+                return 0.0
+            multiplier *= value
+        return multiplier
+
     def _get_day_multiplier(self, business_key: str, weekday: int) -> float:
         """Get day-of-week multiplier for a business.
 
@@ -2242,6 +2256,13 @@ class TransactionGenerator:
                 business_key, current_date.month, pattern
             )
             probability *= seasonal_mult
+
+        # Apply holiday/event multiplier
+        if business_key and self._holiday_calendar:
+            holiday_multiplier = self._get_holiday_multiplier(business_key, current_date)
+            if holiday_multiplier <= 0:
+                return False
+            probability *= holiday_multiplier
 
         return self._rng.random() < probability
 

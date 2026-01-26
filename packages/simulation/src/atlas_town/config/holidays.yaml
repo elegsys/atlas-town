@@ -1,0 +1,106 @@
+holidays:
+  - name: "New Year's Day"
+    date_rule: "fixed"
+    month: 1
+    day: 1
+    business_modifiers:
+      tony: 0.5
+      chen: 0
+      craig: 0
+      marcus: 0
+      maya: 0
+
+  - name: "Super Bowl"
+    date_rule: "first_sunday_february"
+    business_modifiers:
+      tony: 2.5
+
+  - name: "Valentine's Day"
+    date_rule: "fixed"
+    month: 2
+    day: 14
+    business_modifiers:
+      tony: 2.0
+
+  - name: "Memorial Day"
+    date_rule: "last_monday_may"
+    business_modifiers:
+      tony: 1.5
+      chen: 0
+      craig: 1.5
+      marcus: 1.3
+      maya: 0
+
+  - name: "Independence Day"
+    date_rule: "fixed"
+    month: 7
+    day: 4
+    business_modifiers:
+      tony: 1.8
+      chen: 0
+      craig: 0
+      marcus: 0
+      maya: 0
+
+  - name: "Labor Day"
+    date_rule: "first_monday_september"
+    business_modifiers:
+      tony: 1.5
+      chen: 0
+      craig: 1.2
+      marcus: 1.2
+      maya: 0
+
+  - name: "Thanksgiving"
+    date_rule: "fourth_thursday_november"
+    business_modifiers:
+      tony: 2.0
+      chen: 0
+      craig: 0
+      marcus: 0
+      maya: 0
+
+  - name: "Christmas Season"
+    date_rule: "range"
+    start: "12-01"
+    end: "12-24"
+    business_modifiers:
+      tony: 1.5
+      craig: 0.3
+      marcus: 0.5
+
+  - name: "Christmas Day"
+    date_rule: "fixed"
+    month: 12
+    day: 25
+    business_modifiers:
+      tony: 0
+      chen: 0
+      craig: 0
+      marcus: 0
+      maya: 0
+
+  - name: "Back to School"
+    date_rule: "range"
+    start: "08-01"
+    end: "09-30"
+    business_modifiers:
+      tony: 1.1
+      chen: 1.1
+      marcus: 1.05
+
+  - name: "Tax Season"
+    date_rule: "range"
+    start: "03-01"
+    end: "04-30"
+    business_modifiers:
+      maya: 1.1
+      marcus: 1.1
+
+  - name: "Spring Rush"
+    date_rule: "range"
+    start: "03-01"
+    end: "05-31"
+    business_modifiers:
+      craig: 1.4
+      marcus: 1.3

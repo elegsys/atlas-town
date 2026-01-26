@@ -996,3 +996,45 @@ class TestDayAndOtherMultipliersStack:
 
         # Should be around 8% (0.8 * 0.1)
         assert count < 150, f"Expected low rate (~0.08), got {count}/1000"
+
+
+class TestHolidayModifiers:
+    """Tests for holiday and special event multipliers."""
+
+    @pytest.fixture
+    def generator(self):
+        return TransactionGenerator(seed=42)
+
+    def test_holiday_multiplier_matches_fixed_date(self, generator):
+        """Fixed-date holidays should apply configured multipliers."""
+        valentines = date(2024, 2, 14)
+        multiplier = generator._get_holiday_multiplier("tony", valentines)
+        assert multiplier >= 2.0
+
+    def test_holiday_multiplier_matches_nth_weekday(self, generator):
+        """Nth-weekday holidays should match expected dates."""
+        super_bowl_2024 = date(2024, 2, 4)  # First Sunday of Feb 2024
+        multiplier = generator._get_holiday_multiplier("tony", super_bowl_2024)
+        assert multiplier >= 2.5
+
+    def test_holiday_range_applies(self, generator):
+        """Date ranges should apply within the range."""
+        seasonal_date = date(2024, 12, 10)
+        multiplier = generator._get_holiday_multiplier("tony", seasonal_date)
+        assert multiplier >= 1.5
+
+    def test_holiday_closure_blocks_generation(self, generator):
+        """Closure modifiers should prevent generation."""
+        pattern = TransactionPattern(
+            transaction_type=TransactionType.INVOICE,
+            description_template="Test",
+            min_amount=Decimal("100"),
+            max_amount=Decimal("500"),
+            probability=1.0,
+        )
+
+        christmas = date(2024, 12, 25)
+        should_generate = generator._should_generate(
+            pattern, christmas, business_key="tony"
+        )
+        assert should_generate is False
