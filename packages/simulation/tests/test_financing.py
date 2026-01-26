@@ -114,3 +114,105 @@ def test_loc_interest_accrues_and_bills_previous_month(monkeypatch):
         "testbiz", date(2024, 2, 5), vendors
     )
     assert repeat == []
+
+
+def test_equipment_purchase_creates_single_bill(monkeypatch):
+    vendor_id = uuid4()
+
+    def fake_financing_configs():
+        return {
+            "testbiz": {
+                "term_loans": [],
+                "lines_of_credit": [],
+                "equipment_financing": [
+                    {
+                        "name": "Forklift Purchase",
+                        "principal": 15000,
+                        "rate": 0.06,
+                        "term_months": 36,
+                        "payment_day": 10,
+                        "lender": "Atlas Community Bank",
+                        "start_date": date(2024, 1, 10),
+                        "rate_adjustments": [],
+                        "decision": "purchase",
+                    }
+                ],
+            }
+        }
+
+    monkeypatch.setattr(
+        transactions, "load_persona_financing_configs", fake_financing_configs
+    )
+
+    generator = transactions.TransactionGenerator(seed=1)
+    vendors = [{"id": str(vendor_id), "display_name": "Atlas Community Bank"}]
+
+    txs = generator.generate_financing_transactions(
+        "testbiz", date(2024, 1, 10), vendors
+    )
+    assert len(txs) == 1
+    assert "Equipment purchase" in txs[0].description
+    assert txs[0].metadata
+    assert txs[0].metadata.get("financing_type") == "equipment_purchase"
+    line_items = txs[0].metadata.get("line_items")
+    assert isinstance(line_items, list)
+    assert line_items[0]["account_hint"] == "equipment_asset"
+
+    repeat = generator.generate_financing_transactions(
+        "testbiz", date(2024, 1, 11), vendors
+    )
+    assert repeat == []
+
+
+def test_equipment_lease_generates_payment_with_interest_allocation(monkeypatch):
+    vendor_id = uuid4()
+
+    def fake_financing_configs():
+        return {
+            "testbiz": {
+                "term_loans": [],
+                "lines_of_credit": [],
+                "equipment_financing": [
+                    {
+                        "name": "3D Printer Lease",
+                        "principal": 12000,
+                        "rate": 0.12,
+                        "term_months": 12,
+                        "payment_day": 5,
+                        "lender": "Atlas Community Bank",
+                        "start_date": date(2024, 1, 1),
+                        "rate_adjustments": [],
+                        "decision": "lease",
+                    }
+                ],
+            }
+        }
+
+    monkeypatch.setattr(
+        transactions, "load_persona_financing_configs", fake_financing_configs
+    )
+
+    generator = transactions.TransactionGenerator(seed=1)
+    vendors = [{"id": str(vendor_id), "display_name": "Atlas Community Bank"}]
+
+    txs = generator.generate_financing_transactions(
+        "testbiz", date(2024, 1, 5), vendors
+    )
+    assert len(txs) == 1
+    tx = txs[0]
+    assert "Equipment lease payment" in tx.description
+    assert tx.metadata
+    interest = Decimal(tx.metadata["interest_amount"])
+    principal = Decimal(tx.metadata["principal_amount"])
+    assert (interest + principal).quantize(Decimal("0.01")) == tx.amount
+
+    line_items = tx.metadata.get("line_items")
+    assert isinstance(line_items, list)
+    hints = {item["account_hint"] for item in line_items}
+    assert "interest_expense" in hints
+    assert "equipment_asset" in hints
+
+    repeat = generator.generate_financing_transactions(
+        "testbiz", date(2024, 1, 5), vendors
+    )
+    assert repeat == []

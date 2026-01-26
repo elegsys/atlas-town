@@ -557,6 +557,11 @@ def load_persona_financing_configs() -> dict[str, dict[str, Any]]:
                         path,
                         "financing.equipment_financing.rate_adjustments",
                     ),
+                    "decision": equip.get("decision", "auto"),
+                    "decision_rate_threshold": equip.get("decision_rate_threshold"),
+                    "decision_principal_threshold": equip.get("decision_principal_threshold"),
+                    "lease_probability": equip.get("lease_probability"),
+                    "purchase_probability": equip.get("purchase_probability"),
                 }
             )
 

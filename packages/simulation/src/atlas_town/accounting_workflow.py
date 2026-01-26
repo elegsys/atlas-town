@@ -1622,7 +1622,7 @@ class AccountingWorkflow:
                             )
 
                 elif tx.transaction_type == TransactionType.BILL:
-                    bill = await self._create_bill(tx, current_date, org_id)
+                    bill = await self._create_bill(tx, current_date, org_id, business_key)
                     if bill:
                         results["bills_created"] += 1
                         results["bills_total"] += tx.amount
@@ -1755,6 +1755,7 @@ class AccountingWorkflow:
         tx: GeneratedTransaction,
         bill_date: date,
         org_id: UUID,
+        business_key: str,
     ) -> dict[str, Any] | None:
         """Create a bill - deterministic, no LLM reasoning needed."""
         if not tx.vendor_id:
@@ -1775,34 +1776,92 @@ class AccountingWorkflow:
             if isinstance(notes_value, str) and notes_value.strip():
                 notes = notes_value.strip()
 
-        if not expense_account_id:
-            self._logger.warning(
-                "bill_skipped_no_expense_account",
-                description=tx.description,
-                org_id=str(org_id),
-            )
-            return None
-
         due_date = bill_date + timedelta(days=30)  # Net 30 terms
 
         bill_number = f"BILL-{bill_date.strftime('%Y%m%d')}-{uuid4().hex[:4]}{self._run_suffix()}"
         vendor_bill_number = (
             f"SIMRUN-{self._run_id}"[:50] if self._run_id else None
         )
-        line_account_id = account_override or expense_account_id
-        bill_payload = {
-            "vendor_id": str(tx.vendor_id),
-            "bill_date": bill_date.isoformat(),
-            "due_date": due_date.isoformat(),
-            "bill_number": bill_number[:30],
-            "lines": [
+        accounts = account_info.get("all_accounts", [])
+        year_end_config = self._year_end_configs.get(
+            business_key, YearEndConfig.default()
+        )
+
+        def resolve_account_id(hint: str | None) -> str | None:
+            if not hint:
+                return None
+            normalized = hint.strip().lower()
+            if normalized == "interest_expense":
+                account = self._find_account_with_fallback(
+                    accounts,
+                    ("interest",),
+                    "expense",
+                )
+                return account.get("id") if account else None
+            if normalized == "equipment_asset":
+                keywords = tuple(year_end_config.fixed_asset_keywords)
+                if not keywords:
+                    keywords = ("equipment", "fixed asset", "asset")
+                account = self._find_account_with_fallback(
+                    accounts,
+                    keywords,
+                    "asset",
+                )
+                return account.get("id") if account else None
+            if normalized == "expense":
+                return expense_account_id
+            return None
+
+        lines: list[dict[str, Any]] = []
+        if tx.metadata and isinstance(tx.metadata.get("line_items"), list):
+            for item in tx.metadata["line_items"]:
+                if not isinstance(item, dict):
+                    continue
+                description = str(item.get("description") or tx.description)
+                amount_value = item.get("amount")
+                try:
+                    amount = Decimal(str(amount_value))
+                except (TypeError, ValueError, InvalidOperation):
+                    continue
+                account_id = item.get("account_id")
+                if not account_id:
+                    account_id = resolve_account_id(item.get("account_hint"))
+                if not account_id:
+                    account_id = expense_account_id
+                if not account_id:
+                    continue
+                lines.append(
+                    {
+                        "description": description,
+                        "quantity": "1",
+                        "unit_price": str(amount),
+                        "expense_account_id": account_id,
+                    }
+                )
+
+        if not lines:
+            if not expense_account_id:
+                self._logger.warning(
+                    "bill_skipped_no_expense_account",
+                    description=tx.description,
+                    org_id=str(org_id),
+                )
+                return None
+            line_account_id = account_override or expense_account_id
+            lines = [
                 {
                     "description": tx.description,
                     "quantity": "1",
                     "unit_price": str(tx.amount),
                     "expense_account_id": line_account_id,
                 }
-            ],
+            ]
+        bill_payload = {
+            "vendor_id": str(tx.vendor_id),
+            "bill_date": bill_date.isoformat(),
+            "due_date": due_date.isoformat(),
+            "bill_number": bill_number[:30],
+            "lines": lines,
         }
         if notes:
             bill_payload["notes"] = notes

@@ -209,6 +209,33 @@ class LoanSpec:
 
 
 @dataclass(frozen=True)
+class EquipmentFinancingSpec:
+    """Equipment financing configuration with decision metadata."""
+
+    name: str
+    principal: Decimal
+    annual_rate: Decimal
+    term_months: int
+    payment_day: int
+    lender: str
+    start_date: date | None = None
+    rate_adjustments: tuple[FinancingRateAdjustment, ...] = ()
+    decision: str = "auto"  # auto, lease, purchase, loan
+    decision_rate_threshold: Decimal | None = None
+    decision_principal_threshold: Decimal | None = None
+    lease_probability: float | None = None
+    purchase_probability: float | None = None
+
+
+@dataclass
+class EquipmentLeaseState:
+    """Mutable state for lease amortization schedules."""
+
+    remaining_balance: Decimal
+    remaining_terms: int
+
+
+@dataclass(frozen=True)
 class BalanceEvent:
     """Line of credit balance event."""
 
@@ -237,15 +264,21 @@ class FinancingScheduler:
         self,
         term_loans_by_business: dict[str, list[LoanSpec]],
         locs_by_business: dict[str, list[LineOfCreditSpec]],
-        equipment_financing_by_business: dict[str, list[LoanSpec]],
+        equipment_financing_by_business: dict[str, list[EquipmentFinancingSpec]],
+        rng: random.Random | None = None,
     ) -> None:
         self._term_loans_by_business: dict[str, list[LoanSpec]] = (
             term_loans_by_business
         )
         self._locs_by_business: dict[str, list[LineOfCreditSpec]] = locs_by_business
-        self._equipment_by_business: dict[str, list[LoanSpec]] = (
+        self._equipment_by_business: dict[str, list[EquipmentFinancingSpec]] = (
             equipment_financing_by_business
         )
+        self._equipment_decisions: dict[tuple[str, str], str] = {}
+        self._equipment_state: dict[tuple[str, str], EquipmentLeaseState] = {}
+        self._equipment_payment_generated: set[tuple[str, str, int, int]] = set()
+        self._equipment_purchase_recorded: set[tuple[str, str]] = set()
+        self._rng = rng or random.Random()
         self._loan_interest_generated: set[tuple[str, str, int, int]] = set()
         self._loc_interest_billed: set[tuple[str, str, int, int]] = set()
         self._loc_accrued_interest: dict[tuple[str, str, int, int], Decimal] = {}
@@ -286,7 +319,17 @@ class FinancingScheduler:
         last_day = calendar.monthrange(current_date.year, current_date.month)[1]
         return min(max(1, day_of_month), last_day)
 
-    def _loan_interest_due(self, spec: LoanSpec, current_date: date) -> bool:
+    def _loan_interest_due(
+        self, spec: LoanSpec | EquipmentFinancingSpec, current_date: date
+    ) -> bool:
+        if spec.start_date and current_date < spec.start_date:
+            return False
+        due_day = self._effective_day(spec.payment_day, current_date)
+        return current_date.day == due_day
+
+    def _equipment_payment_due(
+        self, spec: EquipmentFinancingSpec, current_date: date
+    ) -> bool:
         if spec.start_date and current_date < spec.start_date:
             return False
         due_day = self._effective_day(spec.payment_day, current_date)
@@ -340,6 +383,59 @@ class FinancingScheduler:
 
         self._loc_last_accrual[key] = current_date
 
+    def _equipment_decision(
+        self, business_key: str, spec: EquipmentFinancingSpec
+    ) -> str:
+        key = (business_key, spec.name)
+        existing = self._equipment_decisions.get(key)
+        if existing:
+            return existing
+
+        decision = spec.decision.strip().lower()
+        if decision in {"lease", "purchase", "loan"}:
+            self._equipment_decisions[key] = decision
+            return decision
+
+        if spec.lease_probability is not None or spec.purchase_probability is not None:
+            lease_prob = spec.lease_probability if spec.lease_probability is not None else 0.5
+            purchase_prob = (
+                spec.purchase_probability
+                if spec.purchase_probability is not None
+                else max(0.0, 1.0 - lease_prob)
+            )
+            threshold = lease_prob / max(lease_prob + purchase_prob, 1e-6)
+            decision = "lease" if self._rng.random() < threshold else "purchase"
+            self._equipment_decisions[key] = decision
+            return decision
+
+        rate_threshold = spec.decision_rate_threshold or Decimal("0.08")
+        principal_threshold = spec.decision_principal_threshold or Decimal("50000")
+        decision = (
+            "lease"
+            if spec.annual_rate >= rate_threshold
+            or spec.principal >= principal_threshold
+            else "purchase"
+        )
+        self._equipment_decisions[key] = decision
+        return decision
+
+    @staticmethod
+    def _amortized_payment(
+        principal: Decimal, annual_rate: Decimal, term_months: int
+    ) -> Decimal:
+        if term_months <= 0:
+            return Decimal("0")
+        if annual_rate <= 0:
+            return (principal / Decimal(term_months)).quantize(Decimal("0.01"))
+        monthly_rate = annual_rate / Decimal("12")
+        numerator = principal * monthly_rate
+        denominator = Decimal("1") - (Decimal("1") + monthly_rate) ** Decimal(
+            -term_months
+        )
+        if denominator == 0:
+            return Decimal("0")
+        return (numerator / denominator).quantize(Decimal("0.01"))
+
     def get_due_transactions(
         self,
         business_key: str,
@@ -392,6 +488,124 @@ class FinancingScheduler:
             self._loan_interest_generated.add(key)
 
         for equipment_spec in self._equipment_by_business.get(business_key, []):
+            decision = self._equipment_decision(business_key, equipment_spec)
+            vendor_id = self._find_vendor_id(equipment_spec.lender, vendors)
+            if vendor_id is None:
+                self._logger.warning(
+                    "equipment_interest_vendor_missing",
+                    business=business_key,
+                    loan=equipment_spec.name,
+                    vendor=equipment_spec.lender,
+                )
+                continue
+
+            if decision == "purchase":
+                if (business_key, equipment_spec.name) in self._equipment_purchase_recorded:
+                    continue
+                if not equipment_spec.start_date:
+                    due = self._equipment_payment_due(equipment_spec, current_date)
+                else:
+                    due = current_date >= equipment_spec.start_date
+                if not due:
+                    continue
+                results.append(
+                    GeneratedTransaction(
+                        transaction_type=TransactionType.BILL,
+                        description=f"Equipment purchase - {equipment_spec.name}",
+                        amount=equipment_spec.principal.quantize(Decimal("0.01")),
+                        vendor_id=vendor_id,
+                        metadata={
+                            "financing_type": "equipment_purchase",
+                            "equipment_name": equipment_spec.name,
+                            "line_items": [
+                                {
+                                    "description": f"{equipment_spec.name} purchase",
+                                    "amount": str(
+                                        equipment_spec.principal.quantize(Decimal("0.01"))
+                                    ),
+                                    "account_hint": "equipment_asset",
+                                }
+                            ],
+                        },
+                    )
+                )
+                self._equipment_purchase_recorded.add((business_key, equipment_spec.name))
+                continue
+
+            if decision == "lease":
+                if not self._equipment_payment_due(equipment_spec, current_date):
+                    continue
+                key = (
+                    business_key,
+                    equipment_spec.name,
+                    current_date.year,
+                    current_date.month,
+                )
+                if key in self._equipment_payment_generated:
+                    continue
+                state_key = (business_key, equipment_spec.name)
+                state = self._equipment_state.get(state_key)
+                if state is None:
+                    state = EquipmentLeaseState(
+                        remaining_balance=equipment_spec.principal,
+                        remaining_terms=equipment_spec.term_months,
+                    )
+                    self._equipment_state[state_key] = state
+                if state.remaining_terms <= 0 or state.remaining_balance <= 0:
+                    continue
+
+                rate = self._rate_for_date(
+                    equipment_spec.annual_rate,
+                    equipment_spec.rate_adjustments,
+                    current_date,
+                )
+                payment = self._amortized_payment(
+                    state.remaining_balance, rate, state.remaining_terms
+                )
+                if payment <= 0:
+                    continue
+                monthly_rate = rate / Decimal("12")
+                interest = (state.remaining_balance * monthly_rate).quantize(
+                    Decimal("0.01")
+                )
+                principal_component = (payment - interest).quantize(Decimal("0.01"))
+                if principal_component < 0:
+                    principal_component = Decimal("0.00")
+
+                results.append(
+                    GeneratedTransaction(
+                        transaction_type=TransactionType.BILL,
+                        description=f"Equipment lease payment - {equipment_spec.name}",
+                        amount=payment,
+                        vendor_id=vendor_id,
+                        metadata={
+                            "financing_type": "equipment_lease",
+                            "equipment_name": equipment_spec.name,
+                            "annual_rate": str(rate),
+                            "interest_amount": str(interest),
+                            "principal_amount": str(principal_component),
+                            "line_items": [
+                                {
+                                    "description": f"Interest expense - {equipment_spec.name}",
+                                    "amount": str(interest),
+                                    "account_hint": "interest_expense",
+                                },
+                                {
+                                    "description": f"Equipment principal - {equipment_spec.name}",
+                                    "amount": str(principal_component),
+                                    "account_hint": "equipment_asset",
+                                },
+                            ],
+                        },
+                    )
+                )
+                state.remaining_balance = (
+                    state.remaining_balance - principal_component
+                ).quantize(Decimal("0.01"))
+                state.remaining_terms -= 1
+                self._equipment_payment_generated.add(key)
+                continue
+
             if not self._loan_interest_due(equipment_spec, current_date):
                 continue
             key = (
@@ -401,15 +615,6 @@ class FinancingScheduler:
                 current_date.month,
             )
             if key in self._loan_interest_generated:
-                continue
-            vendor_id = self._find_vendor_id(equipment_spec.lender, vendors)
-            if vendor_id is None:
-                self._logger.warning(
-                    "equipment_interest_vendor_missing",
-                    business=business_key,
-                    loan=equipment_spec.name,
-                    vendor=equipment_spec.lender,
-                )
                 continue
             rate = self._rate_for_date(
                 equipment_spec.annual_rate, equipment_spec.rate_adjustments, current_date
@@ -426,7 +631,7 @@ class FinancingScheduler:
                     amount=interest,
                     vendor_id=vendor_id,
                     metadata={
-                        "financing_type": equipment_spec.loan_type,
+                        "financing_type": "equipment_financing",
                         "loan_name": equipment_spec.name,
                         "annual_rate": str(rate),
                     },
@@ -1521,6 +1726,7 @@ class TransactionGenerator:
             financing["term_loans"],
             financing["lines_of_credit"],
             financing["equipment_financing"],
+            rng=self._rng,
         )
 
     def _load_recurring_transactions(
@@ -1649,7 +1855,7 @@ class TransactionGenerator:
         raw = load_persona_financing_configs()
         term_loans: dict[str, list[LoanSpec]] = {}
         lines_of_credit: dict[str, list[LineOfCreditSpec]] = {}
-        equipment_financing: dict[str, list[LoanSpec]] = {}
+        equipment_financing: dict[str, list[EquipmentFinancingSpec]] = {}
 
         for business_key, config in raw.items():
             term_specs: list[LoanSpec] = []
@@ -1775,7 +1981,7 @@ class TransactionGenerator:
                     )
                 )
 
-            equip_specs: list[LoanSpec] = []
+            equip_specs: list[EquipmentFinancingSpec] = []
             for item in config.get("equipment_financing", []):
                 try:
                     principal = Decimal(str(item["principal"]))
@@ -1797,6 +2003,11 @@ class TransactionGenerator:
                 lender = str(item.get("lender") or "Equipment Lender")
                 name = str(item.get("name") or "Equipment Financing")
                 start_date = item.get("start_date")
+                decision = str(item.get("decision", "auto")).strip().lower()
+                decision_rate_threshold = item.get("decision_rate_threshold")
+                decision_principal_threshold = item.get("decision_principal_threshold")
+                lease_probability = item.get("lease_probability")
+                purchase_probability = item.get("purchase_probability")
 
                 adjustments = []
                 for adj in item.get("rate_adjustments", []):
@@ -1817,16 +2028,28 @@ class TransactionGenerator:
                 adjustments.sort(key=lambda entry: entry.effective_date)
 
                 equip_specs.append(
-                    LoanSpec(
+                    EquipmentFinancingSpec(
                         name=name,
                         principal=principal,
                         annual_rate=rate,
                         term_months=term_months,
                         payment_day=payment_day,
                         lender=lender,
-                        loan_type="equipment_financing",
                         start_date=start_date,
                         rate_adjustments=tuple(adjustments),
+                        decision=decision or "auto",
+                        decision_rate_threshold=Decimal(str(decision_rate_threshold))
+                        if decision_rate_threshold is not None
+                        else None,
+                        decision_principal_threshold=Decimal(str(decision_principal_threshold))
+                        if decision_principal_threshold is not None
+                        else None,
+                        lease_probability=float(lease_probability)
+                        if lease_probability is not None
+                        else None,
+                        purchase_probability=float(purchase_probability)
+                        if purchase_probability is not None
+                        else None,
                     )
                 )
 
