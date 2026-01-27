@@ -14,6 +14,8 @@ The LLM agent is still valuable for:
 - Demo/showcase scenarios
 """
 
+import hashlib
+import random
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -26,6 +28,7 @@ import structlog
 from atlas_town.config.personas_loader import (
     load_persona_industries,
     load_persona_inventory_configs,
+    load_persona_multi_currency_configs,
     load_persona_sales_tax_configs,
     load_persona_tax_configs,
     load_persona_year_end_configs,
@@ -192,6 +195,151 @@ class InventoryConfig:
     policy: InventoryPolicy
 
 
+@dataclass(frozen=True)
+class InternationalClientConfig:
+    """Configuration for an international client with foreign currency."""
+
+    name: str
+    currency: str
+    base_rate: Decimal
+    volatility: Decimal
+    invoice_probability: float
+    min_amount: Decimal
+    max_amount: Decimal
+    payment_terms_days: int
+    payment_reliability: float
+
+
+@dataclass(frozen=True)
+class MultiCurrencyConfig:
+    """Multi-currency configuration for a business."""
+
+    enabled: bool
+    base_currency: str
+    clients: tuple[InternationalClientConfig, ...]
+    revaluation_enabled: bool
+    fx_gain_loss_account_name: str
+
+
+class ExchangeRateSimulator:
+    """Deterministic exchange rate simulator using seeded random.
+
+    Generates realistic FX rate fluctuations by:
+    1. Daily drift: small random walk (±volatility)
+    2. Periodic events: occasional larger moves (±2-3%)
+
+    The rates are deterministic - same date+currency always produces same rate.
+    """
+
+    def __init__(self, run_id: str | None = None):
+        self._run_id = run_id or "default"
+        self._rate_cache: dict[tuple[str, date], Decimal] = {}
+
+    def _make_seed(self, currency: str, sim_date: date) -> int:
+        """Create a deterministic seed from currency, date, and run_id."""
+        seed_str = f"{self._run_id}:{currency}:{sim_date.isoformat()}"
+        return int(hashlib.sha256(seed_str.encode()).hexdigest()[:8], 16)
+
+    def get_rate(
+        self,
+        currency: str,
+        sim_date: date,
+        base_rate: Decimal,
+        volatility: Decimal,
+    ) -> Decimal:
+        """Get the exchange rate for a currency on a given date.
+
+        Args:
+            currency: The foreign currency code (e.g., "GBP", "EUR")
+            sim_date: The simulation date
+            base_rate: The base exchange rate (foreign to USD)
+            volatility: Daily volatility factor (e.g., 0.005 for 0.5%)
+
+        Returns:
+            The simulated exchange rate (foreign currency to USD)
+        """
+        cache_key = (currency, sim_date)
+        if cache_key in self._rate_cache:
+            return self._rate_cache[cache_key]
+
+        # Build rate from start of year to this date (cumulative drift)
+        year_start = date(sim_date.year, 1, 1)
+        current_rate = float(base_rate)
+
+        current_date = year_start
+        while current_date <= sim_date:
+            day_seed = self._make_seed(currency, current_date)
+            day_rng = random.Random(day_seed)
+
+            # Daily drift: small random change
+            daily_change = day_rng.gauss(0, float(volatility))
+            current_rate *= (1 + daily_change)
+
+            # Periodic events (~5% of days): larger moves
+            if day_rng.random() < 0.05:
+                event_change = day_rng.gauss(0, float(volatility) * 4)
+                current_rate *= (1 + event_change)
+
+            current_date += timedelta(days=1)
+
+        result = Decimal(str(round(current_rate, 6)))
+        self._rate_cache[cache_key] = result
+        return result
+
+    def convert_to_usd(
+        self,
+        foreign_amount: Decimal,
+        currency: str,
+        sim_date: date,
+        base_rate: Decimal,
+        volatility: Decimal,
+    ) -> Decimal:
+        """Convert a foreign currency amount to USD.
+
+        Args:
+            foreign_amount: Amount in foreign currency
+            currency: The foreign currency code
+            sim_date: The simulation date
+            base_rate: The base exchange rate
+            volatility: Daily volatility factor
+
+        Returns:
+            The equivalent USD amount
+        """
+        rate = self.get_rate(currency, sim_date, base_rate, volatility)
+        return (foreign_amount * rate).quantize(Decimal("0.01"))
+
+    def calculate_fx_gain_loss(
+        self,
+        foreign_amount: Decimal,
+        currency: str,
+        invoice_date: date,
+        payment_date: date,
+        base_rate: Decimal,
+        volatility: Decimal,
+    ) -> Decimal:
+        """Calculate FX gain/loss between invoice and payment dates.
+
+        Args:
+            foreign_amount: The foreign currency amount
+            currency: The foreign currency code
+            invoice_date: Date the invoice was created
+            payment_date: Date the payment was received
+            base_rate: The base exchange rate
+            volatility: Daily volatility factor
+
+        Returns:
+            The FX gain (positive) or loss (negative) in USD
+        """
+        invoice_usd = self.convert_to_usd(
+            foreign_amount, currency, invoice_date, base_rate, volatility
+        )
+        payment_usd = self.convert_to_usd(
+            foreign_amount, currency, payment_date, base_rate, volatility
+        )
+        return payment_usd - invoice_usd
+
+
 class WorkflowResults(TypedDict):
     """Typed results for deterministic transaction processing."""
 
@@ -277,6 +425,12 @@ class AccountingWorkflow:
         self._year_end_reporting_done: set[tuple[str, int]] = set()
         self._run_id = run_id
         self._run_id_short = run_id.split("-")[0] if run_id else None
+
+        # Multi-currency support
+        self._multi_currency_configs = self._load_multi_currency_configs()
+        self._exchange_rate_simulator = ExchangeRateSimulator(run_id)
+        # Track foreign AR: (invoice_id, currency) -> tracking dict
+        self._foreign_ar_tracking: dict[tuple[UUID, str], dict[str, Any]] = {}
 
     def _run_note(self) -> str | None:
         if not self._run_id:
@@ -584,6 +738,45 @@ class AccountingWorkflow:
                 )
 
             configs[business_key] = InventoryConfig(items=tuple(items), policy=policy)
+
+        return configs
+
+    def _load_multi_currency_configs(self) -> dict[str, MultiCurrencyConfig]:
+        """Load multi-currency configs from persona YAML files."""
+        raw = load_persona_multi_currency_configs()
+        configs: dict[str, MultiCurrencyConfig] = {}
+
+        for business_key, config in raw.items():
+            if not config.get("enabled", False):
+                continue
+
+            clients_raw = config.get("clients", [])
+            clients: list[InternationalClientConfig] = []
+
+            for client in clients_raw:
+                clients.append(
+                    InternationalClientConfig(
+                        name=client["name"],
+                        currency=client["currency"],
+                        base_rate=client["base_rate"],
+                        volatility=client["volatility"],
+                        invoice_probability=client["invoice_probability"],
+                        min_amount=client["min_amount"],
+                        max_amount=client["max_amount"],
+                        payment_terms_days=client["payment_terms_days"],
+                        payment_reliability=client["payment_reliability"],
+                    )
+                )
+
+            configs[business_key] = MultiCurrencyConfig(
+                enabled=True,
+                base_currency=config.get("base_currency", "USD"),
+                clients=tuple(clients),
+                revaluation_enabled=config.get("revaluation_enabled", True),
+                fx_gain_loss_account_name=config.get(
+                    "fx_gain_loss_account_name", "Foreign Exchange Gain/Loss"
+                ),
+            )
 
         return configs
 
@@ -1911,6 +2104,17 @@ class AccountingWorkflow:
                 })
                 accrual_entry_id = entry.get("id")
 
+        # FX revaluation for foreign AR
+        fx_revaluation_entry_id = None
+        multi_currency_config = self._multi_currency_configs.get(business_key)
+        if multi_currency_config and multi_currency_config.revaluation_enabled:
+            fx_revaluation_entry_id = await self._revalue_foreign_ar(
+                business_key=business_key,
+                org_id=org_id,
+                period_end=period_end,
+                account_info=account_info,
+            )
+
         return {
             "period_start": period_start.isoformat(),
             "period_end": period_end.isoformat(),
@@ -1922,7 +2126,356 @@ class AccountingWorkflow:
             "reconciliation_summary": bank_reconciliation["reconciliation_summary"],
             "overdue_followups": followups,
             "accrual_entry_id": accrual_entry_id,
+            "fx_revaluation_entry_id": fx_revaluation_entry_id,
         }
+
+    async def _revalue_foreign_ar(
+        self,
+        business_key: str,
+        org_id: UUID,
+        period_end: date,
+        account_info: dict[str, Any],
+    ) -> str | None:
+        """Revalue foreign AR at month-end rates and create unrealized FX journal entry.
+
+        Returns:
+            The journal entry ID if an entry was created, None otherwise.
+        """
+        multi_currency_config = self._multi_currency_configs.get(business_key)
+        if not multi_currency_config:
+            return None
+
+        # Find AR and FX gain/loss accounts
+        accounts = account_info.get("all_accounts", [])
+        ar_account_id = account_info.get("ar_account_id")
+        fx_account = self._find_account_with_fallback(
+            accounts,
+            (
+                "foreign exchange",
+                "fx gain",
+                "currency gain",
+                "exchange gain",
+            ),
+            "revenue",  # FX gains typically go to a revenue/other income account
+        )
+        if not fx_account:
+            # Try expense type (for losses)
+            fx_account = self._find_account_with_fallback(
+                accounts,
+                (
+                    "foreign exchange",
+                    "fx loss",
+                    "currency loss",
+                    "exchange loss",
+                ),
+                "expense",
+            )
+        if not fx_account:
+            # Fall back to "Other Income" account (US GAAP standard)
+            fx_account = self._find_account_with_fallback(
+                accounts,
+                ("other income",),
+                "revenue",
+            )
+        if not fx_account:
+            # Fall back to "Other Expense" account (US GAAP standard)
+            fx_account = self._find_account_with_fallback(
+                accounts,
+                ("other expense",),
+                "expense",
+            )
+
+        if not ar_account_id or not fx_account:
+            self._logger.warning(
+                "fx_revaluation_skipped_missing_accounts",
+                business=business_key,
+                org_id=str(org_id),
+                has_ar=bool(ar_account_id),
+                has_fx=bool(fx_account),
+            )
+            return None
+
+        # Calculate total unrealized gain/loss
+        total_unrealized = Decimal("0")
+        revalued_items: list[dict[str, Any]] = []
+
+        for (invoice_id, currency), tracking in list(self._foreign_ar_tracking.items()):
+            client_config = next(
+                (c for c in multi_currency_config.clients if c.currency == currency),
+                None,
+            )
+            if not client_config:
+                continue
+
+            foreign_amount = Decimal(str(tracking["foreign_amount"]))
+            original_usd = Decimal(str(tracking["usd_amount"]))
+
+            # Get current rate and calculate new USD value
+            current_usd = self._exchange_rate_simulator.convert_to_usd(
+                foreign_amount,
+                currency,
+                period_end,
+                client_config.base_rate,
+                client_config.volatility,
+            )
+
+            unrealized = current_usd - original_usd
+            total_unrealized += unrealized
+
+            revalued_items.append({
+                "invoice_id": str(invoice_id),
+                "currency": currency,
+                "foreign_amount": str(foreign_amount),
+                "original_usd": str(original_usd),
+                "current_usd": str(current_usd),
+                "unrealized_gain_loss": str(unrealized),
+            })
+
+            # Update tracking with new USD value
+            tracking["usd_amount"] = current_usd
+
+        if total_unrealized == 0 or not revalued_items:
+            return None
+
+        # Create journal entry for unrealized FX gain/loss
+        abs_amount = abs(total_unrealized)
+        if total_unrealized > 0:
+            # Unrealized gain: Debit AR, Credit FX Gain
+            lines = [
+                {
+                    "account_id": str(ar_account_id),
+                    "entry_type": "debit",
+                    "amount": str(abs_amount),
+                    "description": "Unrealized FX gain - AR revaluation",
+                },
+                {
+                    "account_id": str(fx_account["id"]),
+                    "entry_type": "credit",
+                    "amount": str(abs_amount),
+                    "description": "Unrealized FX gain",
+                },
+            ]
+        else:
+            # Unrealized loss: Debit FX Loss, Credit AR
+            lines = [
+                {
+                    "account_id": str(fx_account["id"]),
+                    "entry_type": "debit",
+                    "amount": str(abs_amount),
+                    "description": "Unrealized FX loss",
+                },
+                {
+                    "account_id": str(ar_account_id),
+                    "entry_type": "credit",
+                    "amount": str(abs_amount),
+                    "description": "Unrealized FX loss - AR revaluation",
+                },
+            ]
+
+        entry = await self._api.create_journal_entry({
+            "entry_date": period_end.isoformat(),
+            "description": f"Month-end FX revaluation{self._run_suffix()}",
+            "lines": lines,
+        })
+
+        self._logger.info(
+            "fx_revaluation_complete",
+            business=business_key,
+            org_id=str(org_id),
+            period_end=period_end.isoformat(),
+            total_unrealized=str(total_unrealized),
+            items_revalued=len(revalued_items),
+            entry_id=entry.get("id"),
+        )
+
+        return entry.get("id")
+
+    async def _record_fx_gain_loss(
+        self,
+        business_key: str,
+        org_id: UUID,
+        invoice_id: UUID,
+        currency: str,
+        payment_date: date,
+        account_info: dict[str, Any],
+    ) -> str | None:
+        """Record realized FX gain/loss when a foreign currency payment is received.
+
+        Returns:
+            The journal entry ID if an entry was created, None otherwise.
+        """
+        tracking_key = (invoice_id, currency)
+        tracking = self._foreign_ar_tracking.get(tracking_key)
+        if not tracking:
+            return None
+
+        multi_currency_config = self._multi_currency_configs.get(business_key)
+        if not multi_currency_config:
+            return None
+
+        client_config = next(
+            (c for c in multi_currency_config.clients if c.currency == currency),
+            None,
+        )
+        if not client_config:
+            return None
+
+        foreign_amount = Decimal(str(tracking["foreign_amount"]))
+        invoice_date = tracking["invoice_date"]
+        original_usd = Decimal(str(tracking["usd_amount"]))
+
+        # Calculate payment USD value at payment date rate
+        payment_usd = self._exchange_rate_simulator.convert_to_usd(
+            foreign_amount,
+            currency,
+            payment_date,
+            client_config.base_rate,
+            client_config.volatility,
+        )
+
+        fx_gain_loss = payment_usd - original_usd
+
+        # Remove from tracking (invoice is now paid)
+        del self._foreign_ar_tracking[tracking_key]
+
+        if fx_gain_loss == 0:
+            return None
+
+        # Find FX gain/loss account
+        accounts = account_info.get("all_accounts", [])
+        ar_account_id = account_info.get("ar_account_id")
+        fx_account = self._find_account_with_fallback(
+            accounts,
+            (
+                "foreign exchange",
+                "fx gain",
+                "currency gain",
+                "exchange gain",
+            ),
+            "revenue",
+        )
+        if not fx_account:
+            fx_account = self._find_account_with_fallback(
+                accounts,
+                (
+                    "foreign exchange",
+                    "fx loss",
+                    "currency loss",
+                    "exchange loss",
+                ),
+                "expense",
+            )
+        if not fx_account:
+            # Fall back to "Other Income" account (US GAAP standard)
+            fx_account = self._find_account_with_fallback(
+                accounts,
+                ("other income",),
+                "revenue",
+            )
+        if not fx_account:
+            # Fall back to "Other Expense" account (US GAAP standard)
+            fx_account = self._find_account_with_fallback(
+                accounts,
+                ("other expense",),
+                "expense",
+            )
+
+        if not ar_account_id or not fx_account:
+            self._logger.warning(
+                "fx_gain_loss_skipped_missing_accounts",
+                business=business_key,
+                org_id=str(org_id),
+                invoice_id=str(invoice_id),
+            )
+            return None
+
+        abs_amount = abs(fx_gain_loss)
+        if fx_gain_loss > 0:
+            # Realized gain: Debit AR (receive more), Credit FX Gain
+            lines = [
+                {
+                    "account_id": str(ar_account_id),
+                    "entry_type": "debit",
+                    "amount": str(abs_amount),
+                    "description": f"FX gain on {currency} invoice",
+                },
+                {
+                    "account_id": str(fx_account["id"]),
+                    "entry_type": "credit",
+                    "amount": str(abs_amount),
+                    "description": f"Realized FX gain - {currency}",
+                },
+            ]
+        else:
+            # Realized loss: Debit FX Loss, Credit AR (receive less)
+            lines = [
+                {
+                    "account_id": str(fx_account["id"]),
+                    "entry_type": "debit",
+                    "amount": str(abs_amount),
+                    "description": f"Realized FX loss - {currency}",
+                },
+                {
+                    "account_id": str(ar_account_id),
+                    "entry_type": "credit",
+                    "amount": str(abs_amount),
+                    "description": f"FX loss on {currency} invoice",
+                },
+            ]
+
+        entry = await self._api.create_journal_entry({
+            "entry_date": payment_date.isoformat(),
+            "description": f"FX gain/loss on {currency} payment{self._run_suffix()}",
+            "lines": lines,
+        })
+
+        self._logger.info(
+            "fx_gain_loss_recorded",
+            business=business_key,
+            org_id=str(org_id),
+            invoice_id=str(invoice_id),
+            currency=currency,
+            foreign_amount=str(foreign_amount),
+            invoice_date=invoice_date.isoformat(),
+            payment_date=payment_date.isoformat(),
+            original_usd=str(original_usd),
+            payment_usd=str(payment_usd),
+            fx_gain_loss=str(fx_gain_loss),
+            entry_id=entry.get("id"),
+        )
+
+        return entry.get("id")
+
+    def get_multi_currency_config(self, business_key: str) -> MultiCurrencyConfig | None:
+        """Get the multi-currency configuration for a business."""
+        return self._multi_currency_configs.get(business_key)
+
+    def track_foreign_ar(
+        self,
+        invoice_id: UUID,
+        currency: str,
+        foreign_amount: Decimal,
+        usd_amount: Decimal,
+        invoice_date: date,
+        base_rate: Decimal,
+        volatility: Decimal,
+    ) -> None:
+        """Track a foreign AR invoice for FX revaluation."""
+        tracking_key = (invoice_id, currency)
+        self._foreign_ar_tracking[tracking_key] = {
+            "foreign_amount": foreign_amount,
+            "usd_amount": usd_amount,
+            "invoice_date": invoice_date,
+            "base_rate": base_rate,
+            "volatility": volatility,
+        }
+        self._logger.debug(
+            "foreign_ar_tracked",
+            invoice_id=str(invoice_id),
+            currency=currency,
+            foreign_amount=str(foreign_amount),
+            usd_amount=str(usd_amount),
+        )
 
     async def run_bank_reconciliation(
         self,
@@ -2399,6 +2952,7 @@ class AccountingWorkflow:
                             payment_date=current_date,
                             org_id=org_id,
                             take_discount=False,
+                            business_key=business_key,
                         )
                         results["invoices_created"] += 1
                         results["invoices_total"] += total_amount
@@ -2428,6 +2982,7 @@ class AccountingWorkflow:
                             payment_date=current_date,
                             org_id=org_id,
                             take_discount=take_discount,
+                            business_key=business_key,
                         )
                         results["payments_received"] += 1
                         results["payments_total"] += tx.amount
@@ -2697,6 +3252,7 @@ class AccountingWorkflow:
         payment_date: date,
         org_id: UUID,
         take_discount: bool = False,
+        business_key: str = "",
     ) -> dict[str, Any] | None:
         """Record a customer payment - deterministic."""
         # Get cached accounts for AR and deposit
@@ -2734,6 +3290,23 @@ class AccountingWorkflow:
                     str(amount),
                     take_discount=take_discount,
                 )
+                # Check for FX gain/loss on foreign AR payment
+                invoice_uuid = UUID(invoice_id)
+                fx_tracking_keys = [
+                    k for k in self._foreign_ar_tracking
+                    if k[0] == invoice_uuid
+                ]
+                if fx_tracking_keys and business_key:
+                    tracking_key = fx_tracking_keys[0]
+                    currency = tracking_key[1]
+                    await self._record_fx_gain_loss(
+                        business_key=business_key,
+                        org_id=org_id,
+                        invoice_id=invoice_uuid,
+                        currency=currency,
+                        payment_date=payment_date,
+                        account_info=account_info,
+                    )
             except Exception as e:
                 details = e.details if isinstance(e, AtlasAPIError) else None
                 self._logger.warning(

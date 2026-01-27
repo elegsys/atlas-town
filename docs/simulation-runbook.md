@@ -194,3 +194,127 @@ sales_tax_remittance_bills=12
 ```
 
 If tax lines are missing or 422 errors appear in logs for tax rates, check the Atlas API tax rate query parameters and adjust `list_tax_rates` usage in `packages/simulation/src/atlas_town/tools/atlas_api.py`.
+
+## Multi-Currency Verification (Maya)
+
+Maya's Nexus Tech Consulting has international clients that are invoiced in foreign currencies (GBP, EUR, CAD). The simulation tracks FX rates, calculates gain/loss on payment, and revalues foreign AR at month-end.
+
+### Configuration
+
+Multi-currency is configured in `packages/simulation/src/atlas_town/config/personas/maya.yaml`:
+
+```yaml
+multi_currency:
+  enabled: true
+  base_currency: USD
+  revaluation_enabled: true
+  fx_gain_loss_account_name: "Foreign Exchange Gain/Loss"
+
+  clients:
+    - name: "TechCorp UK Ltd"
+      currency: GBP
+      base_rate: 1.27
+      volatility: 0.005
+      invoice_probability: 0.15
+      # ...
+```
+
+### Verify International Invoices
+
+```bash
+uv run python - <<'PY'
+import asyncio
+import json
+
+from atlas_town.tools.atlas_api import AtlasAPIClient
+
+async def main():
+    with open("business_credentials.json") as f:
+        creds = json.load(f)["maya"]
+
+    api = AtlasAPIClient(username=creds["email"], password=creds["password"])
+    await api.login()
+    await api.switch_organization(creds["organization_id"])
+
+    invoices = await api.list_invoices()
+    intl_count = 0
+    currencies = set()
+
+    for inv in invoices:
+        notes = inv.get("notes", "") or ""
+        if "Currency:" in notes:
+            intl_count += 1
+            # Parse currency from notes
+            for part in notes.split(","):
+                if "Currency:" in part:
+                    currency = part.split(":")[1].strip()
+                    currencies.add(currency)
+
+    print(f"total_invoices={len(invoices)}")
+    print(f"international_invoices={intl_count}")
+    print(f"currencies={sorted(currencies)}")
+
+    await api.close()
+
+asyncio.run(main())
+PY
+```
+
+Example output:
+```
+total_invoices=85
+international_invoices=12
+currencies=['CAD', 'EUR', 'GBP']
+```
+
+### Verify FX Journal Entries
+
+Check for FX revaluation and gain/loss journal entries:
+
+```bash
+uv run python - <<'PY'
+import asyncio
+import json
+
+from atlas_town.tools.atlas_api import AtlasAPIClient
+
+async def main():
+    with open("business_credentials.json") as f:
+        creds = json.load(f)["maya"]
+
+    api = AtlasAPIClient(username=creds["email"], password=creds["password"])
+    await api.login()
+    await api.switch_organization(creds["organization_id"])
+
+    # List journal entries
+    entries = await api.list_journal_entries()
+    fx_entries = []
+
+    for entry in entries:
+        desc = entry.get("description", "").lower()
+        if "fx" in desc or "foreign exchange" in desc or "revaluation" in desc:
+            fx_entries.append({
+                "id": entry.get("id"),
+                "date": entry.get("entry_date"),
+                "description": entry.get("description"),
+            })
+
+    print(f"total_journal_entries={len(entries)}")
+    print(f"fx_related_entries={len(fx_entries)}")
+    for entry in fx_entries[:5]:
+        print(f"  - {entry['date']}: {entry['description']}")
+
+    await api.close()
+
+asyncio.run(main())
+PY
+```
+
+### Exchange Rate Behavior
+
+The exchange rate simulator uses deterministic seeded random to ensure reproducible results:
+- Same `run_id` + date + currency always produces the same rate
+- Daily drift: small random walk (±volatility, typically 0.3-0.5%)
+- Periodic events: ~5% of days have larger moves (±2-3%)
+
+Rates stay within reasonable bounds of the base rate (typically ±30% over a full year).

@@ -954,3 +954,130 @@ def load_persona_b2b_configs() -> dict[str, dict[str, Any]]:
 
     return b2b_by_persona
 
+
+@lru_cache
+def load_persona_multi_currency_configs() -> dict[str, dict[str, Any]]:
+    """Load multi-currency configs from persona YAML files.
+
+    Returns:
+        Mapping of persona key (filename stem) to multi-currency config dict.
+    """
+    personas_dir = Path(__file__).resolve().parent / "personas"
+    if not personas_dir.exists():
+        return {}
+
+    multi_currency_by_persona: dict[str, dict[str, Any]] = {}
+
+    for path in sorted(personas_dir.glob("*.yaml")):
+        raw = path.read_text(encoding="utf-8")
+        data = yaml.safe_load(raw) or {}
+        multi_currency = data.get("multi_currency")
+
+        if multi_currency is None:
+            continue
+        if not isinstance(multi_currency, dict):
+            raise ValueError(f"{path.name}: multi_currency must be a mapping")
+
+        enabled = bool(multi_currency.get("enabled", False))
+        if not enabled:
+            continue
+
+        base_currency = str(multi_currency.get("base_currency", "USD")).upper()
+        revaluation_enabled = bool(multi_currency.get("revaluation_enabled", True))
+        fx_gain_loss_account_name = str(
+            multi_currency.get("fx_gain_loss_account_name", "Foreign Exchange Gain/Loss")
+        )
+
+        clients_raw = multi_currency.get("clients", [])
+        if not isinstance(clients_raw, list):
+            raise ValueError(f"{path.name}: multi_currency.clients must be a list")
+
+        normalized_clients: list[dict[str, Any]] = []
+        for idx, client in enumerate(clients_raw):
+            if not isinstance(client, dict):
+                raise ValueError(
+                    f"{path.name}: multi_currency.clients[{idx}] must be a mapping"
+                )
+
+            name = client.get("name")
+            currency = client.get("currency")
+            if not name or not currency:
+                raise ValueError(
+                    f"{path.name}: multi_currency.clients[{idx}] missing name/currency"
+                )
+
+            base_rate = client.get("base_rate")
+            if base_rate is None:
+                raise ValueError(
+                    f"{path.name}: multi_currency.clients[{idx}] missing base_rate"
+                )
+            try:
+                base_rate_decimal = Decimal(str(base_rate))
+            except (ValueError, TypeError) as exc:
+                raise ValueError(
+                    f"{path.name}: multi_currency.clients[{idx}] invalid base_rate"
+                ) from exc
+
+            volatility = client.get("volatility", 0.005)
+            try:
+                volatility_decimal = Decimal(str(volatility))
+            except (ValueError, TypeError) as exc:
+                raise ValueError(
+                    f"{path.name}: multi_currency.clients[{idx}] invalid volatility"
+                ) from exc
+
+            invoice_probability = client.get("invoice_probability", 0.1)
+            try:
+                invoice_prob_float = float(invoice_probability)
+            except (ValueError, TypeError) as exc:
+                raise ValueError(
+                    f"{path.name}: multi_currency.clients[{idx}] invalid invoice_probability"
+                ) from exc
+
+            min_amount = client.get("min_amount", 1000)
+            max_amount = client.get("max_amount", 10000)
+            try:
+                min_amount_decimal = Decimal(str(min_amount))
+                max_amount_decimal = Decimal(str(max_amount))
+            except (ValueError, TypeError) as exc:
+                raise ValueError(
+                    f"{path.name}: multi_currency.clients[{idx}] invalid min_amount/max_amount"
+                ) from exc
+
+            payment_terms_days = client.get("payment_terms_days", 30)
+            if not isinstance(payment_terms_days, int) or payment_terms_days < 1:
+                raise ValueError(
+                    f"{path.name}: multi_currency.clients[{idx}] payment_terms_days must be >= 1"
+                )
+
+            payment_reliability = client.get("payment_reliability", 0.85)
+            try:
+                payment_rel_float = float(payment_reliability)
+            except (ValueError, TypeError) as exc:
+                raise ValueError(
+                    f"{path.name}: multi_currency.clients[{idx}] invalid payment_reliability"
+                ) from exc
+
+            normalized_clients.append({
+                "name": str(name),
+                "currency": str(currency).upper(),
+                "base_rate": base_rate_decimal,
+                "volatility": volatility_decimal,
+                "invoice_probability": invoice_prob_float,
+                "min_amount": min_amount_decimal,
+                "max_amount": max_amount_decimal,
+                "payment_terms_days": payment_terms_days,
+                "payment_reliability": payment_rel_float,
+            })
+
+        if normalized_clients:
+            multi_currency_by_persona[path.stem] = {
+                "enabled": True,
+                "base_currency": base_currency,
+                "revaluation_enabled": revaluation_enabled,
+                "fx_gain_loss_account_name": fx_gain_loss_account_name,
+                "clients": normalized_clients,
+            }
+
+    return multi_currency_by_persona
+

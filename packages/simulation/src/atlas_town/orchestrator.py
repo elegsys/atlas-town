@@ -15,6 +15,7 @@ Supports three modes:
 """
 
 import asyncio
+import hashlib
 import json
 import os
 import random
@@ -31,7 +32,11 @@ from uuid import UUID, uuid4
 
 import structlog
 
-from atlas_town.accounting_workflow import AccountingWorkflow, CollectionSummary
+from atlas_town.accounting_workflow import (
+    AccountingWorkflow,
+    CollectionSummary,
+    MultiCurrencyConfig,
+)
 from atlas_town.agents import (
     AccountantAgent,
     CustomerAgent,
@@ -2306,6 +2311,190 @@ class Orchestrator:
             self._b2b_coordinator.mark_pair_seen(pair.pair_id)
         return True
 
+    async def _generate_international_invoices(
+        self,
+        workflow: AccountingWorkflow,
+        org_id: UUID,
+        ctx: OrganizationContext,
+        sim_date: date,
+        multi_currency_config: MultiCurrencyConfig,
+    ) -> int:
+        """Generate international invoices for businesses with multi-currency clients.
+
+        Uses deterministic seeded RNG to decide whether to create invoices on a given day.
+        Returns the number of invoices created.
+        """
+        if not self._api_client:
+            return 0
+
+        await self.switch_organization(org_id)
+        invoices_created = 0
+
+        for client_config in multi_currency_config.clients:
+            # Create deterministic seed for this client + date
+            seed_parts = [
+                self._run_id, "intl", ctx.owner_key,
+                client_config.name, sim_date.isoformat(),
+            ]
+            seed_str = ":".join(str(p) for p in seed_parts)
+            seed = int(hashlib.sha256(seed_str.encode()).hexdigest()[:8], 16)
+            rng = random.Random(seed)
+
+            # Check probability for this day
+            if rng.random() > client_config.invoice_probability:
+                continue
+
+            # Generate invoice amount (in foreign currency)
+            foreign_amount = Decimal(str(
+                rng.uniform(float(client_config.min_amount), float(client_config.max_amount))
+            )).quantize(Decimal("0.01"))
+
+            # Get exchange rate for the invoice date
+            usd_amount = workflow._exchange_rate_simulator.convert_to_usd(
+                foreign_amount,
+                client_config.currency,
+                sim_date,
+                client_config.base_rate,
+                client_config.volatility,
+            )
+
+            fx_rate = workflow._exchange_rate_simulator.get_rate(
+                client_config.currency,
+                sim_date,
+                client_config.base_rate,
+                client_config.volatility,
+            )
+
+            # Find or create customer for this international client
+            customers = await self._api_client.list_customers()
+            customer = next(
+                (c for c in customers if c.get("display_name") == client_config.name),
+                None,
+            )
+            if not customer:
+                try:
+                    customer = await self._api_client.create_customer({
+                        "display_name": client_config.name,
+                        "email": f"{client_config.name.lower().replace(' ', '.')}@example.com",
+                    })
+                except AtlasAPIError as exc:
+                    self._logger.warning(
+                        "intl_customer_create_failed",
+                        client=client_config.name,
+                        error=str(exc),
+                    )
+                    continue
+
+            if not customer or not customer.get("id"):
+                continue
+
+            # Get revenue account
+            accounts = await self._api_client.list_accounts(limit=200)
+            revenue_accounts = [a for a in accounts if a.get("account_type") == "revenue"]
+            revenue_account = next(
+                (a for a in revenue_accounts if "service" in a.get("name", "").lower()),
+                revenue_accounts[0] if revenue_accounts else None,
+            )
+            ar_accounts = [
+                a for a in accounts
+                if a.get("account_type") == "asset"
+                and "receivable" in a.get("name", "").lower()
+            ]
+            ar_account = ar_accounts[0] if ar_accounts else None
+
+            if not revenue_account or not ar_account:
+                self._logger.warning(
+                    "intl_invoice_skipped_missing_accounts",
+                    client=client_config.name,
+                    org_id=str(org_id),
+                )
+                continue
+
+            # Create invoice with currency info in description
+            due_date = sim_date + timedelta(days=client_config.payment_terms_days)
+            description = (
+                f"International consulting services - {client_config.name} "
+                f"({client_config.currency} {foreign_amount:,.2f} @ {fx_rate:.4f})"
+            )
+
+            notes = (
+                f"Currency: {client_config.currency}, "
+                f"Original amount: {foreign_amount}, Rate: {fx_rate}"
+            )
+            invoice_payload = {
+                "customer_id": str(customer["id"]),
+                "invoice_date": sim_date.isoformat(),
+                "due_date": due_date.isoformat(),
+                "lines": [
+                    {
+                        "description": description,
+                        "quantity": "1",
+                        "unit_price": str(usd_amount),
+                        "revenue_account_id": revenue_account["id"],
+                    }
+                ],
+                "notes": notes,
+            }
+
+            try:
+                invoice = await self._api_client.create_invoice(invoice_payload)
+                if invoice and invoice.get("id"):
+                    # Send invoice (creates AR entry)
+                    await self._api_client.send_invoice(
+                        UUID(invoice["id"]),
+                        UUID(ar_account["id"]),
+                    )
+
+                    # Track for FX revaluation
+                    workflow.track_foreign_ar(
+                        invoice_id=UUID(invoice["id"]),
+                        currency=client_config.currency,
+                        foreign_amount=foreign_amount,
+                        usd_amount=usd_amount,
+                        invoice_date=sim_date,
+                        base_rate=client_config.base_rate,
+                        volatility=client_config.volatility,
+                    )
+
+                    invoices_created += 1
+                    self._logger.info(
+                        "international_invoice_generated",
+                        business=ctx.owner_key,
+                        client=client_config.name,
+                        currency=client_config.currency,
+                        foreign_amount=str(foreign_amount),
+                        usd_amount=str(usd_amount),
+                        fx_rate=str(fx_rate),
+                        invoice_id=invoice.get("id"),
+                    )
+
+                    self._event_publisher.publish(
+                        transaction_created(
+                            org_id=org_id,
+                            org_name=ctx.name,
+                            transaction_type="invoice",
+                            amount=float(usd_amount),
+                            counterparty=client_config.name,
+                            description=description,
+                            metadata={
+                                "currency": client_config.currency,
+                                "foreign_amount": str(foreign_amount),
+                                "fx_rate": str(fx_rate),
+                                "international": True,
+                            },
+                        )
+                    )
+
+            except AtlasAPIError as exc:
+                self._logger.warning(
+                    "intl_invoice_create_failed",
+                    client=client_config.name,
+                    error=str(exc),
+                )
+                continue
+
+        return invoices_created
+
     async def _process_b2b_transactions(self, sim_date: date) -> list[dict[str, Any]]:
         if not self._api_client or not self._b2b_coordinator:
             return []
@@ -3300,6 +3489,18 @@ class Orchestrator:
             current_phase=phase.value,
         )
 
+        # Generate international invoices for businesses with multi-currency config
+        intl_invoice_count = 0
+        multi_currency_config = workflow.get_multi_currency_config(ctx.owner_key)
+        if multi_currency_config:
+            intl_invoice_count = await self._generate_international_invoices(
+                workflow=workflow,
+                org_id=org_id,
+                ctx=ctx,
+                sim_date=sim_date,
+                multi_currency_config=multi_currency_config,
+            )
+
         # Publish summary as agent speaking (for UI consistency)
         self._event_publisher.publish(
             agent_speaking(
@@ -3313,11 +3514,12 @@ class Orchestrator:
         return {
             "org": ctx.name,
             "mode": "fast",
-            "invoices_created": summary.invoices_created,
+            "invoices_created": summary.invoices_created + intl_invoice_count,
             "bills_created": summary.bills_created,
             "payments_received": summary.payments_received,
             "trial_balance_ok": summary.trial_balance_ok,
             "issues": summary.issues,
+            "international_invoices_created": intl_invoice_count,
         }
 
     async def _handle_evening_hybrid(
@@ -3339,14 +3541,27 @@ class Orchestrator:
             current_phase=phase.value,
         )
 
+        # Generate international invoices for businesses with multi-currency config
+        intl_invoice_count = 0
+        multi_currency_config = workflow.get_multi_currency_config(ctx.owner_key)
+        if multi_currency_config:
+            intl_invoice_count = await self._generate_international_invoices(
+                workflow=workflow,
+                org_id=org_id,
+                ctx=ctx,
+                sim_date=sim_date,
+                multi_currency_config=multi_currency_config,
+            )
+
         result = {
             "org": ctx.name,
             "mode": "hybrid",
-            "invoices_created": summary.invoices_created,
+            "invoices_created": summary.invoices_created + intl_invoice_count,
             "bills_created": summary.bills_created,
             "payments_received": summary.payments_received,
             "trial_balance_ok": summary.trial_balance_ok,
             "issues": summary.issues,
+            "international_invoices_created": intl_invoice_count,
         }
 
         # If there are issues, use LLM for analysis

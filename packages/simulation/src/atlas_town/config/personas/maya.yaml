@@ -214,3 +214,41 @@ interaction_prompts:
   morning: "Maya reviews overnight alerts and checks project statuses."
   afternoon: "Maya handles client meetings and reviews proposals."
   evening: "Maya reviews financials and plans for tomorrow."
+
+# Multi-currency configuration for international clients
+multi_currency:
+  enabled: true
+  base_currency: USD
+  revaluation_enabled: true
+  fx_gain_loss_account_name: "Foreign Exchange Gain/Loss"
+
+  clients:
+    - name: "TechCorp UK Ltd"
+      currency: GBP
+      base_rate: 1.27
+      volatility: 0.005
+      invoice_probability: 0.15
+      min_amount: 3000
+      max_amount: 25000
+      payment_terms_days: 30
+      payment_reliability: 0.90
+
+    - name: "EuroSoft GmbH"
+      currency: EUR
+      base_rate: 1.08
+      volatility: 0.004
+      invoice_probability: 0.12
+      min_amount: 5000
+      max_amount: 40000
+      payment_terms_days: 45
+      payment_reliability: 0.85
+
+    - name: "Maple Tech Solutions"
+      currency: CAD
+      base_rate: 0.74
+      volatility: 0.003
+      invoice_probability: 0.10
+      min_amount: 4000
+      max_amount: 20000
+      payment_terms_days: 30
+      payment_reliability: 0.92
