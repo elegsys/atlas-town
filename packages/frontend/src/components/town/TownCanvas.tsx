@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 import * as PIXI from "pixi.js";
 import {
   BUILDINGS,
@@ -10,8 +10,13 @@ import {
   BuildingConfig,
   getBuildingByName,
   getBuildingEntrance,
-  PHASE_COLORS,
 } from "@/lib/pixi/townConfig";
+import {
+  loadBuildingAssets,
+  getBuildingTexture,
+  areBuildingAssetsLoaded,
+  createScaledBuildingSprite,
+} from "@/lib/pixi/spriteLoader";
 import { useSimulationStore } from "@/lib/state/simulationStore";
 
 interface CharacterSprite {
@@ -26,6 +31,10 @@ export function TownCanvas() {
   const appRef = useRef<PIXI.Application | null>(null);
   const charactersRef = useRef<Map<string, CharacterSprite>>(new Map());
   const buildingsRef = useRef<Map<string, PIXI.Container>>(new Map());
+
+  // Loading state for sprite assets
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadingProgress, setLoadingProgress] = useState(0);
 
   // Get state from store
   const agents = useSimulationStore((state) => state.agents);
@@ -49,11 +58,23 @@ export function TownCanvas() {
       canvasRef.current?.appendChild(app.canvas);
       appRef.current = app;
 
-      // Draw the town
+      // Load building sprites before drawing town
+      try {
+        await loadBuildingAssets((progress) => {
+          setLoadingProgress(progress);
+        });
+      } catch (error) {
+        console.error("Failed to load building assets, using fallback:", error);
+      }
+
+      // Draw the town (uses sprites if loaded, fallback otherwise)
       drawTown(app);
 
       // Create Sarah character
       createCharacter(app, "sarah", "Sarah Chen", 0x9370db);
+
+      // Done loading
+      setIsLoading(false);
     };
 
     initPixi();
@@ -102,11 +123,48 @@ export function TownCanvas() {
     });
   }, []);
 
-  // Draw a single building
+  // Draw a single building (sprite or procedural fallback)
   const drawBuilding = (app: PIXI.Application, config: BuildingConfig): PIXI.Container => {
     const container = new PIXI.Container();
     container.position.set(config.x, config.y);
 
+    // Try to use sprite if available
+    const texture = getBuildingTexture(config.id);
+    if (texture && areBuildingAssetsLoaded()) {
+      // Render as sprite
+      const sprite = createScaledBuildingSprite(texture, config.width, config.height);
+      container.addChild(sprite);
+    } else {
+      // Fallback to procedural rendering
+      drawProceduralBuilding(container, config);
+    }
+
+    // Label (always add below building)
+    const label = new PIXI.Text({
+      text: config.label,
+      style: {
+        fontFamily: "Arial",
+        fontSize: 12,
+        fill: 0xffffff,
+        align: "center",
+        fontWeight: "bold",
+        dropShadow: {
+          color: 0x000000,
+          blur: 2,
+          distance: 1,
+        },
+      },
+    });
+    label.anchor.set(0.5, 0);
+    label.position.set(config.width / 2, config.height + 5);
+    container.addChild(label);
+
+    app.stage.addChild(container);
+    return container;
+  };
+
+  // Procedural building rendering (fallback)
+  const drawProceduralBuilding = (container: PIXI.Container, config: BuildingConfig): void => {
     // Building body
     const body = new PIXI.Graphics();
     body.roundRect(0, 0, config.width, config.height, 8);
@@ -142,29 +200,6 @@ export function TownCanvas() {
       win.stroke({ width: 1, color: 0x333333 });
       container.addChild(win);
     }
-
-    // Label
-    const label = new PIXI.Text({
-      text: config.label,
-      style: {
-        fontFamily: "Arial",
-        fontSize: 12,
-        fill: 0xffffff,
-        align: "center",
-        fontWeight: "bold",
-        dropShadow: {
-          color: 0x000000,
-          blur: 2,
-          distance: 1,
-        },
-      },
-    });
-    label.anchor.set(0.5, 0);
-    label.position.set(config.width / 2, config.height + 5);
-    container.addChild(label);
-
-    app.stage.addChild(container);
-    return container;
   };
 
   // Create a character sprite
@@ -334,7 +369,6 @@ export function TownCanvas() {
   useEffect(() => {
     if (!appRef.current) return;
 
-    const phaseColor = PHASE_COLORS[currentPhase] || 0x87ceeb;
     // Update sky color based on phase
     const stage = appRef.current.stage;
     const grass = stage.children[0] as PIXI.Graphics;
@@ -368,11 +402,31 @@ export function TownCanvas() {
   }, [agents]);
 
   return (
-    <div
-      ref={canvasRef}
-      className="rounded-lg overflow-hidden shadow-2xl border border-slate-700"
-      style={{ width: CANVAS_WIDTH, height: CANVAS_HEIGHT }}
-    />
+    <div className="relative">
+      <div
+        ref={canvasRef}
+        className="rounded-lg overflow-hidden shadow-2xl border border-slate-700"
+        style={{ width: CANVAS_WIDTH, height: CANVAS_HEIGHT }}
+      />
+      {/* Loading overlay */}
+      {isLoading && (
+        <div
+          className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/80 rounded-lg"
+          style={{ width: CANVAS_WIDTH, height: CANVAS_HEIGHT }}
+        >
+          <div className="text-white text-lg mb-4">Loading Atlas Town...</div>
+          <div className="w-64 h-2 bg-slate-700 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-blue-500 transition-all duration-200"
+              style={{ width: `${loadingProgress * 100}%` }}
+            />
+          </div>
+          <div className="text-slate-400 text-sm mt-2">
+            {Math.round(loadingProgress * 100)}%
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

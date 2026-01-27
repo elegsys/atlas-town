@@ -14,6 +14,7 @@ export interface BuildingConfig {
   height: number;
   color: number;
   label: string;
+  spritePath?: string; // Path to sprite asset (relative to public/)
 }
 
 // Character definitions
@@ -43,6 +44,7 @@ export const BUILDINGS: BuildingConfig[] = [
     height: 140,
     color: 0x228b22, // Forest green
     label: "Craig's\nLandscaping",
+    spritePath: "/sprites/buildings/craigs_landscaping.png",
   },
   {
     id: "tonys_pizzeria",
@@ -55,6 +57,7 @@ export const BUILDINGS: BuildingConfig[] = [
     height: 140,
     color: 0xdc143c, // Crimson
     label: "Tony's\nPizzeria",
+    spritePath: "/sprites/buildings/tonys_pizzeria.png",
   },
   {
     id: "nexus_tech",
@@ -67,6 +70,7 @@ export const BUILDINGS: BuildingConfig[] = [
     height: 140,
     color: 0x4169e1, // Royal blue
     label: "Nexus Tech\nConsulting",
+    spritePath: "/sprites/buildings/nexus_tech.png",
   },
   {
     id: "main_street_dental",
@@ -79,6 +83,7 @@ export const BUILDINGS: BuildingConfig[] = [
     height: 140,
     color: 0x87ceeb, // Sky blue
     label: "Main Street\nDental",
+    spritePath: "/sprites/buildings/main_street_dental.png",
   },
   {
     id: "harbor_realty",
@@ -91,6 +96,7 @@ export const BUILDINGS: BuildingConfig[] = [
     height: 140,
     color: 0xdaa520, // Goldenrod
     label: "Harbor\nRealty",
+    spritePath: "/sprites/buildings/harbor_realty.png",
   },
   // Sarah's office (bottom center)
   {
@@ -103,6 +109,7 @@ export const BUILDINGS: BuildingConfig[] = [
     height: 120,
     color: 0x708090, // Slate gray
     label: "Sarah's\nAccounting",
+    spritePath: "/sprites/buildings/sarahs_office.png",
   },
 ];
 
