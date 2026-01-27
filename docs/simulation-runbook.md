@@ -5,7 +5,25 @@ Use this when you need a clean, repeatable simulation run with reliable logs.
 ## Prerequisites
 
 - Atlas API running locally (default `http://localhost:8000`).
+- If port 8000 is in use, run Atlas on `http://localhost:8001` and set `ATLAS_API_URL`.
 - All commands run from `packages/simulation` unless noted.
+
+## Start Atlas API (Backend)
+
+If another app is already on port 8000, set `PORT=8001` before running.
+
+```bash
+cd ../atlas/backend
+source venv/bin/activate
+export PORT=8000
+TAX_ID_ENCRYPTION_KEY="$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')" \
+  uvicorn app.main:app --host 0.0.0.0 --port $PORT --reload
+```
+
+Health check (new terminal):
+```bash
+curl -sS http://localhost:${PORT:-8000}/docs
+```
 
 ## Reset DB + Reseed Data
 
@@ -13,8 +31,8 @@ Use this when you need a clean, repeatable simulation run with reliable logs.
 # From repo root
 ../atlas/scripts/setup-db.sh
 
-# From packages/simulation
-uv run python scripts/seed_data.py
+# From packages/simulation (set ATLAS_API_URL if not using 8000)
+ATLAS_API_URL=http://localhost:8000 uv run python scripts/seed_data.py
 ```
 
 Seeding updates:
@@ -34,7 +52,8 @@ Always run with logs redirected to a file.
 ```bash
 LOG=logs/sim_365d_$(date +%Y%m%d_%H%M%S).log
 mkdir -p logs
-uv run python -m atlas_town.orchestrator --mode=fast --days=365 > "$LOG" 2>&1
+ATLAS_API_URL=http://localhost:8000 \
+  uv run python -m atlas_town.orchestrator --mode=fast --days=365 > "$LOG" 2>&1
 echo "$LOG"
 ```
 
@@ -49,6 +68,55 @@ Notes:
   - Look for `simulation_ended` in the log.
 - Scan for errors:
   - `rg -n "error|exception|traceback" logs/sim_*.log`
+
+## Inventory Verification (Tony + Chen)
+
+Confirm inventory receipts/issues hit Atlas API.
+
+```bash
+ATLAS_API_URL=http://localhost:8000 uv run python - <<'PY'
+import asyncio
+import json
+from collections import Counter
+
+from atlas_town.tools.atlas_api import AtlasAPIClient
+
+async def inspect_business(key: str):
+    with open("business_credentials.json") as f:
+        creds = json.load(f)[key]
+
+    api = AtlasAPIClient(username=creds["email"], password=creds["password"])
+    await api.login()
+    await api.switch_organization(creds["organization_id"])
+
+    items = await api.list_inventory_items()
+    summary = {}
+    for item in items:
+        item_id = item.get("id")
+        sku = item.get("sku")
+        if not item_id:
+            continue
+        resp = await api.get(f"/api/v1/inventory/items/{item_id}/transactions")
+        txns = resp.get("items", []) if isinstance(resp, dict) else []
+        types = Counter(
+            (t.get("transaction_type") or t.get("movement_type") or "unknown")
+            for t in txns
+        )
+        summary[sku] = dict(types)
+
+    await api.close()
+    return summary
+
+async def main():
+    for key in ("tony", "chen"):
+        summary = await inspect_business(key)
+        print(key)
+        for sku, counts in summary.items():
+            print(" ", sku, counts)
+
+asyncio.run(main())
+PY
+```
 
 ## Sales Tax Verification (Tony)
 

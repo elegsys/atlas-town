@@ -154,6 +154,33 @@ sales_tax:
   tax_authority: "New York State Department of Taxation"
   remit_day: 1
 
+inventory_policy:
+  cogs_ratio: 0.32
+  usage_floor: 0.5
+  usage_ceiling: 2.5
+
+inventory:
+  - name: "Pizza Flour (50lb)"
+    sku: "FLOUR-50"
+    unit_cost: 25.00
+    reorder_level: 5
+    reorder_quantity: 15
+    weekly_usage: 3
+    unit_of_measure: "bag"
+    costing_method: "fifo"
+    category: "food"
+    preferred_vendor: "Fresh Foods Distributor"
+  - name: "Mozzarella Cheese (5lb)"
+    sku: "MOZZ-5LB"
+    unit_cost: 18.00
+    reorder_level: 10
+    reorder_quantity: 25
+    weekly_usage: 8
+    unit_of_measure: "block"
+    costing_method: "fifo"
+    category: "food"
+    preferred_vendor: "Sysco Food Service"
+
 year_end:
   accrual_rate: 0.12
   depreciation_rate: 0.15
@@ -216,59 +243,6 @@ recurring_transactions:
     amount: 150
     anniversary_date: "2024-02-10"
     category: "Software"
-
-inventory:
-  enabled: true
-  check_day: monday
-  costing_method: fifo
-  consumption_driver: revenue
-  average_sale_price: 18.50
-
-  items:
-    - sku: "FLOUR-50LB"
-      name: "Pizza Flour (50lb bag)"
-      unit_cost: 24.00
-      units_per_sale: 0.08
-      reorder_level: 10
-      reorder_quantity: 20
-      vendor: "Restaurant Depot"
-      category: "ingredients"
-
-    - sku: "CHEESE-MOZZ-5LB"
-      name: "Mozzarella Cheese (5lb block)"
-      unit_cost: 18.50
-      units_per_sale: 0.25
-      reorder_level: 25
-      reorder_quantity: 50
-      vendor: "Restaurant Depot"
-      category: "ingredients"
-
-    - sku: "SAUCE-TOMATO-GAL"
-      name: "Tomato Sauce (1 gallon)"
-      unit_cost: 8.75
-      units_per_sale: 0.12
-      reorder_level: 15
-      reorder_quantity: 30
-      vendor: "Restaurant Depot"
-      category: "ingredients"
-
-    - sku: "PEPPERONI-5LB"
-      name: "Pepperoni (5lb pack)"
-      unit_cost: 22.00
-      units_per_sale: 0.15
-      reorder_level: 12
-      reorder_quantity: 24
-      vendor: "Restaurant Depot"
-      category: "ingredients"
-
-    - sku: "BOX-PIZZA-14"
-      name: "Pizza Box 14 inch (bundle of 50)"
-      unit_cost: 32.00
-      units_per_sale: 0.6
-      reorder_level: 8
-      reorder_quantity: 16
-      vendor: "Restaurant Depot"
-      category: "packaging"
 
 inventory_concerns:
   - fresh_produce

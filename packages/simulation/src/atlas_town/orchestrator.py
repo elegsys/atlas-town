@@ -1651,6 +1651,10 @@ class Orchestrator:
         created = 0
         failed = 0
 
+        bank_rows: list[dict[str, Any]] = []
+        pending_payment_ids: list[str] = []
+        pending_bill_payment_ids: list[str] = []
+
         for payment in payments:
             payment_id = str(payment.get("id") or "")
             if not payment_id or payment_id in imported_payments:
@@ -1660,25 +1664,17 @@ class Orchestrator:
                 continue
             payment_date = payment.get("payment_date") or payment.get("date")
             description = payment.get("reference_number") or "Customer payment"
-            payload = {
-                "bank_account_id": str(bank_account_id),
-                "transaction_date": payment_date or sim_date.isoformat(),
-                "amount": str(amount.quantize(Decimal("0.01"))),
-                "description": description,
-                "is_deposit": True,
-            }
-            try:
-                await self._api_client.create_bank_transaction(payload)
-                imported_payments.add(payment_id)
-                created += 1
-            except AtlasAPIError as exc:
-                failed += 1
-                self._logger.warning(
-                    "bank_transaction_create_failed",
-                    org_id=str(org_id),
-                    payment_id=payment_id,
-                    error=str(exc),
-                )
+            bank_rows.append(
+                {
+                    "bank_account_id": str(bank_account_id),
+                    "transaction_date": payment_date or sim_date.isoformat(),
+                    "amount": str(amount.quantize(Decimal("0.01"))),
+                    "description": f"{description} ({payment_id[:8]})",
+                    "reference_number": payment_id,
+                    "is_deposit": True,
+                }
+            )
+            pending_payment_ids.append(payment_id)
 
         for payment in bill_payments:
             payment_id = str(payment.get("id") or "")
@@ -1689,23 +1685,33 @@ class Orchestrator:
                 continue
             payment_date = payment.get("payment_date") or payment.get("date")
             description = payment.get("reference_number") or "Vendor payment"
-            payload = {
-                "bank_account_id": str(bank_account_id),
-                "transaction_date": payment_date or sim_date.isoformat(),
-                "amount": str(amount.quantize(Decimal("0.01"))),
-                "description": description,
-                "is_deposit": False,
-            }
+            bank_rows.append(
+                {
+                    "bank_account_id": str(bank_account_id),
+                    "transaction_date": payment_date or sim_date.isoformat(),
+                    "amount": str(amount.quantize(Decimal("0.01"))),
+                    "description": f"{description} ({payment_id[:8]})",
+                    "reference_number": payment_id,
+                    "is_deposit": False,
+                }
+            )
+            pending_bill_payment_ids.append(payment_id)
+
+        if bank_rows:
             try:
-                await self._api_client.create_bank_transaction(payload)
-                imported_bill_payments.add(payment_id)
-                created += 1
+                result = await self._api_client.import_bank_statement_rows(
+                    UUID(str(bank_account_id)),
+                    bank_rows,
+                )
+                imported_payments.update(pending_payment_ids)
+                imported_bill_payments.update(pending_bill_payment_ids)
+                created += int(result.get("imported_count", 0) or len(bank_rows))
+                failed += int(result.get("duplicate_count", 0))
             except AtlasAPIError as exc:
-                failed += 1
+                failed += len(bank_rows)
                 self._logger.warning(
                     "bank_transaction_create_failed",
                     org_id=str(org_id),
-                    bill_payment_id=payment_id,
                     error=str(exc),
                 )
 
@@ -2885,6 +2891,27 @@ class Orchestrator:
                             message=f"Created {invoices_created} invoice(s) for {ctx.name} today.",
                             org_id=org_id,
                         )
+                    )
+
+                inventory_summary = await self._get_accounting_workflow(
+                    org_id
+                ).run_inventory_workflow(
+                    business_key=ctx.owner_key,
+                    org_id=org_id,
+                    current_date=sim_date,
+                    transactions=[
+                        tx
+                        for tx in transactions
+                        if tx.transaction_type
+                        in {TransactionType.INVOICE, TransactionType.CASH_SALE}
+                    ],
+                    vendors=vendors,
+                )
+                if inventory_summary:
+                    self._logger.info(
+                        "inventory_workflow_summary",
+                        org=ctx.name,
+                        **inventory_summary,
                     )
 
                 results.append({

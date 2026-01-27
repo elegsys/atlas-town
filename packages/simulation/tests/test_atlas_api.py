@@ -180,6 +180,57 @@ class TestAPIRequests:
 
             assert exc_info.value.status_code == 400
 
+    @pytest.mark.asyncio
+    async def test_create_bank_transaction_falls_back_to_import(self, client):
+        """Fallback to statement import when direct create is unsupported."""
+        payload = {
+            "bank_account_id": "11111111-1111-1111-1111-111111111111",
+            "transaction_date": "2026-01-01",
+            "amount": "12.34",
+            "description": "Test deposit",
+            "is_deposit": True,
+        }
+
+        with patch.object(client, "post", AsyncMock()) as mock_post, patch.object(
+            client, "import_bank_statement_rows", AsyncMock()
+        ) as mock_import:
+            mock_post.side_effect = AtlasAPIError("API error: 405", status_code=405)
+            mock_import.return_value = {"imported_count": 1}
+
+            result = await client.create_bank_transaction(payload)
+
+            assert result["imported_count"] == 1
+            mock_import.assert_awaited_once()
+            args, _ = mock_import.await_args
+            assert args[0] == UUID(payload["bank_account_id"])
+            assert args[1][0]["description"] == "Test deposit"
+
+    def test_build_bank_statement_csv(self, client):
+        """Build CSV with signed amounts for deposits/withdrawals."""
+        rows = [
+            {
+                "transaction_date": "2026-01-01",
+                "amount": "10.00",
+                "description": "Deposit",
+                "is_deposit": True,
+            },
+            {
+                "transaction_date": "2026-01-02",
+                "amount": "7.50",
+                "description": "Debit",
+                "reference_number": "abc",
+                "is_deposit": False,
+            },
+        ]
+
+        csv_content = client._build_bank_statement_csv(rows)
+
+        assert "Date,Description,Amount,Reference" in csv_content
+        assert "Deposit" in csv_content
+        assert "10.00" in csv_content
+        assert "Debit" in csv_content
+        assert "-7.50" in csv_content
+
 
 class TestOrganizationSwitching:
     """Tests for organization context switching."""

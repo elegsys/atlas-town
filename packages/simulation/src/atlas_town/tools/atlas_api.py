@@ -1,7 +1,10 @@
 """Atlas API client with JWT authentication and automatic token refresh."""
 
 import asyncio
+import csv
+import io
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from typing import Any, cast
 from uuid import UUID
 
@@ -371,6 +374,79 @@ class AtlasAPIClient:
                 return await self._request(method, path, params, json, retry_count + 1)
             raise AtlasAPIError(f"Request failed: {e}") from e
 
+    async def _request_with_files(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
+        files: dict[str, tuple[str, str, str]] | None = None,
+        retry_count: int = 0,
+    ) -> dict[str, Any] | list[dict[str, Any]]:
+        """Make a request with multipart form data (file uploads)."""
+        await self._ensure_authenticated()
+        client = await self._get_client()
+        headers = self._get_headers()
+        headers.pop("Content-Type", None)
+
+        try:
+            response = await client.request(
+                method,
+                path,
+                params=params,
+                data=data,
+                files=files,
+                headers=headers,
+            )
+
+            if response.status_code == 401 and retry_count < self._max_retries:
+                await self.refresh_tokens()
+                return await self._request_with_files(
+                    method,
+                    path,
+                    params=params,
+                    data=data,
+                    files=files,
+                    retry_count=retry_count + 1,
+                )
+
+            if response.status_code == 429:
+                retry_after = int(response.headers.get("Retry-After", "60"))
+                raise RateLimitError(
+                    f"Rate limited, retry after {retry_after}s",
+                    status_code=429,
+                    details={"retry_after": retry_after},
+                )
+
+            if response.status_code >= 400:
+                try:
+                    error_detail = response.json() if response.content else {}
+                except Exception:
+                    error_detail = {
+                        "raw": response.text[:500] if response.text else "empty response"
+                    }
+                raise AtlasAPIError(
+                    f"API error: {response.status_code}",
+                    status_code=response.status_code,
+                    details=error_detail,
+                )
+
+            return response.json() if response.content else {}
+
+        except httpx.RequestError as e:
+            if retry_count < self._max_retries:
+                await asyncio.sleep(2**retry_count)
+                return await self._request_with_files(
+                    method,
+                    path,
+                    params=params,
+                    data=data,
+                    files=files,
+                    retry_count=retry_count + 1,
+                )
+            raise AtlasAPIError(f"Request failed: {e}") from e
+
     async def get(
         self, path: str, params: dict[str, Any] | None = None
     ) -> dict[str, Any] | list[dict[str, Any]]:
@@ -542,6 +618,123 @@ class AtlasAPIClient:
         """Create a new bill."""
         result = await self.post("/api/v1/bills/", json=data)
         return result if isinstance(result, dict) else {}
+
+    # === Purchase Order Endpoints ===
+
+    async def list_purchase_orders(
+        self,
+        company_id: UUID | None = None,
+        offset: int = 0,
+        limit: int = 100,
+        status: str | None = None,
+        vendor_id: UUID | None = None,
+    ) -> list[dict[str, Any]]:
+        """List purchase orders for a company."""
+        company = company_id or self._current_company_id
+        if not company:
+            return []
+        params: dict[str, Any] = {
+            "company_id": str(company),
+            "offset": offset,
+            "limit": self._clamp_limit(limit),
+        }
+        if status:
+            params["status"] = status
+        if vendor_id:
+            params["vendor_id"] = str(vendor_id)
+        result = await self.get("/api/v1/purchase-orders/", params=params)
+        return self._extract_items(result)
+
+    async def create_purchase_order(
+        self, data: dict[str, Any], company_id: UUID | None = None
+    ) -> dict[str, Any]:
+        """Create a purchase order."""
+        company = company_id or self._current_company_id
+        if not company:
+            raise AtlasAPIError("Company ID required for purchase order")
+        params = {"company_id": str(company)}
+        result = await self.post("/api/v1/purchase-orders/", json=data, params=params)
+        return result if isinstance(result, dict) else {}
+
+    async def submit_purchase_order(self, po_id: UUID) -> dict[str, Any]:
+        """Submit a purchase order for approval."""
+        result = await self.post(f"/api/v1/purchase-orders/{po_id}/submit")
+        return result if isinstance(result, dict) else {}
+
+    async def approve_purchase_order(self, po_id: UUID) -> dict[str, Any]:
+        """Approve a submitted purchase order."""
+        result = await self.post(f"/api/v1/purchase-orders/{po_id}/approve")
+        return result if isinstance(result, dict) else {}
+
+    # === Inventory Endpoints ===
+
+    async def list_inventory_items(
+        self,
+        company_id: UUID | None = None,
+        category: str | None = None,
+        is_active: bool | None = True,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """List inventory items for the current company."""
+        if company_id is None:
+            company_id = self._current_company_id
+        if not company_id:
+            return []
+        params: dict[str, Any] = {
+            "company_id": str(company_id),
+            "offset": offset,
+            "limit": self._clamp_limit(limit),
+        }
+        if category:
+            params["category"] = category
+        if is_active is not None:
+            params["is_active"] = is_active
+        result = await self.get("/api/v1/inventory/items", params=params)
+        return self._extract_items(result)
+
+    async def create_inventory_item(
+        self, data: dict[str, Any], company_id: UUID | None = None
+    ) -> dict[str, Any]:
+        """Create a new inventory item."""
+        if company_id is None:
+            company_id = self._current_company_id
+        params = {"company_id": str(company_id)} if company_id else {}
+        result = await self.post("/api/v1/inventory/items", json=data, params=params)
+        return result if isinstance(result, dict) else {}
+
+    async def receive_inventory_goods(
+        self, item_id: UUID, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Receive goods into inventory for an item."""
+        result = await self.post(f"/api/v1/inventory/items/{item_id}/receive", json=data)
+        return result if isinstance(result, dict) else {}
+
+    async def issue_inventory_goods(
+        self, item_id: UUID, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Issue goods from inventory for an item."""
+        result = await self.post(f"/api/v1/inventory/items/{item_id}/issue", json=data)
+        return result if isinstance(result, dict) else {}
+
+    async def list_low_stock_items(
+        self,
+        company_id: UUID | None = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """List low stock inventory items."""
+        if company_id is None:
+            company_id = self._current_company_id
+        if not company_id:
+            return []
+        params: dict[str, Any] = {
+            "company_id": str(company_id),
+            "offset": offset,
+            "limit": self._clamp_limit(limit),
+        }
+        result = await self.get("/api/v1/inventory/low-stock", params=params)
+        return self._extract_items(result)
 
     # === Tax Rate Endpoints ===
 
@@ -825,18 +1018,43 @@ class AtlasAPIClient:
     # === Journal Entry Endpoints ===
 
     async def list_journal_entries(
-        self, offset: int = 0, limit: int = 100
+        self,
+        company_id: UUID | None = None,
+        offset: int = 0,
+        limit: int = 100,
+        status_filter: str | None = None,
+        entry_type: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
     ) -> list[dict[str, Any]]:
         """List journal entries."""
-        result = await self.get(
-            "/api/v1/journal-entries/",
-            params={"offset": offset, "limit": self._clamp_limit(limit)},
-        )
+        company = company_id or self._current_company_id
+        if not company:
+            raise AtlasAPIError("Company ID required for journal entries")
+        params: dict[str, Any] = {
+            "company_id": str(company),
+            "offset": offset,
+            "limit": self._clamp_limit(limit),
+        }
+        if status_filter:
+            params["status"] = status_filter
+        if entry_type:
+            params["entry_type"] = entry_type
+        if start_date:
+            params["start_date"] = start_date
+        if end_date:
+            params["end_date"] = end_date
+        result = await self.get("/api/v1/journal-entries/", params=params)
         return self._extract_items(result)
 
     async def create_journal_entry(self, data: dict[str, Any]) -> dict[str, Any]:
         """Create a journal entry."""
         result = await self.post("/api/v1/journal-entries/", json=data)
+        return result if isinstance(result, dict) else {}
+
+    async def post_journal_entry(self, entry_id: UUID) -> dict[str, Any]:
+        """Post a draft journal entry."""
+        result = await self.post(f"/api/v1/journal-entries/{entry_id}/post")
         return result if isinstance(result, dict) else {}
 
     # === Report Endpoints ===
@@ -1057,10 +1275,78 @@ class AtlasAPIClient:
 
     # === Bank Transaction Endpoints ===
 
+    @staticmethod
+    def _normalize_bank_amount(amount: str | Decimal, *, is_deposit: bool | None) -> Decimal:
+        try:
+            value = Decimal(str(amount))
+        except (InvalidOperation, TypeError) as exc:
+            raise AtlasAPIError(f"Invalid amount: {amount}") from exc
+
+        if is_deposit is False:
+            return -abs(value)
+        if is_deposit is True:
+            return abs(value)
+        return value
+
+    @classmethod
+    def _build_bank_statement_csv(cls, rows: list[dict[str, Any]]) -> str:
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["Date", "Description", "Amount", "Reference"])
+        for row in rows:
+            date_value = row.get("transaction_date") or row.get("date") or ""
+            description = row.get("description") or ""
+            reference = row.get("reference_number") or row.get("reference") or ""
+            amount = cls._normalize_bank_amount(
+                row.get("amount", "0"),
+                is_deposit=row.get("is_deposit"),
+            )
+            writer.writerow([date_value, description, str(amount), reference])
+        return output.getvalue()
+
+    async def import_bank_statement(
+        self,
+        bank_account_id: UUID,
+        *,
+        csv_content: str,
+        filename: str = "sim-bank-feed.csv",
+        file_format: str = "csv",
+    ) -> dict[str, Any]:
+        """Import a bank statement file into a bank account."""
+        files = {"file": (filename, csv_content, "text/csv")}
+        data = {"file_format": file_format} if file_format else None
+        result = await self._request_with_files(
+            "POST",
+            f"/api/v1/bank-accounts/{bank_account_id}/import",
+            data=data,
+            files=files,
+        )
+        return result if isinstance(result, dict) else {}
+
+    async def import_bank_statement_rows(
+        self,
+        bank_account_id: UUID,
+        rows: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Import bank transactions provided as rows via statement import."""
+        if not rows:
+            return {"imported_count": 0, "duplicate_count": 0, "total_parsed": 0}
+        csv_content = self._build_bank_statement_csv(rows)
+        return await self.import_bank_statement(bank_account_id, csv_content=csv_content)
+
     async def create_bank_transaction(self, data: dict[str, Any]) -> dict[str, Any]:
         """Create/import a bank transaction."""
-        result = await self.post("/api/v1/bank-transactions/", json=data)
-        return result if isinstance(result, dict) else {}
+        try:
+            result = await self.post("/api/v1/bank-transactions/", json=data)
+            return result if isinstance(result, dict) else {}
+        except AtlasAPIError as exc:
+            if exc.status_code != 405:
+                raise
+            bank_account_id = data.get("bank_account_id")
+            if not bank_account_id:
+                raise
+            rows = [data]
+            return await self.import_bank_statement_rows(UUID(str(bank_account_id)), rows)
 
     async def list_bank_transactions(
         self,

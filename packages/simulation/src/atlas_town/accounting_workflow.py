@@ -25,6 +25,7 @@ import structlog
 
 from atlas_town.config.personas_loader import (
     load_persona_industries,
+    load_persona_inventory_configs,
     load_persona_sales_tax_configs,
     load_persona_tax_configs,
     load_persona_year_end_configs,
@@ -158,6 +159,39 @@ class YearEndConfig:
         )
 
 
+@dataclass(frozen=True)
+class InventoryPolicy:
+    """Inventory usage policy for sales-driven consumption."""
+
+    cogs_ratio: Decimal
+    usage_floor: Decimal
+    usage_ceiling: Decimal
+
+
+@dataclass(frozen=True)
+class InventoryItemConfig:
+    """Inventory item configuration from persona files."""
+
+    name: str
+    sku: str
+    unit_cost: Decimal
+    reorder_level: Decimal
+    reorder_quantity: Decimal
+    weekly_usage: Decimal
+    unit_of_measure: str
+    costing_method: str
+    category: str | None
+    preferred_vendor: str | None
+
+
+@dataclass(frozen=True)
+class InventoryConfig:
+    """Inventory configuration for a business."""
+
+    items: tuple[InventoryItemConfig, ...]
+    policy: InventoryPolicy
+
+
 class WorkflowResults(TypedDict):
     """Typed results for deterministic transaction processing."""
 
@@ -234,6 +268,8 @@ class AccountingWorkflow:
         self._sales_tax_remitted: set[tuple[str, int, int]] = set()
         self._sales_tax_rate_cache: dict[tuple[UUID, str], dict[str, Any]] = {}
         self._year_end_configs = self._load_year_end_configs()
+        self._inventory_configs = self._load_inventory_configs()
+        self._inventory_item_cache: dict[tuple[UUID, str], dict[str, dict[str, Any]]] = {}
         self._month_end_closed: set[tuple[str, int, int]] = set()
         self._quarter_end_closed: set[tuple[str, int, int]] = set()
         self._year_end_closed: set[tuple[str, int]] = set()
@@ -453,6 +489,104 @@ class AccountingWorkflow:
 
         return configs
 
+    def _load_inventory_configs(self) -> dict[str, InventoryConfig]:
+        raw = load_persona_inventory_configs()
+        industries = load_persona_industries()
+        configs: dict[str, InventoryConfig] = {}
+
+        default_cogs_ratios: dict[str, Decimal] = {
+            "restaurant": Decimal("0.32"),
+            "healthcare": Decimal("0.10"),
+            "service": Decimal("0.15"),
+        }
+
+        for business_key, config in raw.items():
+            items_raw = config.get("items", [])
+            if not isinstance(items_raw, list):
+                raise ValueError(
+                    f"Inventory config invalid for {business_key}: items must be a list"
+                )
+            if not items_raw:
+                continue
+
+            policy_raw = config.get("policy") or {}
+            if not isinstance(policy_raw, dict):
+                raise ValueError(
+                    f"Inventory config invalid for {business_key}: policy must be a mapping"
+                )
+            industry = industries.get(business_key, "")
+            default_ratio = default_cogs_ratios.get(industry, Decimal("0.20"))
+
+            try:
+                cogs_ratio = Decimal(str(policy_raw.get("cogs_ratio", default_ratio)))
+                usage_floor = Decimal(str(policy_raw.get("usage_floor", "0.40")))
+                usage_ceiling = Decimal(str(policy_raw.get("usage_ceiling", "3.00")))
+            except (ValueError, TypeError) as exc:
+                raise ValueError(
+                    f"Inventory policy invalid for {business_key}: {policy_raw!r}"
+                ) from exc
+
+            policy = InventoryPolicy(
+                cogs_ratio=cogs_ratio,
+                usage_floor=usage_floor,
+                usage_ceiling=usage_ceiling,
+            )
+
+            items: list[InventoryItemConfig] = []
+            for idx, item in enumerate(items_raw):
+                if not isinstance(item, dict):
+                    raise ValueError(
+                        f"Inventory item invalid for {business_key}: index {idx} not a mapping"
+                    )
+                sku = item.get("sku")
+                name = item.get("name")
+                if not sku or not name:
+                    raise ValueError(
+                        f"Inventory item invalid for {business_key}: missing sku/name"
+                    )
+
+                try:
+                    unit_cost = Decimal(str(item.get("unit_cost", "0")))
+                    reorder_level = Decimal(
+                        str(item.get("reorder_level", item.get("reorder_point", "0")))
+                    )
+                    reorder_quantity = Decimal(str(item.get("reorder_quantity", "0")))
+                    weekly_usage = Decimal(str(item.get("weekly_usage", "0")))
+                except (ValueError, TypeError) as exc:
+                    raise ValueError(
+                        f"Inventory item invalid for {business_key}: {item!r}"
+                    ) from exc
+
+                unit_of_measure = str(item.get("unit_of_measure") or "each")
+                costing_method = str(item.get("costing_method") or "fifo").lower()
+                if costing_method not in {"fifo", "lifo", "average"}:
+                    raise ValueError(
+                        f"Inventory item invalid for {business_key}: invalid costing_method"
+                    )
+                category = item.get("category")
+                preferred_vendor = item.get("preferred_vendor")
+
+                items.append(
+                    InventoryItemConfig(
+                        name=str(name),
+                        sku=str(sku),
+                        unit_cost=unit_cost,
+                        reorder_level=reorder_level,
+                        reorder_quantity=reorder_quantity,
+                        weekly_usage=weekly_usage,
+                        unit_of_measure=unit_of_measure,
+                        costing_method=costing_method,
+                        category=str(category) if category is not None else None,
+                        preferred_vendor=(
+                            str(preferred_vendor) if preferred_vendor is not None else None
+                        ),
+                    )
+                )
+
+            configs[business_key] = InventoryConfig(items=tuple(items), policy=policy)
+
+        return configs
+
     async def _get_accounts_for_org(self, org_id: UUID) -> dict[str, Any]:
         """Get cached account info for an organization."""
         if org_id not in self._account_cache:
@@ -571,6 +705,508 @@ class AccountingWorkflow:
                 self._logger.info("no_sales_tax_account", org_id=str(org_id))
 
         return self._account_cache[org_id]
+
+    def _resolve_inventory_accounts(
+        self, accounts: list[dict[str, Any]], business_key: str
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        config = self._year_end_configs.get(business_key, YearEndConfig.default())
+        inventory_account = self._find_account_with_fallback(
+            accounts, config.inventory_keywords, "asset"
+        )
+        cogs_account = self._find_account_with_fallback(
+            accounts, config.cogs_keywords, "expense"
+        )
+        return inventory_account, cogs_account
+
+    @staticmethod
+    def _normalize_sku(value: str | None) -> str:
+        return str(value or "").strip().lower()
+
+    def _resolve_reorder_quantity(self, spec: InventoryItemConfig) -> Decimal:
+        if spec.reorder_quantity > 0:
+            return spec.reorder_quantity
+        if spec.weekly_usage > 0:
+            return (spec.weekly_usage * Decimal("2")).quantize(Decimal("0.01"))
+        if spec.reorder_level > 0:
+            return (spec.reorder_level * Decimal("2")).quantize(Decimal("0.01"))
+        return Decimal("0")
+
+    def _resolve_initial_stock(self, spec: InventoryItemConfig) -> Decimal:
+        reorder_qty = self._resolve_reorder_quantity(spec)
+        initial = max(reorder_qty, spec.reorder_level, spec.weekly_usage)
+        return initial.quantize(Decimal("0.01")) if initial > 0 else Decimal("0")
+
+    def _calculate_inventory_usage(
+        self,
+        business_key: str,
+        sales_total: Decimal,
+    ) -> dict[str, Decimal]:
+        config = self._inventory_configs.get(business_key)
+        if not config or sales_total <= 0:
+            return {}
+
+        weekly_cost = sum(
+            (item.weekly_usage * item.unit_cost) for item in config.items
+        )
+        if weekly_cost <= 0 or config.policy.cogs_ratio <= 0:
+            return {}
+
+        daily_cogs = weekly_cost / Decimal("7")
+        baseline_sales = daily_cogs / config.policy.cogs_ratio
+        if baseline_sales <= 0:
+            return {}
+
+        multiplier = sales_total / baseline_sales
+        if multiplier < 0:
+            multiplier = Decimal("0")
+        multiplier = min(
+            max(multiplier, config.policy.usage_floor),
+            config.policy.usage_ceiling,
+        )
+
+        usage_by_sku: dict[str, Decimal] = {}
+        for item in config.items:
+            daily_usage = (item.weekly_usage / Decimal("7")) * multiplier
+            daily_usage = daily_usage.quantize(Decimal("0.01"))
+            if daily_usage > 0:
+                usage_by_sku[item.sku] = daily_usage
+        return usage_by_sku
+
+    async def _ensure_inventory_items(
+        self,
+        business_key: str,
+        org_id: UUID,
+        current_date: date | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        cache_key = (org_id, business_key)
+        if cache_key in self._inventory_item_cache:
+            return self._inventory_item_cache[cache_key]
+
+        config = self._inventory_configs.get(business_key)
+        if not config:
+            return {}
+
+        company_id = self._api.current_company_id
+        if not company_id:
+            self._logger.warning(
+                "inventory_missing_company",
+                org_id=str(org_id),
+                business=business_key,
+            )
+            return {}
+
+        account_info = await self._get_accounts_for_org(org_id)
+        accounts = account_info.get("all_accounts", [])
+        inventory_account, cogs_account = self._resolve_inventory_accounts(
+            accounts, business_key
+        )
+        if not inventory_account or not cogs_account:
+            self._logger.warning(
+                "inventory_missing_accounts",
+                org_id=str(org_id),
+                business=business_key,
+            )
+            return {}
+
+        existing = await self._api.list_inventory_items(company_id=company_id)
+        by_sku = {
+            self._normalize_sku(item.get("sku")): item for item in existing if item.get("sku")
+        }
+
+        results: dict[str, dict[str, Any]] = {}
+        for spec in config.items:
+            sku_key = self._normalize_sku(spec.sku)
+            item = by_sku.get(sku_key)
+            created = False
+            if not item:
+                payload = {
+                    "sku": spec.sku,
+                    "name": spec.name,
+                    "description": None,
+                    "category": spec.category,
+                    "unit_of_measure": spec.unit_of_measure,
+                    "inventory_account_id": str(inventory_account["id"]),
+                    "cogs_account_id": str(cogs_account["id"]),
+                    "costing_method": spec.costing_method,
+                    "reorder_level": str(spec.reorder_level),
+                    "reorder_quantity": str(self._resolve_reorder_quantity(spec)),
+                }
+                item = await self._api.create_inventory_item(payload, company_id=company_id)
+                created = True
+
+            if not item:
+                continue
+
+            results[spec.sku] = item
+
+            quantity_on_hand = self._extract_decimal(item.get("quantity_on_hand")) or Decimal("0")
+            if created or quantity_on_hand <= 0:
+                initial_qty = self._resolve_initial_stock(spec)
+                if initial_qty > 0:
+                    receipt_date = (current_date or date.today()).isoformat()
+                    await self._api.receive_inventory_goods(
+                        UUID(str(item["id"])),
+                        {
+                            "quantity": str(initial_qty),
+                            "unit_cost": str(spec.unit_cost),
+                            "receipt_date": receipt_date,
+                            "receipt_reference": f"INIT-{business_key.upper()}",
+                            "notes": "Initial inventory seed",
+                        },
+                    )
+
+        self._inventory_item_cache[cache_key] = results
+        return results
+
+    def _select_vendor_id(
+        self,
+        spec: InventoryItemConfig,
+        vendors: list[dict[str, Any]],
+    ) -> UUID | None:
+        if not vendors:
+            return None
+        if spec.preferred_vendor:
+            normalized = spec.preferred_vendor.strip().lower()
+            for vendor in vendors:
+                name = str(vendor.get("display_name") or vendor.get("name", "")).strip().lower()
+                if name == normalized:
+                    try:
+                        return UUID(str(vendor["id"]))
+                    except (TypeError, ValueError, KeyError):
+                        return None
+        try:
+            return UUID(str(vendors[0]["id"]))
+        except (TypeError, ValueError, KeyError):
+            return None
+
+    async def _issue_inventory_for_sales(
+        self,
+        business_key: str,
+        org_id: UUID,
+        current_date: date,
+        sales_total: Decimal,
+    ) -> list[dict[str, Any]]:
+        config = self._inventory_configs.get(business_key)
+        if not config or sales_total <= 0:
+            return []
+
+        items_by_sku = await self._ensure_inventory_items(
+            business_key, org_id, current_date=current_date
+        )
+        usage_by_sku = self._calculate_inventory_usage(business_key, sales_total)
+
+        issued: list[dict[str, Any]] = []
+        for spec in config.items:
+            qty = usage_by_sku.get(spec.sku)
+            if not qty or qty <= 0:
+                continue
+            item = items_by_sku.get(spec.sku)
+            if not item:
+                continue
+            try:
+                result = await self._api.issue_inventory_goods(
+                    UUID(str(item["id"])),
+                    {
+                        "quantity": str(qty),
+                        "issue_date": current_date.isoformat(),
+                        "source_type": "sale",
+                        "document_number": f"SIM-SALE-{current_date.isoformat()}",
+                        "notes": f"Simulated sales consumption ({sales_total})",
+                    },
+                )
+                total_cost = self._extract_decimal(result.get("total_cost")) if isinstance(
+                    result, dict
+                ) else None
+                issued.append(
+                    {
+                        "sku": spec.sku,
+                        "quantity": qty,
+                        "total_cost": total_cost,
+                        "result": result,
+                    }
+                )
+            except AtlasAPIError as exc:
+                self._logger.warning(
+                    "inventory_issue_failed",
+                    business=business_key,
+                    sku=spec.sku,
+                    quantity=str(qty),
+                    error=str(exc),
+                )
+
+        return issued
+
+    async def _ensure_cogs_journal_entry(
+        self,
+        business_key: str,
+        org_id: UUID,
+        current_date: date,
+        total_cogs: Decimal,
+    ) -> dict[str, Any] | None:
+        if total_cogs <= 0:
+            return None
+
+        company_id = self._api.current_company_id
+        if not company_id:
+            return None
+
+        account_info = await self._get_accounts_for_org(org_id)
+        accounts = account_info.get("all_accounts", [])
+        inventory_account, cogs_account = self._resolve_inventory_accounts(
+            accounts, business_key
+        )
+        if not inventory_account or not cogs_account:
+            self._logger.warning(
+                "inventory_missing_accounts_for_cogs",
+                org_id=str(org_id),
+                business=business_key,
+            )
+            return None
+
+        entry_description = f"COGS - Inventory issue ({business_key})"
+        try:
+            entries = await self._api.list_journal_entries(
+                company_id=company_id,
+                entry_type="adjustment",
+                start_date=current_date.isoformat(),
+                end_date=current_date.isoformat(),
+                limit=200,
+            )
+            for entry in entries:
+                desc = str(entry.get("description", "")).lower()
+                if "cogs - inventory issue" in desc:
+                    return entry
+        except AtlasAPIError as exc:
+            self._logger.warning(
+                "cogs_journal_entry_lookup_failed",
+                org_id=str(org_id),
+                business=business_key,
+                error=str(exc),
+            )
+
+        amount = total_cogs.quantize(Decimal("0.01"))
+        payload = {
+            "entry_date": current_date.isoformat(),
+            "description": entry_description,
+            "entry_type": "adjustment",
+            "source_type": "manual",
+            "lines": [
+                {
+                    "account_id": str(cogs_account["id"]),
+                    "entry_type": "debit",
+                    "amount": str(amount),
+                    "description": "COGS - inventory consumption",
+                },
+                {
+                    "account_id": str(inventory_account["id"]),
+                    "entry_type": "credit",
+                    "amount": str(amount),
+                    "description": "Reduce inventory on hand",
+                },
+            ],
+        }
+        entry = await self._api.create_journal_entry(payload)
+        entry_id = entry.get("id") if isinstance(entry, dict) else None
+        if entry_id:
+            try:
+                return await self._api.post_journal_entry(UUID(str(entry_id)))
+            except AtlasAPIError as exc:
+                self._logger.warning(
+                    "cogs_journal_entry_post_failed",
+                    org_id=str(org_id),
+                    business=business_key,
+                    error=str(exc),
+                )
+        return entry if isinstance(entry, dict) else None
+
+    async def _replenish_inventory(
+        self,
+        business_key: str,
+        org_id: UUID,
+        current_date: date,
+        vendors: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        config = self._inventory_configs.get(business_key)
+        if not config:
+            return []
+
+        company_id = self._api.current_company_id
+        if not company_id:
+            return []
+
+        items_by_sku = await self._ensure_inventory_items(
+            business_key, org_id, current_date=current_date
+        )
+        low_stock = await self._api.list_low_stock_items(company_id=company_id)
+        if not low_stock:
+            return []
+
+        account_info = await self._get_accounts_for_org(org_id)
+        accounts = account_info.get("all_accounts", [])
+        inventory_account, _ = self._resolve_inventory_accounts(accounts, business_key)
+        if not inventory_account:
+            return []
+
+        replenished: list[dict[str, Any]] = []
+        for low_item in low_stock:
+            sku = str(low_item.get("sku") or "").strip()
+            spec = next((item for item in config.items if item.sku == sku), None)
+            if not spec:
+                continue
+            reorder_qty = self._resolve_reorder_quantity(spec)
+            if reorder_qty <= 0:
+                continue
+            item = items_by_sku.get(spec.sku)
+            if not item:
+                continue
+            vendor_id = self._select_vendor_id(spec, vendors)
+            if not vendor_id:
+                continue
+
+            po = None
+            po_line_id = None
+            po_number = None
+            try:
+                po_payload = {
+                    "vendor_id": str(vendor_id),
+                    "order_date": current_date.isoformat(),
+                    "expected_date": (current_date + timedelta(days=7)).isoformat(),
+                    "lines": [
+                        {
+                            "description": f"{spec.name} ({spec.sku})",
+                            "quantity": str(reorder_qty),
+                            "unit_price": str(spec.unit_cost),
+                            "expense_account_id": str(inventory_account["id"]),
+                            "item_code": spec.sku,
+                            "unit_of_measure": spec.unit_of_measure,
+                            "tax_rate": "0",
+                        }
+                    ],
+                    "notes": f"Auto-reorder for {spec.sku}",
+                }
+                po = await self._api.create_purchase_order(po_payload, company_id=company_id)
+                po_id = po.get("id") if isinstance(po, dict) else None
+                po_number = po.get("po_number") if isinstance(po, dict) else None
+                if po_id:
+                    try:
+                        await self._api.submit_purchase_order(UUID(str(po_id)))
+                        await self._api.approve_purchase_order(UUID(str(po_id)))
+                    except AtlasAPIError as exc:
+                        self._logger.warning(
+                            "purchase_order_approval_failed",
+                            business=business_key,
+                            sku=spec.sku,
+                            error=str(exc),
+                        )
+                if isinstance(po, dict):
+                    lines = po.get("lines", [])
+                    if isinstance(lines, list) and lines:
+                        po_line_id = lines[0].get("id")
+            except AtlasAPIError as exc:
+                self._logger.warning(
+                    "purchase_order_create_failed",
+                    business=business_key,
+                    sku=spec.sku,
+                    error=str(exc),
+                )
+
+            amount = (reorder_qty * spec.unit_cost).quantize(Decimal("0.01"))
+            bill = await self._create_bill(
+                GeneratedTransaction(
+                    transaction_type=TransactionType.BILL,
+                    description=(
+                        f"Inventory reorder - {spec.name}"
+                        + (f" ({po_number})" if po_number else "")
+                    ),
+                    amount=amount,
+                    vendor_id=vendor_id,
+                    metadata={
+                        "account_id_override": str(inventory_account["id"]),
+                        "notes": f"Auto-reorder for {spec.sku}",
+                    },
+                ),
+                current_date,
+                org_id,
+                business_key,
+            )
+            if bill and bill.get("bill_number"):
+                receipt_reference = bill["bill_number"]
+            else:
+                receipt_reference = f"REORDER-{spec.sku}"
+
+            receipt_payload = {
+                "quantity": str(reorder_qty),
+                "unit_cost": str(spec.unit_cost),
+                "receipt_date": current_date.isoformat(),
+                "receipt_reference": receipt_reference,
+                "notes": "Auto-reorder receipt",
+            }
+            if po_line_id:
+                receipt_payload["purchase_order_line_id"] = str(po_line_id)
+
+            await self._api.receive_inventory_goods(
+                UUID(str(item["id"])),
+                receipt_payload,
+            )
+            replenished.append(
+                {
+                    "sku": spec.sku,
+                    "quantity": reorder_qty,
+                    "bill": bill,
+                    "purchase_order": po,
+                }
+            )
+
+        return replenished
+
+    async def run_inventory_workflow(
+        self,
+        business_key: str,
+        org_id: UUID,
+        current_date: date,
+        transactions: list[GeneratedTransaction],
+        vendors: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Run daily inventory workflow for a business."""
+        config = self._inventory_configs.get(business_key)
+        if not config:
+            return {"issued": 0, "replenished": 0}
+
+        sales_total = sum(
+            (
+                tx.amount
+                for tx in transactions
+                if tx.transaction_type in {TransactionType.INVOICE, TransactionType.CASH_SALE}
+                and tx.customer_id
+            ),
+            Decimal("0"),
+        )
+
+        issued = await self._issue_inventory_for_sales(
+            business_key, org_id, current_date, sales_total
+        )
+        replenished = await self._replenish_inventory(
+            business_key, org_id, current_date, vendors
+        )
+        total_cogs = sum(
+            [
+                self._extract_decimal(item.get("total_cost")) or Decimal("0")
+                if isinstance(item, dict)
+                else Decimal("0")
+                for item in issued
+            ],
+            Decimal("0"),
+        )
+        if total_cogs > 0:
+            await self._ensure_cogs_journal_entry(
+                business_key, org_id, current_date, total_cogs
+            )
+
+        return {
+            "issued": len(issued),
+            "replenished": len(replenished),
+            "sales_total": str(sales_total),
+        }
 
     @staticmethod
     def _last_day_of_month(year: int, month: int) -> date:
@@ -1088,6 +1724,21 @@ class AccountingWorkflow:
         results = await self._process_transactions(
             transactions, current_date, org_id, business_key
         )
+
+        inventory_summary = await self.run_inventory_workflow(
+            business_key=business_key,
+            org_id=org_id,
+            current_date=current_date,
+            transactions=transactions,
+            vendors=vendors,
+        )
+        if inventory_summary:
+            self._logger.info(
+                "inventory_workflow_summary",
+                business=business_key,
+                org_id=str(org_id),
+                **inventory_summary,
+            )
 
         collection_summary = await self._run_collection_workflow(
             business_key=business_key,
