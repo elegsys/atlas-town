@@ -199,6 +199,59 @@ recurring_transactions:
     interval_months: 3
     category: "Equipment Lease"
 
+inventory:
+  enabled: true
+  check_day: monday
+  costing_method: fifo
+  consumption_driver: appointments
+  average_visit_count: 12
+
+  items:
+    - sku: "GLOVES-NITRILE-M"
+      name: "Nitrile Gloves Medium (box of 100)"
+      unit_cost: 12.50
+      units_per_appointment: 0.04
+      reorder_level: 20
+      reorder_quantity: 40
+      vendor: "Dental Supply Co"
+      category: "disposables"
+
+    - sku: "PROPHY-PASTE-JAR"
+      name: "Prophy Paste (jar)"
+      unit_cost: 8.00
+      units_per_appointment: 0.08
+      reorder_level: 15
+      reorder_quantity: 30
+      vendor: "Dental Supply Co"
+      category: "consumables"
+
+    - sku: "COMPOSITE-A2"
+      name: "Composite Resin A2 (syringe)"
+      unit_cost: 45.00
+      units_per_appointment: 0.05
+      reorder_level: 10
+      reorder_quantity: 20
+      vendor: "Dental Supply Co"
+      category: "restorative"
+
+    - sku: "STERILIZATION-POUCH"
+      name: "Sterilization Pouches (box of 200)"
+      unit_cost: 28.00
+      units_per_appointment: 0.02
+      reorder_level: 8
+      reorder_quantity: 16
+      vendor: "Dental Supply Co"
+      category: "sterilization"
+
+    - sku: "ANESTHETIC-LIDO"
+      name: "Lidocaine Cartridges (box of 50)"
+      unit_cost: 35.00
+      units_per_appointment: 0.03
+      reorder_level: 6
+      reorder_quantity: 12
+      vendor: "Dental Supply Co"
+      category: "anesthetic"
+
 insurance_considerations:
   - claim_submissions
   - pre_authorizations

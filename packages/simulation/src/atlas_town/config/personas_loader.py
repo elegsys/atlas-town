@@ -903,3 +903,119 @@ def load_persona_b2b_configs() -> dict[str, dict[str, Any]]:
         }
 
     return b2b_by_persona
+
+
+@lru_cache
+def load_persona_inventory_configs() -> dict[str, dict[str, Any]]:
+    """Load inventory configs from persona YAML files.
+
+    Returns:
+        Mapping of persona key (filename stem) to inventory config dict.
+    """
+    personas_dir = Path(__file__).resolve().parent / "personas"
+    if not personas_dir.exists():
+        return {}
+
+    inventory_by_persona: dict[str, dict[str, Any]] = {}
+
+    for path in sorted(personas_dir.glob("*.yaml")):
+        raw = path.read_text(encoding="utf-8")
+        data = yaml.safe_load(raw) or {}
+        inventory = data.get("inventory")
+
+        if inventory is None:
+            continue
+        if not isinstance(inventory, dict):
+            raise ValueError(f"{path.name}: inventory must be a mapping")
+
+        enabled = bool(inventory.get("enabled", False))
+        if not enabled:
+            continue
+
+        check_day = inventory.get("check_day", "monday")
+        if isinstance(check_day, str):
+            check_day_index = WEEKDAY_NAME_TO_INDEX.get(check_day.strip().lower())
+            if check_day_index is None:
+                raise ValueError(f"{path.name}: inventory.check_day invalid: {check_day}")
+        elif isinstance(check_day, int):
+            check_day_index = check_day
+        else:
+            raise ValueError(f"{path.name}: inventory.check_day must be string or int")
+
+        costing_method = str(inventory.get("costing_method", "fifo")).strip().lower()
+        consumption_driver = str(inventory.get("consumption_driver", "revenue")).strip().lower()
+        if consumption_driver not in ("revenue", "appointments"):
+            raise ValueError(
+                f"{path.name}: inventory.consumption_driver must be 'revenue' or 'appointments'"
+            )
+
+        average_sale_price = inventory.get("average_sale_price")
+        average_visit_count = inventory.get("average_visit_count")
+
+        if consumption_driver == "revenue" and average_sale_price is None:
+            raise ValueError(
+                f"{path.name}: inventory with consumption_driver='revenue' "
+                "requires average_sale_price"
+            )
+        if consumption_driver == "appointments" and average_visit_count is None:
+            raise ValueError(
+                f"{path.name}: inventory with consumption_driver='appointments' "
+                "requires average_visit_count"
+            )
+
+        items_raw = inventory.get("items", [])
+        if not isinstance(items_raw, list):
+            raise ValueError(f"{path.name}: inventory.items must be a list")
+
+        normalized_items: list[dict[str, Any]] = []
+        for idx, item in enumerate(items_raw):
+            if not isinstance(item, dict):
+                raise ValueError(f"{path.name}: inventory.items[{idx}] must be a mapping")
+
+            sku = item.get("sku")
+            name = item.get("name")
+            unit_cost = item.get("unit_cost")
+
+            if not sku or not name or unit_cost is None:
+                raise ValueError(
+                    f"{path.name}: inventory.items[{idx}] missing sku/name/unit_cost"
+                )
+
+            reorder_level = item.get("reorder_level")
+            reorder_quantity = item.get("reorder_quantity")
+            if reorder_level is None or reorder_quantity is None:
+                raise ValueError(
+                    f"{path.name}: inventory.items[{idx}] missing reorder_level/reorder_quantity"
+                )
+
+            consumption_rate_key = (
+                "units_per_sale" if consumption_driver == "revenue" else "units_per_appointment"
+            )
+            consumption_rate = item.get(consumption_rate_key)
+            if consumption_rate is None:
+                raise ValueError(
+                    f"{path.name}: inventory.items[{idx}] missing {consumption_rate_key}"
+                )
+
+            normalized_items.append({
+                "sku": str(sku),
+                "name": str(name),
+                "unit_cost": unit_cost,
+                "consumption_rate": consumption_rate,
+                "reorder_level": reorder_level,
+                "reorder_quantity": reorder_quantity,
+                "vendor": str(item.get("vendor", "Supplier")),
+                "category": item.get("category"),
+            })
+
+        inventory_by_persona[path.stem] = {
+            "enabled": enabled,
+            "check_day": check_day_index,
+            "costing_method": costing_method,
+            "consumption_driver": consumption_driver,
+            "average_sale_price": average_sale_price,
+            "average_visit_count": average_visit_count,
+            "items": normalized_items,
+        }
+
+    return inventory_by_persona

@@ -24,6 +24,7 @@ from atlas_town.config.personas_loader import (
     load_persona_employees,
     load_persona_financing_configs,
     load_persona_industries,
+    load_persona_inventory_configs,
     load_persona_payment_behaviors,
     load_persona_payroll_configs,
     load_persona_recurring_transactions,
@@ -718,6 +719,219 @@ class FinancingScheduler:
             )
             self._loc_interest_billed.add(bill_key)
             self._loc_accrued_interest.pop(bill_key, None)
+
+        return results
+
+
+@dataclass(frozen=True)
+class InventoryItemSpec:
+    """Inventory item specification from persona config."""
+
+    sku: str
+    name: str
+    unit_cost: Decimal
+    consumption_rate: Decimal  # units_per_sale or units_per_appointment
+    reorder_level: int
+    reorder_quantity: int
+    vendor: str
+    category: str | None = None
+
+
+@dataclass(frozen=True)
+class InventoryConfig:
+    """Inventory configuration for a business."""
+
+    enabled: bool
+    check_day: int  # weekday index (0=Monday)
+    costing_method: str
+    consumption_driver: str  # 'revenue' or 'appointments'
+    average_sale_price: Decimal | None
+    average_visit_count: int | None
+    items: tuple[InventoryItemSpec, ...]
+
+
+@dataclass
+class InventoryLevelState:
+    """Mutable state tracking estimated inventory quantity."""
+
+    quantity: Decimal
+    last_order_week: tuple[int, int] | None = None  # (year, week_number)
+
+
+@dataclass(frozen=True)
+class InventoryCOGS:
+    """Cost of goods sold data for journal entry creation."""
+
+    business_key: str
+    current_date: date
+    total_cogs: Decimal
+    items: tuple[tuple[str, str, Decimal], ...]  # (sku, name, cost)
+
+
+class InventoryScheduler:
+    """Generate inventory replenishment transactions based on consumption."""
+
+    def __init__(
+        self,
+        configs_by_business: dict[str, InventoryConfig],
+    ) -> None:
+        self._configs_by_business = configs_by_business
+        self._inventory_levels: dict[tuple[str, str], InventoryLevelState] = {}
+        self._logger = logger.bind(component="inventory_scheduler")
+
+    def _get_or_create_state(
+        self,
+        business_key: str,
+        item: InventoryItemSpec,
+    ) -> InventoryLevelState:
+        key = (business_key, item.sku)
+        if key not in self._inventory_levels:
+            initial_qty = Decimal(item.reorder_level + item.reorder_quantity)
+            self._inventory_levels[key] = InventoryLevelState(quantity=initial_qty)
+        return self._inventory_levels[key]
+
+    def record_daily_activity(
+        self,
+        business_key: str,
+        current_date: date,
+        daily_revenue: Decimal | None = None,
+    ) -> InventoryCOGS | None:
+        """Update inventory levels and calculate COGS based on daily activity.
+
+        Returns COGS data for journal entry creation, or None if no consumption.
+        Uses FIFO costing (simplified to unit_cost from item config).
+        """
+        config = self._configs_by_business.get(business_key)
+        if config is None or not config.enabled:
+            return None
+
+        if config.consumption_driver == "revenue":
+            if daily_revenue is None or daily_revenue <= 0:
+                return None
+            if config.average_sale_price is None or config.average_sale_price <= 0:
+                return None
+            estimated_sales = daily_revenue / config.average_sale_price
+        else:
+            if config.average_visit_count is None or config.average_visit_count <= 0:
+                return None
+            estimated_sales = Decimal(config.average_visit_count)
+
+        cogs_items: list[tuple[str, str, Decimal]] = []
+        total_cogs = Decimal("0")
+
+        for item in config.items:
+            state = self._get_or_create_state(business_key, item)
+            consumption = item.consumption_rate * estimated_sales
+            actual_consumption = min(consumption, state.quantity)
+            state.quantity = max(Decimal("0"), state.quantity - consumption)
+
+            # Calculate COGS using unit cost (FIFO simplified)
+            item_cogs = (actual_consumption * item.unit_cost).quantize(Decimal("0.01"))
+            if item_cogs > 0:
+                cogs_items.append((item.sku, item.name, item_cogs))
+                total_cogs += item_cogs
+
+            self._logger.debug(
+                "inventory_consumed",
+                business=business_key,
+                sku=item.sku,
+                consumption=str(consumption.quantize(Decimal("0.01"))),
+                cogs=str(item_cogs),
+                remaining=str(state.quantity.quantize(Decimal("0.01"))),
+            )
+
+        if total_cogs <= 0:
+            return None
+
+        return InventoryCOGS(
+            business_key=business_key,
+            current_date=current_date,
+            total_cogs=total_cogs.quantize(Decimal("0.01")),
+            items=tuple(cogs_items),
+        )
+
+    @staticmethod
+    def _find_vendor_id(
+        vendor_name: str, vendors: list[dict[str, Any]]
+    ) -> UUID | None:
+        normalized = vendor_name.strip().lower()
+        for vendor in vendors:
+            name = str(
+                vendor.get("display_name") or vendor.get("name", "")
+            ).strip().lower()
+            if name == normalized:
+                try:
+                    return UUID(vendor["id"])
+                except (KeyError, ValueError, TypeError):
+                    continue
+        return None
+
+    def get_due_replenishments(
+        self,
+        business_key: str,
+        current_date: date,
+        vendors: list[dict[str, Any]],
+    ) -> list[GeneratedTransaction]:
+        """Generate replenishment bills for items at or below reorder level."""
+        config = self._configs_by_business.get(business_key)
+        if config is None or not config.enabled:
+            return []
+
+        if current_date.weekday() != config.check_day:
+            return []
+
+        current_week = (current_date.year, current_date.isocalendar()[1])
+        results: list[GeneratedTransaction] = []
+
+        for item in config.items:
+            state = self._get_or_create_state(business_key, item)
+
+            if state.quantity > item.reorder_level:
+                continue
+
+            if state.last_order_week == current_week:
+                continue
+
+            vendor_id = self._find_vendor_id(item.vendor, vendors)
+            if vendor_id is None:
+                self._logger.warning(
+                    "inventory_vendor_missing",
+                    business=business_key,
+                    sku=item.sku,
+                    vendor=item.vendor,
+                )
+                continue
+
+            amount = (item.unit_cost * Decimal(item.reorder_quantity)).quantize(
+                Decimal("0.01")
+            )
+
+            results.append(
+                GeneratedTransaction(
+                    transaction_type=TransactionType.BILL,
+                    description=f"Inventory restock - {item.name}",
+                    amount=amount,
+                    vendor_id=vendor_id,
+                    metadata={
+                        "inventory_sku": item.sku,
+                        "inventory_name": item.name,
+                        "quantity": item.reorder_quantity,
+                        "unit_cost": str(item.unit_cost),
+                        "category": item.category,
+                    },
+                )
+            )
+
+            state.quantity += Decimal(item.reorder_quantity)
+            state.last_order_week = current_week
+
+            self._logger.info(
+                "inventory_reorder",
+                business=business_key,
+                sku=item.sku,
+                quantity=item.reorder_quantity,
+                new_level=str(state.quantity.quantize(Decimal("0.01"))),
+            )
 
         return results
 
@@ -1818,6 +2032,9 @@ class TransactionGenerator:
             financing["equipment_financing"],
             rng=self._rng,
         )
+        self._inventory_scheduler = InventoryScheduler(
+            self._load_inventory_configs()
+        )
 
     def _load_cash_flow_settings(self) -> dict[str, dict[str, Any]]:
         return load_persona_cash_flow_settings()
@@ -2290,6 +2507,57 @@ class TransactionGenerator:
             "equipment_financing": equipment_financing,
         }
 
+    def _load_inventory_configs(self) -> dict[str, InventoryConfig]:
+        """Load inventory configs from persona files."""
+        raw = load_persona_inventory_configs()
+        configs: dict[str, InventoryConfig] = {}
+
+        for business_key, config in raw.items():
+            if not config.get("enabled", False):
+                continue
+
+            items: list[InventoryItemSpec] = []
+            for item_data in config.get("items", []):
+                try:
+                    items.append(
+                        InventoryItemSpec(
+                            sku=str(item_data["sku"]),
+                            name=str(item_data["name"]),
+                            unit_cost=Decimal(str(item_data["unit_cost"])),
+                            consumption_rate=Decimal(str(item_data["consumption_rate"])),
+                            reorder_level=int(item_data["reorder_level"]),
+                            reorder_quantity=int(item_data["reorder_quantity"]),
+                            vendor=str(item_data.get("vendor", "Supplier")),
+                            category=item_data.get("category"),
+                        )
+                    )
+                except (KeyError, ValueError, TypeError) as exc:
+                    raise ValueError(
+                        f"Inventory item invalid for {business_key}: {item_data!r}"
+                    ) from exc
+
+            if not items:
+                continue
+
+            average_sale_price = config.get("average_sale_price")
+            average_visit_count = config.get("average_visit_count")
+
+            configs[business_key] = InventoryConfig(
+                enabled=True,
+                check_day=int(config.get("check_day", 0)),
+                costing_method=str(config.get("costing_method", "fifo")),
+                consumption_driver=str(config.get("consumption_driver", "revenue")),
+                average_sale_price=Decimal(str(average_sale_price))
+                if average_sale_price is not None
+                else None,
+                average_visit_count=int(average_visit_count)
+                if average_visit_count is not None
+                else None,
+                items=tuple(items),
+            )
+
+        return configs
+
     def generate_recurring_transactions(
         self,
         business_key: str,
@@ -2327,6 +2595,35 @@ class TransactionGenerator:
     ) -> list[GeneratedTransaction]:
         """Generate financing interest transactions for a business."""
         return self._financing_scheduler.get_due_transactions(
+            business_key=business_key,
+            current_date=current_date,
+            vendors=vendors,
+        )
+
+    def record_daily_inventory_activity(
+        self,
+        business_key: str,
+        current_date: date,
+        daily_revenue: Decimal | None = None,
+    ) -> InventoryCOGS | None:
+        """Record daily activity for inventory consumption and COGS calculation.
+
+        Returns COGS data for journal entry creation, or None if no consumption.
+        """
+        return self._inventory_scheduler.record_daily_activity(
+            business_key=business_key,
+            current_date=current_date,
+            daily_revenue=daily_revenue,
+        )
+
+    def generate_inventory_transactions(
+        self,
+        business_key: str,
+        current_date: date,
+        vendors: list[dict[str, Any]],
+    ) -> list[GeneratedTransaction]:
+        """Generate inventory replenishment transactions for a business."""
+        return self._inventory_scheduler.get_due_replenishments(
             business_key=business_key,
             current_date=current_date,
             vendors=vendors,
