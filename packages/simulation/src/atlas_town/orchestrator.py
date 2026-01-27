@@ -19,6 +19,7 @@ import json
 import os
 import random
 import re
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -180,12 +181,18 @@ class Orchestrator:
 
         # Period-end tracking for LLM mode
         self._month_end_llm_done: set[tuple[UUID, int, int]] = set()
+        self._bank_reconciliation_llm_done: set[tuple[UUID, int, int]] = set()
+        self._bank_reconciliation_weekly_done: set[tuple[UUID, int, int]] = set()
 
         # Vendor price increase notifications (per org/vendor/year)
         self._vendor_price_increase_sent: set[tuple[UUID, str, int]] = set()
         self._quarter_end_llm_done: set[tuple[UUID, int, int]] = set()
         self._year_end_llm_done: set[tuple[UUID, int]] = set()
         self._year_end_reporting_done: set[tuple[UUID, int]] = set()
+
+        # Bank feed import tracking per org
+        self._bank_feed_imported_payments: dict[UUID, set[str]] = {}
+        self._bank_feed_imported_bill_payments: dict[UUID, set[str]] = {}
 
         # B2B paired transaction coordinator
         self._b2b_coordinator: B2BCoordinator | None = None
@@ -1578,6 +1585,198 @@ class Orchestrator:
                 total += balance
         return total, bank_accounts
 
+    async def _fetch_all_paginated(
+        self,
+        list_fn: Callable[..., Any],
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            batch = await list_fn(offset=offset, limit=limit)
+            if not batch:
+                break
+            items.extend(batch)
+            if len(batch) < limit:
+                break
+            offset += limit
+        return items
+
+    async def _import_bank_feed(
+        self,
+        org_id: UUID,
+        sim_date: date,
+    ) -> dict[str, Any]:
+        if not self._api_client:
+            return {"status": "skipped", "reason": "api_unavailable"}
+
+        account_info = await self._get_accounts_for_org(org_id)
+        deposit_account_id = account_info.get("deposit_account_id")
+        try:
+            bank_accounts = await self._api_client.list_bank_accounts()
+        except AtlasAPIError as exc:
+            self._logger.warning(
+                "bank_accounts_list_failed",
+                org_id=str(org_id),
+                error=str(exc),
+            )
+            return {"status": "error", "error": str(exc)}
+
+        if not bank_accounts:
+            return {"status": "skipped", "reason": "no_bank_accounts"}
+
+        matched_account = None
+        if deposit_account_id:
+            matched_account = next(
+                (
+                    acct
+                    for acct in bank_accounts
+                    if str(acct.get("gl_account_id")) == str(deposit_account_id)
+                ),
+                None,
+            )
+        selected_account = matched_account or bank_accounts[0]
+        bank_account_id = selected_account.get("id")
+        if not bank_account_id:
+            return {"status": "skipped", "reason": "missing_bank_account_id"}
+
+        payments = await self._fetch_all_paginated(self._api_client.list_payments)
+        bill_payments = await self._fetch_all_paginated(self._api_client.list_payments_made)
+
+        imported_payments = self._bank_feed_imported_payments.setdefault(org_id, set())
+        imported_bill_payments = self._bank_feed_imported_bill_payments.setdefault(
+            org_id, set()
+        )
+
+        created = 0
+        failed = 0
+
+        for payment in payments:
+            payment_id = str(payment.get("id") or "")
+            if not payment_id or payment_id in imported_payments:
+                continue
+            amount = self._extract_decimal(payment.get("amount"))
+            if amount is None:
+                continue
+            payment_date = payment.get("payment_date") or payment.get("date")
+            description = payment.get("reference_number") or "Customer payment"
+            payload = {
+                "bank_account_id": str(bank_account_id),
+                "transaction_date": payment_date or sim_date.isoformat(),
+                "amount": str(amount.quantize(Decimal("0.01"))),
+                "description": description,
+                "is_deposit": True,
+            }
+            try:
+                await self._api_client.create_bank_transaction(payload)
+                imported_payments.add(payment_id)
+                created += 1
+            except AtlasAPIError as exc:
+                failed += 1
+                self._logger.warning(
+                    "bank_transaction_create_failed",
+                    org_id=str(org_id),
+                    payment_id=payment_id,
+                    error=str(exc),
+                )
+
+        for payment in bill_payments:
+            payment_id = str(payment.get("id") or "")
+            if not payment_id or payment_id in imported_bill_payments:
+                continue
+            amount = self._extract_decimal(payment.get("amount"))
+            if amount is None:
+                continue
+            payment_date = payment.get("payment_date") or payment.get("date")
+            description = payment.get("reference_number") or "Vendor payment"
+            payload = {
+                "bank_account_id": str(bank_account_id),
+                "transaction_date": payment_date or sim_date.isoformat(),
+                "amount": str(amount.quantize(Decimal("0.01"))),
+                "description": description,
+                "is_deposit": False,
+            }
+            try:
+                await self._api_client.create_bank_transaction(payload)
+                imported_bill_payments.add(payment_id)
+                created += 1
+            except AtlasAPIError as exc:
+                failed += 1
+                self._logger.warning(
+                    "bank_transaction_create_failed",
+                    org_id=str(org_id),
+                    bill_payment_id=payment_id,
+                    error=str(exc),
+                )
+
+        return {
+            "status": "ok",
+            "created": created,
+            "failed": failed,
+        }
+
+    async def _maybe_run_weekly_bank_reconciliation(
+        self,
+        org_id: UUID,
+        ctx: OrganizationContext,
+        sim_date: date,
+    ) -> dict[str, Any] | None:
+        iso_year, iso_week, iso_weekday = sim_date.isocalendar()
+        if iso_weekday != 1:
+            return None
+        week_key = (org_id, iso_year, iso_week)
+        if week_key in self._bank_reconciliation_weekly_done:
+            return None
+
+        workflow = self._get_accounting_workflow(org_id)
+        period_end = sim_date
+
+        if self._mode == SimulationMode.LLM:
+            recon_summary = await workflow.run_bank_reconciliation(
+                business_key=ctx.owner_key,
+                org_id=org_id,
+                period_end=period_end,
+                auto_categorize=False,
+            )
+            sample_unmatched = recon_summary.get("sample_unmatched", [])
+            sample_note = ""
+            if sample_unmatched:
+                sample_note = (
+                    "Sample unmatched transactions (for context): "
+                    f"{sample_unmatched}\n"
+                )
+            task = (
+                f"Weekly bank reconciliation for {ctx.name} "
+                f"(week {iso_week} of {iso_year}, through {period_end.isoformat()}). "
+                "Please review bank transactions, match deposits/withdrawals to "
+                "payments or bill payments, and categorize any clear items. "
+                "Flag anything that needs investigation.\n\n"
+                f"Auto-match summary: {recon_summary.get('reconciliation_summary')}\n"
+                f"Unmatched count: {recon_summary.get('unmatched_bank_transactions')}\n"
+                f"{sample_note}"
+                "Use list_bank_accounts and list_bank_transactions to find items."
+            )
+            await self.run_single_task(task, org_id=org_id)
+            result = {
+                "period_end": period_end.isoformat(),
+                "unmatched": recon_summary.get("unmatched_bank_transactions"),
+            }
+        else:
+            recon_summary = await workflow.run_bank_reconciliation(
+                business_key=ctx.owner_key,
+                org_id=org_id,
+                period_end=period_end,
+                auto_categorize=True,
+            )
+            result = {
+                "period_end": period_end.isoformat(),
+                "unmatched": recon_summary.get("unmatched_bank_transactions"),
+                "summary": recon_summary.get("reconciliation_summary"),
+            }
+
+        self._bank_reconciliation_weekly_done.add(week_key)
+        return result
+
     async def _maybe_draw_loc(
         self,
         ctx: OrganizationContext,
@@ -2902,6 +3101,14 @@ class Orchestrator:
                     result = await self._handle_evening_llm(org_id, ctx, sim_date, phase)
                     results.append(result)
 
+                bank_feed = await self._import_bank_feed(org_id, sim_date)
+                result["bank_feed_import"] = bank_feed
+                weekly_recon = await self._maybe_run_weekly_bank_reconciliation(
+                    org_id, ctx, sim_date
+                )
+                if weekly_recon:
+                    result["weekly_bank_reconciliation"] = weekly_recon
+
             except Exception as e:
                 self._logger.error("evening_task_error", org=ctx.name, error=str(e))
                 self._event_publisher.publish(
@@ -2947,6 +3154,41 @@ class Orchestrator:
         month_period = AccountingWorkflow._month_end_period(sim_date)
         if month_period:
             start, end, year, month = month_period
+            recon_key = (org_id, year, month)
+            if recon_key not in self._bank_reconciliation_llm_done:
+                workflow = self._get_accounting_workflow(org_id)
+                recon_summary = await workflow.run_bank_reconciliation(
+                    business_key=ctx.owner_key,
+                    org_id=org_id,
+                    period_end=end,
+                    auto_categorize=False,
+                )
+                sample_unmatched = recon_summary.get("sample_unmatched", [])
+                sample_note = ""
+                if sample_unmatched:
+                    sample_note = (
+                        "Sample unmatched transactions (for context): "
+                        f"{sample_unmatched}\n"
+                    )
+                task = (
+                    f"Bank reconciliation for {ctx.name} "
+                    f"(period {start.isoformat()} to {end.isoformat()}). "
+                    "Please review bank transactions, match deposits/withdrawals to "
+                    "payments or bill payments, and categorize any clear items. "
+                    "Flag anything that needs investigation.\n\n"
+                    f"Auto-match summary: {recon_summary.get('reconciliation_summary')}\n"
+                    f"Unmatched count: {recon_summary.get('unmatched_bank_transactions')}\n"
+                    f"{sample_note}"
+                    "Use list_bank_accounts and list_bank_transactions to find items."
+                )
+                await self.run_single_task(task, org_id=org_id)
+                self._bank_reconciliation_llm_done.add(recon_key)
+                results["bank_reconciliation"] = {
+                    "period_start": start.isoformat(),
+                    "period_end": end.isoformat(),
+                    "unmatched": recon_summary.get("unmatched_bank_transactions"),
+                }
+
             key = (org_id, year, month)
             if key not in self._month_end_llm_done:
                 task = (

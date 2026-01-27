@@ -1215,29 +1215,14 @@ class AccountingWorkflow:
         )
 
         account_info = await self._get_accounts_for_org(org_id)
-        bank_transactions: list[dict[str, Any]] = []
-        bank_account_id = account_info.get("bank_account_id")
-        if bank_account_id:
-            try:
-                bank_transactions = await self._api.list_bank_transactions(
-                    bank_account_id=UUID(str(bank_account_id)),
-                    limit=200,
-                )
-            except AtlasAPIError as exc:
-                self._logger.warning(
-                    "bank_transactions_list_failed",
-                    business=business_key,
-                    org_id=str(org_id),
-                    error=str(exc),
-                )
-        unmatched = [
-            tx for tx in bank_transactions
-            if not tx.get("match_id") and not tx.get("matched") and not tx.get("is_matched")
-        ]
-        followups = await self._generate_overdue_followups(period_end)
-        reconciliation = await self._reconcile_bank_transactions(
-            bank_transactions, account_info, period_end
+        bank_reconciliation = await self.run_bank_reconciliation(
+            business_key=business_key,
+            org_id=org_id,
+            period_end=period_end,
+            account_info=account_info,
+            auto_categorize=True,
         )
+        followups = await self._generate_overdue_followups(period_end)
 
         accrual_entry_id = None
         pending_bills = await self._api.list_bills(status="pending")
@@ -1281,11 +1266,70 @@ class AccountingWorkflow:
             "ar_aging": ar_aging,
             "ap_aging": ap_aging,
             "trial_balance_ok": self._check_trial_balance(trial_balance),
+            "bank_transactions": bank_reconciliation["bank_transactions"],
+            "unmatched_bank_transactions": bank_reconciliation["unmatched_bank_transactions"],
+            "reconciliation_summary": bank_reconciliation["reconciliation_summary"],
+            "overdue_followups": followups,
+            "accrual_entry_id": accrual_entry_id,
+        }
+
+    async def run_bank_reconciliation(
+        self,
+        business_key: str,
+        org_id: UUID,
+        period_end: date,
+        account_info: dict[str, Any] | None = None,
+        auto_categorize: bool = True,
+    ) -> dict[str, Any]:
+        """Run bank reconciliation for the specified period."""
+        await self._api.switch_organization(org_id)
+        if account_info is None:
+            account_info = await self._get_accounts_for_org(org_id)
+
+        bank_transactions: list[dict[str, Any]] = []
+        bank_account_id = account_info.get("bank_account_id")
+        if bank_account_id:
+            try:
+                bank_transactions = await self._api.list_bank_transactions(
+                    bank_account_id=UUID(str(bank_account_id)),
+                    limit=200,
+                )
+            except AtlasAPIError as exc:
+                self._logger.warning(
+                    "bank_transactions_list_failed",
+                    business=business_key,
+                    org_id=str(org_id),
+                    error=str(exc),
+                )
+
+        unmatched = [
+            tx for tx in bank_transactions
+            if not tx.get("match_id") and not tx.get("matched") and not tx.get("is_matched")
+        ]
+        reconciliation = await self._reconcile_bank_transactions(
+            bank_transactions,
+            account_info,
+            period_end,
+            auto_categorize=auto_categorize,
+        )
+        sample_unmatched: list[dict[str, Any]] = []
+        for tx in unmatched[:5]:
+            sample_unmatched.append(
+                {
+                    "id": tx.get("id"),
+                    "amount": tx.get("absolute_amount") or tx.get("amount"),
+                    "transaction_date": tx.get("transaction_date"),
+                    "description": tx.get("description"),
+                    "is_deposit": tx.get("is_deposit"),
+                }
+            )
+
+        return {
+            "bank_account_id": bank_account_id,
             "bank_transactions": len(bank_transactions),
             "unmatched_bank_transactions": len(unmatched),
             "reconciliation_summary": reconciliation,
-            "overdue_followups": followups,
-            "accrual_entry_id": accrual_entry_id,
+            "sample_unmatched": sample_unmatched,
         }
 
     async def _run_quarter_end_close(
@@ -2837,6 +2881,7 @@ class AccountingWorkflow:
         bank_transactions: list[dict[str, Any]],
         account_info: dict[str, Any],
         period_end: date,
+        auto_categorize: bool = True,
     ) -> dict[str, Any]:
         summary = {
             "unmatched": 0,
@@ -2928,6 +2973,9 @@ class AccountingWorkflow:
                 except AtlasAPIError:
                     summary["failed"] += 1
             if matched:
+                continue
+
+            if not auto_categorize:
                 continue
 
             account_id = (

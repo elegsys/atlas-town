@@ -66,6 +66,8 @@ class ToolExecutor:
             "get_ar_aging": self._get_ar_aging,
             "get_ap_aging": self._get_ap_aging,
             # Bank Transactions
+            "list_bank_accounts": self._list_bank_accounts,
+            "create_bank_transaction": self._create_bank_transaction,
             "list_bank_transactions": self._list_bank_transactions,
             "categorize_bank_transaction": self._categorize_bank_transaction,
             "match_bank_transaction": self._match_bank_transaction,
@@ -268,6 +270,14 @@ class ToolExecutor:
         return await self.client.get_ap_aging()
 
     # === Bank Transaction Handlers ===
+
+    async def _list_bank_accounts(
+        self, include_inactive: bool = False
+    ) -> list[dict[str, Any]]:
+        return await self.client.list_bank_accounts(include_inactive=include_inactive)
+
+    async def _create_bank_transaction(self, **data: Any) -> dict[str, Any]:
+        return await self.client.create_bank_transaction(data)
 
     async def _list_bank_transactions(
         self,

@@ -1057,6 +1057,11 @@ class AtlasAPIClient:
 
     # === Bank Transaction Endpoints ===
 
+    async def create_bank_transaction(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Create/import a bank transaction."""
+        result = await self.post("/api/v1/bank-transactions/", json=data)
+        return result if isinstance(result, dict) else {}
+
     async def list_bank_transactions(
         self,
         bank_account_id: UUID,

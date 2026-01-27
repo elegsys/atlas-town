@@ -323,6 +323,41 @@ async def test_month_end_close_creates_accrual_entry():
 
 
 @pytest.mark.asyncio
+async def test_bank_reconciliation_auto_match_without_auto_categorize():
+    api = FakeAPI(
+        accounts=_accounts(),
+        bank_accounts=[{"id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}],
+        bank_transactions=[
+            {
+                "id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                "absolute_amount": "150.00",
+                "transaction_date": "2025-01-02",
+                "is_deposit": True,
+            }
+        ],
+        payments=[
+            {
+                "id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+                "amount": "150.00",
+                "payment_date": "2025-01-01",
+            }
+        ],
+    )
+    workflow = AccountingWorkflow(api_client=api)
+
+    result = await workflow.run_bank_reconciliation(
+        business_key="tony",
+        org_id=uuid4(),
+        period_end=date(2025, 1, 3),
+        auto_categorize=False,
+    )
+
+    summary = result["reconciliation_summary"]
+    assert summary["matched"] == 1
+    assert summary["categorized"] == 0
+
+
+@pytest.mark.asyncio
 async def test_quarter_end_close_creates_tax_provision_entry():
     api = FakeAPI(
         accounts=_accounts(),

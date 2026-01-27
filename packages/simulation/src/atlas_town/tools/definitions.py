@@ -891,6 +891,55 @@ RECORD_QUARTERLY_ESTIMATE_PAYMENT_TOOL: dict[str, Any] = {
 
 # === Bank Transaction Tools ===
 
+LIST_BANK_ACCOUNTS_TOOL: dict[str, Any] = {
+    "name": "list_bank_accounts",
+    "description": "List linked bank accounts for the current organization.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "include_inactive": {
+                "type": "boolean",
+                "description": "Include inactive bank accounts",
+                "default": False,
+            },
+        },
+        "required": [],
+    },
+}
+
+CREATE_BANK_TRANSACTION_TOOL: dict[str, Any] = {
+    "name": "create_bank_transaction",
+    "description": "Create/import a bank transaction for reconciliation.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "bank_account_id": {
+                "type": "string",
+                "format": "uuid",
+                "description": "Bank account ID for the transaction",
+            },
+            "transaction_date": {
+                "type": "string",
+                "format": "date",
+                "description": "Transaction date (YYYY-MM-DD)",
+            },
+            "amount": {
+                "type": "string",
+                "description": "Transaction amount (positive number)",
+            },
+            "description": {
+                "type": "string",
+                "description": "Transaction description",
+            },
+            "is_deposit": {
+                "type": "boolean",
+                "description": "True for deposits, false for withdrawals",
+            },
+        },
+        "required": ["bank_account_id", "transaction_date", "amount", "is_deposit"],
+    },
+}
+
 LIST_BANK_TRANSACTIONS_TOOL: dict[str, Any] = {
     "name": "list_bank_transactions",
     "description": "List imported bank transactions that need categorization or matching.",
@@ -1030,6 +1079,8 @@ ACCOUNTANT_TOOLS: list[dict[str, Any]] = [
     CREATE_QUARTERLY_ESTIMATE_TOOL,
     RECORD_QUARTERLY_ESTIMATE_PAYMENT_TOOL,
     # Bank Transactions
+    LIST_BANK_ACCOUNTS_TOOL,
+    CREATE_BANK_TRANSACTION_TOOL,
     LIST_BANK_TRANSACTIONS_TOOL,
     CATEGORIZE_BANK_TRANSACTION_TOOL,
     MATCH_BANK_TRANSACTION_TOOL,
