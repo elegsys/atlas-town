@@ -62,17 +62,17 @@ export default function Home() {
       </header>
 
       {/* Main Content */}
-      <div className="flex-1 flex gap-4 min-h-0">
+      <div className="flex-1 flex gap-4 min-h-0 overflow-x-auto">
         {/* Left Panel - Controls & Financial Overview */}
-        <div className="w-72 flex flex-col gap-4 overflow-y-auto custom-scrollbar">
+        <div className="w-72 flex-shrink-0 flex flex-col gap-4 overflow-y-auto custom-scrollbar">
           <SimulationControls />
           <FinancialOverlay />
         </div>
 
         {/* Center - Town Canvas and Agent Panel */}
-        <div className="flex-1 flex flex-col gap-4 min-h-0">
+        <div className="flex-1 flex flex-col gap-4 min-h-0 min-w-0">
           {/* Town Canvas */}
-          <div className="flex-1 flex items-center justify-center min-h-0">
+          <div className="flex-1 flex items-center justify-center min-h-0 overflow-auto">
             <TownCanvas />
           </div>
           {/* Agent Panel - Horizontal below canvas */}
@@ -82,7 +82,7 @@ export default function Home() {
         </div>
 
         {/* Right Panel - Transactions & Thoughts */}
-        <div className="w-80 flex flex-col gap-4 min-h-0">
+        <div className="w-80 flex-shrink-0 flex flex-col gap-4 min-h-0">
           <div className="flex-1 min-h-0">
             <TransactionFeed />
           </div>

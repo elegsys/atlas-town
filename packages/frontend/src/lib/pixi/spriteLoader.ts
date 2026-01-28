@@ -38,10 +38,13 @@ let characterLoadingPromise: Promise<void> | null = null;
 let characterSheetsLoadingPromise: Promise<void> | null = null;
 
 /**
- * Characters that are missing the 'south' walking direction.
- * For these, we fall back to 'north' frames.
+ * Characters missing specific walking directions.
+ * Maps characterId -> direction -> fallback direction
  */
-const MISSING_SOUTH_WALKING: Set<string> = new Set(["marcus"]);
+const MISSING_WALKING_FALLBACKS: Record<string, Record<string, FacingDirection>> = {
+  marcus: { south: "north" },  // Marcus missing south, use north
+  maya: { west: "east" },      // Maya missing west, use east
+};
 
 /**
  * Register building assets with the PixiJS Assets system.
@@ -304,29 +307,27 @@ function registerCharacterSheetAssets(): void {
       const path = getRotationSpritePath(characterId, direction);
       if (path) {
         const alias = rotationAlias(characterId, direction);
-        Assets.add({ alias, src: path });
         assets[alias] = path;
       }
     }
 
     // Register walking frame sprites
     for (const direction of ALL_DIRECTIONS) {
-      // Handle missing south direction for some characters
-      const actualDirection = (direction === "south" && MISSING_SOUTH_WALKING.has(characterId))
-        ? "north"
-        : direction;
+      // Handle missing directions for some characters
+      const fallbacks = MISSING_WALKING_FALLBACKS[characterId];
+      const actualDirection = fallbacks?.[direction] ?? direction;
 
       const paths = getWalkingFramePaths(characterId, actualDirection);
       if (paths) {
         for (let i = 0; i < WALKING_FRAME_COUNT; i++) {
           const alias = walkingFrameAlias(characterId, direction, i);
-          Assets.add({ alias, src: paths[i] });
           assets[alias] = paths[i];
         }
       }
     }
   }
 
+  console.log(`Registering ${Object.keys(assets).length} character sprite sheet assets`);
   Assets.addBundle(CHARACTER_SHEETS_BUNDLE, assets);
 }
 
@@ -355,11 +356,13 @@ export async function loadCharacterSheetAssets(
       registerCharacterSheetAssets();
 
       // Load the bundle with progress callback
+      console.log("Loading character sprite sheet bundle...");
       await Assets.loadBundle(CHARACTER_SHEETS_BUNDLE, (progress) => {
         onProgress?.(progress);
       });
 
       characterSheetsLoaded = true;
+      console.log("Character sprite sheets loaded successfully!");
     } catch (error) {
       console.error("Failed to load character sprite sheet assets:", error);
       // Don't throw - allow fallback to legacy sprites

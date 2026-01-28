@@ -144,13 +144,16 @@ export class AnimatedCharacter {
   /** Initialize sprite or fallback graphics */
   private initializeVisuals(): void {
     // Try sprite sheets first (preferred)
+    console.log(`[${this.definition.id}] areCharacterSheetsLoaded: ${areCharacterSheetsLoaded()}`);
     if (areCharacterSheetsLoaded()) {
       const success = this.loadSpriteSheetTextures();
+      console.log(`[${this.definition.id}] loadSpriteSheetTextures success: ${success}`);
       if (success) {
         this.usingSpriteSheets = true;
         // Create sprite with initial direction texture
         const initialTexture = this.rotationTextures.get(this._direction);
         if (initialTexture) {
+          console.log(`[${this.definition.id}] Using sprite sheet textures`);
           this.sprite = new Sprite(initialTexture);
           this.setupSprite(this.sprite, initialTexture);
           this.spriteContainer.addChild(this.sprite);
@@ -162,6 +165,7 @@ export class AnimatedCharacter {
     // Fall back to legacy single portrait
     const texture = getCharacterTexture(this.definition.id);
     if (texture && areCharacterAssetsLoaded()) {
+      console.log(`[${this.definition.id}] Falling back to legacy portrait`);
       this.sprite = new Sprite(texture);
       this.setupSprite(this.sprite, texture);
       this.spriteContainer.addChild(this.sprite);
@@ -169,6 +173,7 @@ export class AnimatedCharacter {
     }
 
     // Final fallback: procedural graphics
+    console.log(`[${this.definition.id}] Using procedural fallback`);
     this.fallbackGraphics = this.createFallbackGraphics();
     this.spriteContainer.addChild(this.fallbackGraphics);
   }
