@@ -13,23 +13,24 @@ import {
 } from "@/lib/pixi/townConfig";
 import {
   loadBuildingAssets,
+  loadCharacterAssets,
   getBuildingTexture,
   areBuildingAssetsLoaded,
   createScaledBuildingSprite,
 } from "@/lib/pixi/spriteLoader";
+import { AnimatedCharacter } from "@/lib/pixi/AnimatedCharacter";
+import { CHARACTER_DEFINITIONS } from "@/lib/pixi/characterConfig";
 import { useSimulationStore } from "@/lib/state/simulationStore";
 
-interface CharacterSprite {
-  container: PIXI.Container;
-  body: PIXI.Graphics;
-  label: PIXI.Text;
+interface CharacterWithBubble {
+  character: AnimatedCharacter;
   bubble: PIXI.Container | null;
 }
 
 export function TownCanvas() {
   const canvasRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<PIXI.Application | null>(null);
-  const charactersRef = useRef<Map<string, CharacterSprite>>(new Map());
+  const charactersRef = useRef<Map<string, CharacterWithBubble>>(new Map());
   const buildingsRef = useRef<Map<string, PIXI.Container>>(new Map());
 
   // Loading state for sprite assets
@@ -58,20 +59,26 @@ export function TownCanvas() {
       canvasRef.current?.appendChild(app.canvas);
       appRef.current = app;
 
-      // Load building sprites before drawing town
+      // Load building and character sprites
       try {
+        // Load buildings first (50% of progress)
         await loadBuildingAssets((progress) => {
-          setLoadingProgress(progress);
+          setLoadingProgress(progress * 0.5);
+        });
+
+        // Load characters (remaining 50%)
+        await loadCharacterAssets((progress) => {
+          setLoadingProgress(0.5 + progress * 0.5);
         });
       } catch (error) {
-        console.error("Failed to load building assets, using fallback:", error);
+        console.error("Failed to load assets, using fallback:", error);
       }
 
       // Draw the town (uses sprites if loaded, fallback otherwise)
       drawTown(app);
 
-      // Create Sarah character
-      createCharacter(app, "sarah", "Sarah Chen", 0x9370db);
+      // Create all 6 characters at their starting positions
+      createAllCharacters(app);
 
       // Done loading
       setIsLoading(false);
@@ -202,76 +209,40 @@ export function TownCanvas() {
     }
   };
 
-  // Create a character sprite
-  const createCharacter = (
-    app: PIXI.Application,
-    id: string,
-    name: string,
-    color: number
-  ): CharacterSprite => {
-    const container = new PIXI.Container();
+  // Create all characters using AnimatedCharacter class
+  const createAllCharacters = (app: PIXI.Application): void => {
+    for (const definition of CHARACTER_DEFINITIONS) {
+      // Create animated character
+      const character = new AnimatedCharacter(definition, app.ticker);
 
-    // Character body (simple circle + rectangle)
-    const body = new PIXI.Graphics();
-    // Head
-    body.circle(0, -20, 15);
-    body.fill(0xffdab9); // Peach
-    // Body
-    body.roundRect(-12, -5, 24, 35, 6);
-    body.fill(color);
-    // Shadow
-    body.ellipse(0, 32, 15, 5);
-    body.fill({ color: 0x000000, alpha: 0.2 });
+      // Position at starting building
+      const building = BUILDINGS.find((b) => b.id === definition.startingBuilding);
+      if (building) {
+        const entrance = getBuildingEntrance(building);
+        character.teleportTo(entrance.x, entrance.y + 20);
+      }
 
-    container.addChild(body);
+      // Add to stage
+      app.stage.addChild(character.container);
 
-    // Name label
-    const label = new PIXI.Text({
-      text: name,
-      style: {
-        fontFamily: "Arial",
-        fontSize: 11,
-        fill: 0xffffff,
-        fontWeight: "bold",
-        dropShadow: {
-          color: 0x000000,
-          blur: 2,
-          distance: 1,
-        },
-      },
-    });
-    label.anchor.set(0.5, 0);
-    label.position.set(0, 35);
-    container.addChild(label);
+      // Store reference with bubble tracking
+      const charWithBubble: CharacterWithBubble = {
+        character,
+        bubble: null,
+      };
 
-    // Initial position at office
-    const office = BUILDINGS.find((b) => b.id === "office");
-    if (office) {
-      const entrance = getBuildingEntrance(office);
-      container.position.set(entrance.x, entrance.y + 20);
+      charactersRef.current.set(definition.id, charWithBubble);
     }
-
-    app.stage.addChild(container);
-
-    const sprite: CharacterSprite = {
-      container,
-      body,
-      label,
-      bubble: null,
-    };
-
-    charactersRef.current.set(id, sprite);
-    return sprite;
   };
 
   // Show thought/speech bubble
   const showBubble = (characterId: string, message: string) => {
-    const sprite = charactersRef.current.get(characterId);
-    if (!sprite || !appRef.current) return;
+    const charData = charactersRef.current.get(characterId);
+    if (!charData || !appRef.current) return;
 
     // Remove existing bubble
-    if (sprite.bubble) {
-      sprite.container.removeChild(sprite.bubble);
+    if (charData.bubble) {
+      charData.character.container.removeChild(charData.bubble);
     }
 
     const bubble = new PIXI.Container();
@@ -315,54 +286,31 @@ export function TownCanvas() {
     bubble.addChild(text);
     bubble.position.set(0, -60);
 
-    sprite.container.addChild(bubble);
-    sprite.bubble = bubble;
+    charData.character.container.addChild(bubble);
+    charData.bubble = bubble;
   };
 
   // Hide bubble
   const hideBubble = (characterId: string) => {
-    const sprite = charactersRef.current.get(characterId);
-    if (sprite?.bubble) {
-      sprite.container.removeChild(sprite.bubble);
-      sprite.bubble = null;
+    const charData = charactersRef.current.get(characterId);
+    if (charData?.bubble) {
+      charData.character.container.removeChild(charData.bubble);
+      charData.bubble = null;
     }
   };
 
-  // Move character to building
+  // Move character to building using AnimatedCharacter's moveTo
   const moveCharacterTo = (characterId: string, buildingName: string) => {
-    const sprite = charactersRef.current.get(characterId);
+    const charData = charactersRef.current.get(characterId);
     const building = getBuildingByName(buildingName);
 
-    if (!sprite || !building || !appRef.current) return;
+    if (!charData || !building || !appRef.current) return;
 
     const entrance = getBuildingEntrance(building);
     const targetY = entrance.y + 20;
 
-    // Simple animation using ticker
-    const startX = sprite.container.x;
-    const startY = sprite.container.y;
-    const distance = Math.sqrt(
-      Math.pow(entrance.x - startX, 2) + Math.pow(targetY - startY, 2)
-    );
-    const duration = Math.min(2000, distance * 3); // ms based on distance
-    const startTime = performance.now();
-
-    const animate = () => {
-      const elapsed = performance.now() - startTime;
-      const progress = Math.min(1, elapsed / duration);
-
-      // Ease out
-      const eased = 1 - Math.pow(1 - progress, 3);
-
-      sprite.container.x = startX + (entrance.x - startX) * eased;
-      sprite.container.y = startY + (targetY - startY) * eased;
-
-      if (progress < 1) {
-        requestAnimationFrame(animate);
-      }
-    };
-
-    requestAnimationFrame(animate);
+    // Use AnimatedCharacter's built-in movement animation
+    charData.character.moveTo(entrance.x, targetY);
   };
 
   // Update phase background color
@@ -381,18 +329,25 @@ export function TownCanvas() {
     }
   }, [currentPhase]);
 
-  // Update character positions and bubbles based on agent state
+  // Update character positions, animations, and bubbles based on agent state
   useEffect(() => {
     agents.forEach((agent, id) => {
-      const sprite = charactersRef.current.get(id);
-      if (!sprite) return;
+      const charData = charactersRef.current.get(id);
+      if (!charData) return;
 
-      // Handle movement
+      // Map agent status to animation state
       if (agent.status === "moving" && agent.targetLocation) {
         moveCharacterTo(id, agent.targetLocation);
+        // Animation state is set by moveTo automatically
+      } else if (agent.status === "thinking") {
+        charData.character.state = "thinking";
+      } else if (agent.status === "speaking") {
+        charData.character.state = "speaking";
+      } else {
+        charData.character.state = "idle";
       }
 
-      // Handle messages
+      // Handle messages (speech/thought bubbles)
       if (agent.currentMessage) {
         showBubble(id, agent.currentMessage);
       } else {

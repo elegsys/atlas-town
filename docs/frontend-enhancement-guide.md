@@ -17,7 +17,7 @@ This guide outlines the implementation order for transforming the Atlas Town fro
                     │                    FOUNDATION                           │
                     │                                                         │
                     │  #37 Building Sprites ──────┬──────► #43 Decorations   │
-                    │          │                  │              │            │
+                    │          │           ✅     │              │            │
                     │          │                  │              ▼            │
                     │          │                  └──────► #44 Day/Night     │
                     │          │                               │              │
@@ -25,18 +25,32 @@ This guide outlines the implementation order for transforming the Atlas Town fro
                     │  #39 Tile Terrain ─────────────────► #45 Weather       │
                     │                                                         │
                     │  #38 Character Sprites ────┬──────► #49 Idle Anims    │
-                    │          │                 │              │            │
-                    │          │                 │              ▼            │
-                    │          │                 └──────► #50 Thought Bubbles│
+                    │          │           ✅     │              │            │
+                    │          │                  │              ▼            │
+                    │          │                  └──────► #50 Thought Bubbles│
                     │          │                               │              │
                     │          ▼                               ▼              │
                     │  #40 All 6 Agents ─────────────────► #51 Interactions  │
-                    │          │                                              │
+                    │          │           ✅                                  │
                     │          ▼                                              │
                     │  #41 Customer/Vendor NPCs                               │
                     │          │                                              │
                     │          ▼                                              │
                     │  #42 Vehicle Traffic                                    │
+                    └─────────────────────────────────────────────────────────┘
+
+                    ┌─────────────────────────────────────────────────────────┐
+                    │              ASSET GENERATION (Parallel Track)          │
+                    │                                                         │
+                    │  #65 Sprite Sheet Assets ─── soft dependency ───►       │
+                    │          │                                              │
+                    │          ├──────► #49 Idle Animations (enhances)        │
+                    │          ├──────► #41 NPCs (enhances)                   │
+                    │          ├──────► #42 Vehicles (enhances)               │
+                    │          └──────► #51 Interactions (enhances)           │
+                    │                                                         │
+                    │  Status: ⏳ Deferred - See docs/sprite-generation-      │
+                    │          analysis.md for options                        │
                     └─────────────────────────────────────────────────────────┘
 
                     ┌─────────────────────────────────────────────────────────┐
@@ -87,13 +101,17 @@ This guide outlines the implementation order for transforming the Atlas Town fro
 ### Phase 1: Core Sprite Foundation (Week 1)
 **Goal**: Replace shapes with sprites, show all agents
 
-| Order | Issue | Title | Depends On | Effort |
-|-------|-------|-------|------------|--------|
-| 1.1 | #37 | Replace procedural buildings with sprite assets | - | Medium |
-| 1.2 | #38 | Implement character sprite system with animations | - | Large |
-| 1.3 | #40 | Render all 6 business owner agents | #38 | Small |
+| Order | Issue | Title | Depends On | Effort | Status |
+|-------|-------|-------|------------|--------|--------|
+| 1.1 | #37 | Replace procedural buildings with sprite assets | - | Medium | ✅ Done |
+| 1.2 | #38 | Implement character sprite system with animations | - | Large | ✅ Done (procedural) |
+| 1.3 | #65 | Generate pixel art sprite sheets | - | Medium | ⏳ Deferred |
+| 1.4 | #40 | Render all 6 business owner agents | #38 | Small | ✅ Done |
 
-**Milestone**: All 6 agents visible with walking animations, buildings are sprites.
+**Milestone**: All 6 agents visible with procedural animations, buildings are sprites.
+
+> **Note:** #38 implemented with procedural animations (bobbing/breathing) using portrait images.
+> Proper sprite sheet animations (#65) can be added later without changing the architecture.
 
 ```typescript
 // Key file: packages/frontend/src/lib/pixi/spriteLoader.ts
@@ -152,6 +170,9 @@ This guide outlines the implementation order for transforming the Atlas Town fro
 
 **Milestone**: Characters have personality, ambient sounds create atmosphere.
 
+> **Enhancement opportunity:** If #65 (sprite sheets) is completed by this phase,
+> #49 can use frame-based animations instead of procedural.
+
 ---
 
 ### Phase 6: Interactivity (Week 6)
@@ -193,38 +214,70 @@ This guide outlines the implementation order for transforming the Atlas Town fro
 
 ---
 
+### Asset Generation Track (Parallel - Anytime)
+**Goal**: Generate pixel art sprite sheets for proper frame-based animations
+
+| Issue | Title | Enhances | Effort |
+|-------|-------|----------|--------|
+| #65 | Generate pixel art sprite sheets | #49, #41, #42, #51 | Medium |
+
+**When to do this:**
+- **Ideal timing:** Before Phase 5 (Character Personality) for maximum benefit
+- **Minimum timing:** Anytime before #49 Idle Animations
+- **Can skip if:** Procedural animations are sufficient for your use case
+
+**Options (see `docs/sprite-generation-analysis.md`):**
+| Option | Cost | Time | Best For |
+|--------|------|------|----------|
+| PixelLab.ai | $12 | ~2 hrs | Speed |
+| Local Stable Diffusion | $0 | ~1 day | Control |
+| Free assets (LPC) | $0 | ~4 hrs | Simplicity |
+
+**Impact if skipped:**
+- Characters use portrait images with procedural bobbing/breathing ✅
+- No frame-based walking animations (N/S/E/W) ❌
+- NPCs would need separate solution ❌
+
+**Recommendation:** Complete #65 before Phase 5 to unlock full animation potential.
+
+---
+
 ## Dependency Matrix
 
-| Issue | Hard Dependencies | Soft Dependencies |
-|-------|------------------|-------------------|
-| #37 Building Sprites | - | - |
-| #38 Character Sprites | - | - |
-| #39 Tile Terrain | #37 | - |
-| #40 All Agents | #38 | - |
-| #41 NPCs | #38, #40 | - |
-| #42 Vehicles | #38 | #39 |
-| #43 Decorations | #37 | - |
-| #44 Day/Night | #37 | #43 |
-| #45 Weather | #39 | #44 |
-| #46 Transaction Indicators | #37 | - |
-| #47 Money Flow | #46 | - |
-| #48 Status Indicators | #46 | #47 |
-| #49 Idle Animations | #38 | #40 |
-| #50 Thought Bubbles | #40 | - |
-| #51 Interactions | #49 | - |
-| #52 Click-to-Inspect | #37, #40 | - |
-| #53 Camera | - | - |
-| #54 Minimap | #53 | - |
-| #55 Audio Settings | - | - |
-| #56 Ambient Sound | #55 | #44 |
-| #57 Transaction SFX | #55 | #46 |
-| #58 Lofi Music | #55 | - |
-| #59 Financial Icons | - | - |
-| #60 Financial Charts | - | - |
-| #61 Focus Mode | - | - |
-| #62 Auto-Pause | - | - |
-| #63 Tiled Support | #39 | - |
-| #64 Agent Memory | #52 | - |
+| Issue | Hard Dependencies | Soft Dependencies | Status |
+|-------|------------------|-------------------|--------|
+| #37 Building Sprites | - | - | ✅ Done |
+| #38 Character Sprites | - | - | ✅ Done (procedural) |
+| #65 Sprite Sheet Assets | - | - | ⏳ Deferred |
+| #39 Tile Terrain | #37 | - | |
+| #40 All Agents | #38 | - | ✅ Done |
+| #41 NPCs | #38, #40 | #65 | |
+| #42 Vehicles | #38 | #39, #65 | |
+| #43 Decorations | #37 | - | |
+| #44 Day/Night | #37 | #43 | |
+| #45 Weather | #39 | #44 | |
+| #46 Transaction Indicators | #37 | - | |
+| #47 Money Flow | #46 | - | |
+| #48 Status Indicators | #46 | #47 | |
+| #49 Idle Animations | #38 | #65 | |
+| #50 Thought Bubbles | #40 | - | |
+| #51 Interactions | #49 | #65 | |
+| #52 Click-to-Inspect | #37, #40 | - | |
+| #53 Camera | - | - | |
+| #54 Minimap | #53 | - | |
+| #55 Audio Settings | - | - | |
+| #56 Ambient Sound | #55 | #44 | |
+| #57 Transaction SFX | #55 | #46 | |
+| #58 Lofi Music | #55 | - | |
+| #59 Financial Icons | - | - | |
+| #60 Financial Charts | - | - | |
+| #61 Focus Mode | - | - | |
+| #62 Auto-Pause | - | - | |
+| #63 Tiled Support | #39 | - | |
+| #64 Agent Memory | #52 | - | |
+
+> **Note:** #65 (Sprite Sheet Assets) is a **soft dependency** for animation-heavy issues.
+> These issues can proceed with procedural animations, then upgrade when sprite sheets are ready.
 
 ---
 
@@ -234,16 +287,19 @@ For the fastest path to visible improvement, implement in this order:
 
 ```
 #38 → #40 → #37 → #46 → #59
+ ✅     ✅     ✅
 ```
 
 This gives you:
-1. Character sprite system
-2. All 6 agents visible
-3. Buildings as sprites
+1. ✅ Character sprite system (done - procedural animations)
+2. ✅ All 6 agents visible (done)
+3. ✅ Buildings as sprites (done)
 4. Transaction indicators
 5. Consistent icons in dashboard
 
-**Estimated effort**: 1-2 weeks for a dramatically improved experience.
+**Current status**: Phase 1 complete! Next: #46 Transaction Indicators.
+
+**Optional enhancement**: Complete #65 (sprite sheets) before Phase 5 for frame-based animations.
 
 ---
 
@@ -319,13 +375,18 @@ packages/frontend/src/components/dashboard/TransactionFeed.tsx
 
 ## Asset Requirements
 
-### Sprites (Existing - Verify)
-- [ ] 6 character sprite sheets (Sarah, Craig, Tony, Maya, Chen, Marcus)
-- [ ] 5+ building sprites matching businesses
+### Sprites (Status)
+- [ ] 6 character sprite sheets (Sarah, Craig, Tony, Maya, Chen, Marcus) → **#65 (deferred)**
+- [x] 6 character portraits (1024x1024, used with procedural animations)
+- [x] 5+ building sprites matching businesses
 - [ ] Terrain tiles (road, sidewalk, grass)
 - [ ] Decoration sprites (trees, benches, streetlights)
 - [ ] Vehicle sprites (cars, trucks)
 - [ ] Icon sprites (invoice, payment, bill)
+
+> **Note:** Character sprite sheets for proper walking animations are tracked in #65.
+> Current implementation uses portrait images with procedural animations (bobbing/breathing).
+> See `docs/sprite-generation-analysis.md` for generation options.
 
 ### Audio (Need to Source)
 - [ ] Ambient loops: morning, day, evening, night

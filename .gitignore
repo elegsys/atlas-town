@@ -16,6 +16,7 @@ dist/
 .next/
 out/
 build/
+*.tsbuildinfo
 
 # IDE
 .idea/

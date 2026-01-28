@@ -1,9 +1,10 @@
 /**
  * Sprite asset management for PixiJS v8.
- * Handles loading, caching, and retrieval of building textures.
+ * Handles loading, caching, and retrieval of building and character textures.
  */
 
 import { Assets, Texture, Sprite } from "pixi.js";
+import { CHARACTER_SPRITE_PATHS } from "./characterConfig";
 
 // Sprite paths for each building (relative to public/)
 const BUILDING_SPRITE_PATHS: Record<string, string> = {
@@ -15,12 +16,15 @@ const BUILDING_SPRITE_PATHS: Record<string, string> = {
   office: "/sprites/buildings/sarahs_office.png",
 };
 
-// Bundle name for building assets
+// Bundle names
 const BUILDINGS_BUNDLE = "buildings";
+const CHARACTERS_BUNDLE = "characters";
 
 // Track whether assets have been loaded
 let buildingAssetsLoaded = false;
-let loadingPromise: Promise<void> | null = null;
+let characterAssetsLoaded = false;
+let buildingLoadingPromise: Promise<void> | null = null;
+let characterLoadingPromise: Promise<void> | null = null;
 
 /**
  * Register building assets with the PixiJS Assets system.
@@ -38,6 +42,23 @@ function registerBuildingAssets(): void {
 }
 
 /**
+ * Register character assets with the PixiJS Assets system.
+ * Must be called before loadCharacterAssets().
+ */
+function registerCharacterAssets(): void {
+  // Add character alias prefix to avoid collision with buildings
+  for (const [id, path] of Object.entries(CHARACTER_SPRITE_PATHS)) {
+    Assets.add({ alias: `char_${id}`, src: path });
+  }
+
+  // Create prefixed paths for the bundle
+  const prefixedPaths = Object.fromEntries(
+    Object.entries(CHARACTER_SPRITE_PATHS).map(([id, path]) => [`char_${id}`, path])
+  );
+  Assets.addBundle(CHARACTERS_BUNDLE, prefixedPaths);
+}
+
+/**
  * Load all building sprite assets.
  * @param onProgress - Optional callback for loading progress (0-1)
  * @returns Promise that resolves when all assets are loaded
@@ -46,8 +67,8 @@ export async function loadBuildingAssets(
   onProgress?: (progress: number) => void
 ): Promise<void> {
   // Return existing promise if already loading
-  if (loadingPromise) {
-    return loadingPromise;
+  if (buildingLoadingPromise) {
+    return buildingLoadingPromise;
   }
 
   // Return immediately if already loaded
@@ -56,7 +77,7 @@ export async function loadBuildingAssets(
     return;
   }
 
-  loadingPromise = (async () => {
+  buildingLoadingPromise = (async () => {
     try {
       // Register assets first
       registerBuildingAssets();
@@ -72,11 +93,11 @@ export async function loadBuildingAssets(
       // Don't throw - allow fallback to procedural rendering
       buildingAssetsLoaded = false;
     } finally {
-      loadingPromise = null;
+      buildingLoadingPromise = null;
     }
   })();
 
-  return loadingPromise;
+  return buildingLoadingPromise;
 }
 
 /**
@@ -151,5 +172,85 @@ export function getBuildingSpritePath(buildingId: string): string | undefined {
  */
 export function resetBuildingAssets(): void {
   buildingAssetsLoaded = false;
-  loadingPromise = null;
+  buildingLoadingPromise = null;
+}
+
+// ============================================
+// CHARACTER ASSET LOADING
+// ============================================
+
+/**
+ * Load all character sprite assets.
+ * @param onProgress - Optional callback for loading progress (0-1)
+ * @returns Promise that resolves when all assets are loaded
+ */
+export async function loadCharacterAssets(
+  onProgress?: (progress: number) => void
+): Promise<void> {
+  // Return existing promise if already loading
+  if (characterLoadingPromise) {
+    return characterLoadingPromise;
+  }
+
+  // Return immediately if already loaded
+  if (characterAssetsLoaded) {
+    onProgress?.(1);
+    return;
+  }
+
+  characterLoadingPromise = (async () => {
+    try {
+      // Register assets first
+      registerCharacterAssets();
+
+      // Load the bundle with progress callback
+      await Assets.loadBundle(CHARACTERS_BUNDLE, (progress) => {
+        onProgress?.(progress);
+      });
+
+      characterAssetsLoaded = true;
+    } catch (error) {
+      console.error("Failed to load character assets:", error);
+      // Don't throw - allow fallback to procedural rendering
+      characterAssetsLoaded = false;
+    } finally {
+      characterLoadingPromise = null;
+    }
+  })();
+
+  return characterLoadingPromise;
+}
+
+/**
+ * Check if character assets have been loaded successfully.
+ */
+export function areCharacterAssetsLoaded(): boolean {
+  return characterAssetsLoaded;
+}
+
+/**
+ * Get the texture for a character by its ID.
+ * @param characterId - The character ID (e.g., "sarah", "craig")
+ * @returns The texture if loaded, undefined otherwise
+ */
+export function getCharacterTexture(characterId: string): Texture | undefined {
+  if (!characterAssetsLoaded) {
+    return undefined;
+  }
+
+  try {
+    const texture = Assets.get<Texture>(`char_${characterId}`);
+    return texture;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Reset the character asset loader state.
+ * Useful for testing or when re-initializing the application.
+ */
+export function resetCharacterAssets(): void {
+  characterAssetsLoaded = false;
+  characterLoadingPromise = null;
 }
