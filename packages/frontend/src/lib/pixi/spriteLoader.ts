@@ -4,7 +4,15 @@
  */
 
 import { Assets, Texture, Sprite } from "pixi.js";
-import { CHARACTER_SPRITE_PATHS } from "./characterConfig";
+import {
+  CHARACTER_SPRITE_PATHS,
+  CHARACTER_DEFINITIONS,
+  ALL_DIRECTIONS,
+  WALKING_FRAME_COUNT,
+  FacingDirection,
+  getRotationSpritePath,
+  getWalkingFramePaths,
+} from "./characterConfig";
 
 // Sprite paths for each building (relative to public/)
 const BUILDING_SPRITE_PATHS: Record<string, string> = {
@@ -19,12 +27,21 @@ const BUILDING_SPRITE_PATHS: Record<string, string> = {
 // Bundle names
 const BUILDINGS_BUNDLE = "buildings";
 const CHARACTERS_BUNDLE = "characters";
+const CHARACTER_SHEETS_BUNDLE = "character_sheets";
 
 // Track whether assets have been loaded
 let buildingAssetsLoaded = false;
 let characterAssetsLoaded = false;
+let characterSheetsLoaded = false;
 let buildingLoadingPromise: Promise<void> | null = null;
 let characterLoadingPromise: Promise<void> | null = null;
+let characterSheetsLoadingPromise: Promise<void> | null = null;
+
+/**
+ * Characters that are missing the 'south' walking direction.
+ * For these, we fall back to 'north' frames.
+ */
+const MISSING_SOUTH_WALKING: Set<string> = new Set(["marcus"]);
 
 /**
  * Register building assets with the PixiJS Assets system.
@@ -253,4 +270,169 @@ export function getCharacterTexture(characterId: string): Texture | undefined {
 export function resetCharacterAssets(): void {
   characterAssetsLoaded = false;
   characterLoadingPromise = null;
+}
+
+// ============================================
+// CHARACTER SPRITE SHEET LOADING
+// ============================================
+
+/**
+ * Generate asset alias for a rotation sprite.
+ */
+function rotationAlias(characterId: string, direction: FacingDirection): string {
+  return `char_${characterId}_rot_${direction}`;
+}
+
+/**
+ * Generate asset alias for a walking frame.
+ */
+function walkingFrameAlias(characterId: string, direction: FacingDirection, frameIndex: number): string {
+  return `char_${characterId}_walk_${direction}_${frameIndex}`;
+}
+
+/**
+ * Register all character sprite sheet assets with the PixiJS Assets system.
+ */
+function registerCharacterSheetAssets(): void {
+  const assets: Record<string, string> = {};
+
+  for (const def of CHARACTER_DEFINITIONS) {
+    const characterId = def.id;
+
+    // Register rotation (idle) sprites for all 4 directions
+    for (const direction of ALL_DIRECTIONS) {
+      const path = getRotationSpritePath(characterId, direction);
+      if (path) {
+        const alias = rotationAlias(characterId, direction);
+        Assets.add({ alias, src: path });
+        assets[alias] = path;
+      }
+    }
+
+    // Register walking frame sprites
+    for (const direction of ALL_DIRECTIONS) {
+      // Handle missing south direction for some characters
+      const actualDirection = (direction === "south" && MISSING_SOUTH_WALKING.has(characterId))
+        ? "north"
+        : direction;
+
+      const paths = getWalkingFramePaths(characterId, actualDirection);
+      if (paths) {
+        for (let i = 0; i < WALKING_FRAME_COUNT; i++) {
+          const alias = walkingFrameAlias(characterId, direction, i);
+          Assets.add({ alias, src: paths[i] });
+          assets[alias] = paths[i];
+        }
+      }
+    }
+  }
+
+  Assets.addBundle(CHARACTER_SHEETS_BUNDLE, assets);
+}
+
+/**
+ * Load all character sprite sheet assets.
+ * @param onProgress - Optional callback for loading progress (0-1)
+ * @returns Promise that resolves when all assets are loaded
+ */
+export async function loadCharacterSheetAssets(
+  onProgress?: (progress: number) => void
+): Promise<void> {
+  // Return existing promise if already loading
+  if (characterSheetsLoadingPromise) {
+    return characterSheetsLoadingPromise;
+  }
+
+  // Return immediately if already loaded
+  if (characterSheetsLoaded) {
+    onProgress?.(1);
+    return;
+  }
+
+  characterSheetsLoadingPromise = (async () => {
+    try {
+      // Register assets first
+      registerCharacterSheetAssets();
+
+      // Load the bundle with progress callback
+      await Assets.loadBundle(CHARACTER_SHEETS_BUNDLE, (progress) => {
+        onProgress?.(progress);
+      });
+
+      characterSheetsLoaded = true;
+    } catch (error) {
+      console.error("Failed to load character sprite sheet assets:", error);
+      // Don't throw - allow fallback to legacy sprites
+      characterSheetsLoaded = false;
+    } finally {
+      characterSheetsLoadingPromise = null;
+    }
+  })();
+
+  return characterSheetsLoadingPromise;
+}
+
+/**
+ * Check if character sprite sheets have been loaded successfully.
+ */
+export function areCharacterSheetsLoaded(): boolean {
+  return characterSheetsLoaded;
+}
+
+/**
+ * Get the rotation (idle) texture for a character in a given direction.
+ * @param characterId - The character ID (e.g., "sarah", "craig")
+ * @param direction - The facing direction
+ * @returns The texture if loaded, undefined otherwise
+ */
+export function getCharacterRotationTexture(
+  characterId: string,
+  direction: FacingDirection
+): Texture | undefined {
+  if (!characterSheetsLoaded) {
+    return undefined;
+  }
+
+  try {
+    const alias = rotationAlias(characterId, direction);
+    return Assets.get<Texture>(alias);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Get all walking frame textures for a character in a given direction.
+ * @param characterId - The character ID (e.g., "sarah", "craig")
+ * @param direction - The facing direction
+ * @returns Array of 4 textures if loaded, undefined otherwise
+ */
+export function getCharacterWalkingFrames(
+  characterId: string,
+  direction: FacingDirection
+): Texture[] | undefined {
+  if (!characterSheetsLoaded) {
+    return undefined;
+  }
+
+  try {
+    const frames: Texture[] = [];
+    for (let i = 0; i < WALKING_FRAME_COUNT; i++) {
+      const alias = walkingFrameAlias(characterId, direction, i);
+      const texture = Assets.get<Texture>(alias);
+      if (!texture) return undefined;
+      frames.push(texture);
+    }
+    return frames;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Reset the character sprite sheet loader state.
+ */
+export function resetCharacterSheetAssets(): void {
+  characterSheetsLoaded = false;
+  characterSheetsLoadingPromise = null;
 }

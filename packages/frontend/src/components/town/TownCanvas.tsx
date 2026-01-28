@@ -14,6 +14,7 @@ import {
 import {
   loadBuildingAssets,
   loadCharacterAssets,
+  loadCharacterSheetAssets,
   getBuildingTexture,
   areBuildingAssetsLoaded,
   createScaledBuildingSprite,
@@ -59,16 +60,21 @@ export function TownCanvas() {
       canvasRef.current?.appendChild(app.canvas);
       appRef.current = app;
 
-      // Load building and character sprites
+      // Load all sprite assets
       try {
-        // Load buildings first (50% of progress)
+        // Load buildings (30% of progress)
         await loadBuildingAssets((progress) => {
-          setLoadingProgress(progress * 0.5);
+          setLoadingProgress(progress * 0.3);
         });
 
-        // Load characters (remaining 50%)
+        // Load character sprite sheets - 4-directional animations (50% of progress)
+        await loadCharacterSheetAssets((progress) => {
+          setLoadingProgress(0.3 + progress * 0.5);
+        });
+
+        // Load legacy character portraits as fallback (20% of progress)
         await loadCharacterAssets((progress) => {
-          setLoadingProgress(0.5 + progress * 0.5);
+          setLoadingProgress(0.8 + progress * 0.2);
         });
       } catch (error) {
         console.error("Failed to load assets, using fallback:", error);
