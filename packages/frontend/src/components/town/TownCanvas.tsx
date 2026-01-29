@@ -4,7 +4,6 @@ import { useEffect, useRef, useCallback, useState } from "react";
 import * as PIXI from "pixi.js";
 import {
   BUILDINGS,
-  ROADS,
   CANVAS_WIDTH,
   CANVAS_HEIGHT,
   BuildingConfig,
@@ -19,6 +18,8 @@ import {
   areBuildingAssetsLoaded,
   createScaledBuildingSprite,
 } from "@/lib/pixi/spriteLoader";
+import { loadTileAssets, getTileTexture } from "@/lib/pixi/TileMap";
+import { TILE_SIZE, GRID_WIDTH, GRID_HEIGHT, getTileAt } from "@/lib/pixi/tileConfig";
 import { AnimatedCharacter } from "@/lib/pixi/AnimatedCharacter";
 import { CHARACTER_DEFINITIONS } from "@/lib/pixi/characterConfig";
 import { useSimulationStore } from "@/lib/state/simulationStore";
@@ -62,25 +63,30 @@ export function TownCanvas() {
 
       // Load all sprite assets
       try {
-        // Load buildings (30% of progress)
+        // Load tile assets (15% of progress)
+        await loadTileAssets((progress) => {
+          setLoadingProgress(progress * 0.15);
+        });
+
+        // Load buildings (25% of progress)
         await loadBuildingAssets((progress) => {
-          setLoadingProgress(progress * 0.3);
+          setLoadingProgress(0.15 + progress * 0.25);
         });
 
-        // Load character sprite sheets - 4-directional animations (50% of progress)
+        // Load character sprite sheets - 4-directional animations (45% of progress)
         await loadCharacterSheetAssets((progress) => {
-          setLoadingProgress(0.3 + progress * 0.5);
+          setLoadingProgress(0.4 + progress * 0.45);
         });
 
-        // Load legacy character portraits as fallback (20% of progress)
+        // Load legacy character portraits as fallback (15% of progress)
         await loadCharacterAssets((progress) => {
-          setLoadingProgress(0.8 + progress * 0.2);
+          setLoadingProgress(0.85 + progress * 0.15);
         });
       } catch (error) {
         console.error("Failed to load assets, using fallback:", error);
       }
 
-      // Draw the town (uses sprites if loaded, fallback otherwise)
+      // Draw the town (uses TileMap for terrain, sprites for buildings)
       drawTown(app);
 
       // Create all 6 characters at their starting positions
@@ -98,38 +104,35 @@ export function TownCanvas() {
     };
   }, []);
 
-  // Draw the town layout
+  // Draw the town layout using tile sprites
   const drawTown = useCallback((app: PIXI.Application) => {
-    // Ground (grass)
-    const grass = new PIXI.Graphics();
-    grass.rect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
-    grass.fill(0x90ee90);
-    app.stage.addChild(grass);
+    // Render tile-based terrain
+    for (let gridY = 0; gridY < GRID_HEIGHT; gridY++) {
+      for (let gridX = 0; gridX < GRID_WIDTH; gridX++) {
+        const tileDef = getTileAt(gridX, gridY);
+        const worldX = gridX * TILE_SIZE;
+        const worldY = gridY * TILE_SIZE;
 
-    // Main street
-    const road = new PIXI.Graphics();
-    road.rect(0, ROADS.mainStreet.y, CANVAS_WIDTH, ROADS.mainStreet.height);
-    road.fill(0x696969);
-    app.stage.addChild(road);
+        // Try to use sprite texture if loaded
+        const texture = getTileTexture(tileDef.type);
+        if (texture) {
+          const sprite = new PIXI.Sprite(texture);
+          sprite.position.set(worldX, worldY);
+          sprite.width = TILE_SIZE;
+          sprite.height = TILE_SIZE;
+          app.stage.addChild(sprite);
+        } else {
+          // Fallback to colored rectangle
+          const graphics = new PIXI.Graphics();
+          graphics.rect(0, 0, TILE_SIZE, TILE_SIZE);
+          graphics.fill(tileDef.color);
+          graphics.position.set(worldX, worldY);
+          app.stage.addChild(graphics);
+        }
+      }
+    }
 
-    // Road markings
-    const markings = new PIXI.Graphics();
-    markings.rect(0, ROADS.mainStreet.y + ROADS.mainStreet.height / 2 - 2, CANVAS_WIDTH, 4);
-    markings.fill(0xffff00);
-    app.stage.addChild(markings);
-
-    // Cross street to Sarah's office
-    const crossRoad = new PIXI.Graphics();
-    crossRoad.rect(
-      ROADS.crossStreet.x - ROADS.crossStreet.width / 2,
-      ROADS.mainStreet.y + ROADS.mainStreet.height,
-      ROADS.crossStreet.width,
-      200
-    );
-    crossRoad.fill(0x696969);
-    app.stage.addChild(crossRoad);
-
-    // Draw buildings
+    // Draw buildings (on top of terrain)
     BUILDINGS.forEach((building) => {
       const container = drawBuilding(app, building);
       buildingsRef.current.set(building.id, container);
@@ -319,20 +322,12 @@ export function TownCanvas() {
     charData.character.moveTo(entrance.x, targetY);
   };
 
-  // Update phase background color
+  // Update terrain colors based on time of day
+  // Note: With tile-based rendering, we'd need to update all tile colors
+  // For now, this is a placeholder - full night mode would require re-rendering tiles
   useEffect(() => {
-    if (!appRef.current) return;
-
-    // Update sky color based on phase
-    const stage = appRef.current.stage;
-    const grass = stage.children[0] as PIXI.Graphics;
-    if (grass) {
-      // Adjust grass color based on time of day
-      const isNight = currentPhase === "night" || currentPhase === "evening";
-      grass.clear();
-      grass.rect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
-      grass.fill(isNight ? 0x2d5a27 : 0x90ee90);
-    }
+    // Night mode for tiles not yet implemented
+    // Would need to re-render all tiles with nightColor instead of color
   }, [currentPhase]);
 
   // Update character positions, animations, and bubbles based on agent state
