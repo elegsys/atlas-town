@@ -118,6 +118,54 @@ interface SimulationState {
 const MAX_TRANSACTIONS = 50;
 const MAX_EVENTS = 100;
 
+/**
+ * Map agent names to their IDs.
+ * Handles various name formats from backend events.
+ */
+const AGENT_NAME_TO_ID: Record<string, string> = {
+  "Sarah Chen": "sarah",
+  "sarah": "sarah",
+  "Craig Miller": "craig",
+  "craig": "craig",
+  "Tony Romano": "tony",
+  "tony": "tony",
+  "Maya Patel": "maya",
+  "maya": "maya",
+  "Dr. David Chen": "chen",
+  "David Chen": "chen",
+  "chen": "chen",
+  "Marcus Thompson": "marcus",
+  "marcus": "marcus",
+};
+
+/**
+ * Resolve agent ID from event data.
+ * Tries movement.agent_id, agent.name, and agent.id.
+ */
+function resolveAgentId(event: SimulationEvent): string | null {
+  // Try movement agent_id first (most reliable for movement events)
+  if (event.movement?.agent_id) {
+    const id = AGENT_NAME_TO_ID[event.movement.agent_id] || event.movement.agent_id;
+    if (id) return id;
+  }
+  // Try movement agent_name
+  if (event.movement?.agent_name) {
+    const id = AGENT_NAME_TO_ID[event.movement.agent_name];
+    if (id) return id;
+  }
+  // Try agent.name
+  if (event.agent?.name) {
+    const id = AGENT_NAME_TO_ID[event.agent.name];
+    if (id) return id;
+  }
+  // Try agent.id directly
+  if (event.agent?.id) {
+    const id = AGENT_NAME_TO_ID[event.agent.id] || event.agent.id;
+    if (id) return id;
+  }
+  return null;
+}
+
 export const useSimulationStore = create<SimulationState>((set, get) => ({
   // Connection
   isConnected: false,
@@ -134,7 +182,7 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
   currentPhase: "early_morning",
   phaseDescription: "",
 
-  // Agents - initialize with Sarah
+  // Agents - initialize all 6 agents
   agents: new Map([
     [
       "sarah",
@@ -144,6 +192,71 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
         type: "accountant",
         status: "idle",
         currentLocation: "office",
+        targetLocation: null,
+        currentMessage: null,
+        orgId: null,
+      },
+    ],
+    [
+      "craig",
+      {
+        id: "craig",
+        name: "Craig Miller",
+        type: "owner",
+        status: "idle",
+        currentLocation: "craigs_landscaping",
+        targetLocation: null,
+        currentMessage: null,
+        orgId: null,
+      },
+    ],
+    [
+      "tony",
+      {
+        id: "tony",
+        name: "Tony Romano",
+        type: "owner",
+        status: "idle",
+        currentLocation: "tonys_pizzeria",
+        targetLocation: null,
+        currentMessage: null,
+        orgId: null,
+      },
+    ],
+    [
+      "maya",
+      {
+        id: "maya",
+        name: "Maya Patel",
+        type: "owner",
+        status: "idle",
+        currentLocation: "nexus_tech",
+        targetLocation: null,
+        currentMessage: null,
+        orgId: null,
+      },
+    ],
+    [
+      "chen",
+      {
+        id: "chen",
+        name: "Dr. David Chen",
+        type: "owner",
+        status: "idle",
+        currentLocation: "main_street_dental",
+        targetLocation: null,
+        currentMessage: null,
+        orgId: null,
+      },
+    ],
+    [
+      "marcus",
+      {
+        id: "marcus",
+        name: "Marcus Thompson",
+        type: "owner",
+        status: "idle",
+        currentLocation: "harbor_realty",
         targetLocation: null,
         currentMessage: null,
         orgId: null,
@@ -295,49 +408,66 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
         }
         break;
 
-      case "agent.thinking":
-        if (event.agent?.name) {
-          state.setAgentStatus("sarah", "thinking");
-          state.setAgentMessage("sarah", "Thinking...");
+      case "agent.thinking": {
+        const agentId = resolveAgentId(event);
+        if (agentId) {
+          state.setAgentStatus(agentId, "thinking");
+          state.setAgentMessage(agentId, "Thinking...");
         }
         break;
+      }
 
-      case "agent.speaking":
-        if (event.agent?.name && event.data?.message) {
-          state.setAgentStatus("sarah", "speaking");
-          state.setAgentMessage("sarah", event.data.message as string);
+      case "agent.speaking": {
+        const agentId = resolveAgentId(event);
+        if (agentId && event.data?.message) {
+          state.setAgentStatus(agentId, "speaking");
+          state.setAgentMessage(agentId, event.data.message as string);
           // Clear message after a delay
           setTimeout(() => {
-            state.setAgentMessage("sarah", null);
-            state.setAgentStatus("sarah", "idle");
+            state.setAgentMessage(agentId, null);
+            state.setAgentStatus(agentId, "idle");
           }, 5000);
         }
         break;
+      }
 
-      case "agent.moving":
-        if (event.movement) {
-          state.updateAgent("sarah", {
+      case "agent.moving": {
+        const agentId = resolveAgentId(event);
+        if (agentId && event.movement) {
+          state.updateAgent(agentId, {
             status: "moving",
             targetLocation: event.movement.to,
             currentMessage: `Walking to ${event.movement.to}`,
           });
           // Simulate arrival after animation
           setTimeout(() => {
-            state.setAgentLocation("sarah", event.movement!.to);
-            state.setAgentStatus("sarah", "idle");
-            state.setAgentMessage("sarah", null);
+            state.setAgentLocation(agentId, event.movement!.to);
+            state.setAgentStatus(agentId, "idle");
+            state.setAgentMessage(agentId, null);
           }, 2000);
         }
         break;
+      }
 
-      case "org.visited":
-        if (event.agent?.org_id) {
+      case "agent.idle": {
+        const agentId = resolveAgentId(event);
+        if (agentId) {
+          state.setAgentStatus(agentId, "idle");
+          state.setAgentMessage(agentId, null);
+        }
+        break;
+      }
+
+      case "org.visited": {
+        const agentId = resolveAgentId(event);
+        if (agentId && event.agent?.org_id) {
           set({ currentOrgId: event.agent.org_id });
-          state.updateAgent("sarah", {
+          state.updateAgent(agentId, {
             orgId: event.agent.org_id,
           });
         }
         break;
+      }
 
       case "invoice.created":
       case "bill.created":
