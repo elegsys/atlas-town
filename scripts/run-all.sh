@@ -71,6 +71,33 @@ if [ ! -d "$ATLAS_ROOT/backend" ]; then
   exit 1
 fi
 
+# Check if Docker PostgreSQL is running
+check_docker_services() {
+  if ! docker ps 2>/dev/null | grep -q "atlas-postgres"; then
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${YELLOW}PostgreSQL Docker container not running!${NC}"
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo -e "Starting Docker services (postgres + redis)..."
+    (cd "$ATLAS_ROOT" && docker-compose up -d postgres redis)
+    echo -e "Waiting for PostgreSQL to be ready..."
+    sleep 5
+    # Wait for postgres to be healthy
+    for i in {1..30}; do
+      if docker exec atlas-postgres pg_isready -U postgres > /dev/null 2>&1; then
+        echo -e "${GREEN}PostgreSQL is ready!${NC}"
+        break
+      fi
+      sleep 1
+      if [ $i -eq 30 ]; then
+        echo -e "${RED}PostgreSQL failed to start after 30s${NC}"
+        exit 1
+      fi
+    done
+    echo ""
+  fi
+}
+
 # PIDs for cleanup
 ATLAS_PID=""
 FRONTEND_PID=""
@@ -99,6 +126,9 @@ echo -e "${CYAN}${BOLD}  🏘️  Atlas Town Development Environment${NC}"
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
+# Ensure Docker services are running
+check_docker_services
+
 # Step 0: Reset database if requested
 if [ "$DO_RESET" = true ]; then
   echo -e "${MAGENTA}${BOLD}[RESET] Resetting database and reseeding data...${NC}"
@@ -115,8 +145,8 @@ if [ "$DO_RESET" = true ]; then
   echo ""
 fi
 
-# Generate encryption key once
-export TAX_ID_ENCRYPTION_KEY="$(python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+# Generate encryption key using Atlas backend's venv (has cryptography installed)
+export TAX_ID_ENCRYPTION_KEY="$("$ATLAS_ROOT/backend/venv/bin/python" -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
 
 # Step 1: Start Atlas API
 echo -e "${RED}${BOLD}[1/3] Starting Atlas API on port 8000...${NC}"
