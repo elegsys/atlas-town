@@ -1,58 +1,94 @@
 "use client";
 
+/**
+ * TownCanvas - Main orchestrator for the Atlas Town isometric view.
+ *
+ * This component has been refactored to use the new modular architecture:
+ * - IsometricCamera: Handles all coordinate transforms and offsets
+ * - IsometricTileMap: Renders static terrain
+ * - EntityManager: Manages buildings and characters with depth sorting
+ * - Building/Character: Entity classes for game objects
+ *
+ * The previous 500+ line monolith is now a ~200 line orchestrator.
+ */
+
 import { useEffect, useRef, useCallback, useState } from "react";
 import * as PIXI from "pixi.js";
+
+// New modular architecture imports
 import {
-  BUILDINGS,
+  IsometricCamera,
+  IsometricTileMap,
+  EntityManager,
+  TileType,
   CANVAS_WIDTH,
   CANVAS_HEIGHT,
-  BuildingConfig,
-  getBuildingByName,
-  getBuildingEntrance,
-} from "@/lib/pixi/townConfig";
+} from "@/lib/pixi/isometric/index";
+import { Building, BuildingConfig, Character, CharacterConfig, setCharacterTextureLoader } from "@/lib/pixi/entities/index";
+
+// Existing config and loaders
+import { BUILDINGS, getBuildingByName } from "@/lib/pixi/townConfig";
+import { CHARACTER_DEFINITIONS } from "@/lib/pixi/characterConfig";
 import {
   loadBuildingAssets,
   loadCharacterAssets,
   loadCharacterSheetAssets,
   getBuildingTexture,
   areBuildingAssetsLoaded,
-  createScaledBuildingSprite,
+  areCharacterSheetsLoaded,
+  getCharacterRotationTexture,
+  getCharacterWalkingFrames,
 } from "@/lib/pixi/spriteLoader";
 import { loadTileAssets, getTileTexture } from "@/lib/pixi/TileMap";
-import { TILE_SIZE, GRID_WIDTH, GRID_HEIGHT, getTileAt } from "@/lib/pixi/tileConfig";
-import { AnimatedCharacter } from "@/lib/pixi/AnimatedCharacter";
-import { CHARACTER_DEFINITIONS } from "@/lib/pixi/characterConfig";
 import { useSimulationStore } from "@/lib/state/simulationStore";
 
+// ============================================
+// TYPES
+// ============================================
+
 interface CharacterWithBubble {
-  character: AnimatedCharacter;
+  character: Character;
   bubble: PIXI.Container | null;
 }
+
+// ============================================
+// COMPONENT
+// ============================================
 
 export function TownCanvas() {
   const canvasRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<PIXI.Application | null>(null);
-  const charactersRef = useRef<Map<string, CharacterWithBubble>>(new Map());
-  const buildingsRef = useRef<Map<string, PIXI.Container>>(new Map());
 
-  // Loading state for sprite assets
+  // Core architecture instances
+  const cameraRef = useRef<IsometricCamera | null>(null);
+  const tileMapRef = useRef<IsometricTileMap | null>(null);
+  const entityManagerRef = useRef<EntityManager | null>(null);
+
+  // Entity tracking
+  const charactersRef = useRef<Map<string, CharacterWithBubble>>(new Map());
+  const buildingsRef = useRef<Map<string, Building>>(new Map());
+
+  // Loading state
   const [isLoading, setIsLoading] = useState(true);
   const [loadingProgress, setLoadingProgress] = useState(0);
 
-  // Get state from store
+  // Store state
   const agents = useSimulationStore((state) => state.agents);
-  const currentPhase = useSimulationStore((state) => state.currentPhase);
 
-  // Initialize PixiJS
+  // ============================================
+  // INITIALIZATION
+  // ============================================
+
   useEffect(() => {
     if (!canvasRef.current || appRef.current) return;
 
     const initPixi = async () => {
+      // Create PixiJS application
       const app = new PIXI.Application();
       await app.init({
         width: CANVAS_WIDTH,
         height: CANVAS_HEIGHT,
-        backgroundColor: 0x87ceeb, // Sky blue
+        backgroundColor: 0x87ceeb,
         antialias: true,
         resolution: window.devicePixelRatio || 1,
         autoDensity: true,
@@ -61,36 +97,21 @@ export function TownCanvas() {
       canvasRef.current?.appendChild(app.canvas);
       appRef.current = app;
 
-      // Load all sprite assets
-      try {
-        // Load tile assets (15% of progress)
-        await loadTileAssets((progress) => {
-          setLoadingProgress(progress * 0.15);
-        });
+      // Create core architecture
+      const camera = new IsometricCamera();
+      cameraRef.current = camera;
 
-        // Load buildings (25% of progress)
-        await loadBuildingAssets((progress) => {
-          setLoadingProgress(0.15 + progress * 0.25);
-        });
+      const tileMap = new IsometricTileMap(camera);
+      tileMapRef.current = tileMap;
 
-        // Load character sprite sheets - 4-directional animations (45% of progress)
-        await loadCharacterSheetAssets((progress) => {
-          setLoadingProgress(0.4 + progress * 0.45);
-        });
+      const entityManager = new EntityManager(camera);
+      entityManagerRef.current = entityManager;
 
-        // Load legacy character portraits as fallback (15% of progress)
-        await loadCharacterAssets((progress) => {
-          setLoadingProgress(0.85 + progress * 0.15);
-        });
-      } catch (error) {
-        console.error("Failed to load assets, using fallback:", error);
-      }
+      // Load all assets
+      await loadAssets();
 
-      // Draw the town (uses TileMap for terrain, sprites for buildings)
-      drawTown(app);
-
-      // Create all 6 characters at their starting positions
-      createAllCharacters(app);
+      // Build the scene
+      buildScene(app, camera, tileMap, entityManager);
 
       // Done loading
       setIsLoading(false);
@@ -99,155 +120,141 @@ export function TownCanvas() {
     initPixi();
 
     return () => {
+      entityManagerRef.current?.destroy();
       appRef.current?.destroy(true);
       appRef.current = null;
     };
   }, []);
 
-  // Draw the town layout using tile sprites
-  const drawTown = useCallback((app: PIXI.Application) => {
-    // Render tile-based terrain
-    for (let gridY = 0; gridY < GRID_HEIGHT; gridY++) {
-      for (let gridX = 0; gridX < GRID_WIDTH; gridX++) {
-        const tileDef = getTileAt(gridX, gridY);
-        const worldX = gridX * TILE_SIZE;
-        const worldY = gridY * TILE_SIZE;
+  // ============================================
+  // ASSET LOADING
+  // ============================================
 
-        // Try to use sprite texture if loaded
-        const texture = getTileTexture(tileDef.type);
-        if (texture) {
-          const sprite = new PIXI.Sprite(texture);
-          sprite.position.set(worldX, worldY);
-          sprite.width = TILE_SIZE;
-          sprite.height = TILE_SIZE;
-          app.stage.addChild(sprite);
-        } else {
-          // Fallback to colored rectangle
-          const graphics = new PIXI.Graphics();
-          graphics.rect(0, 0, TILE_SIZE, TILE_SIZE);
-          graphics.fill(tileDef.color);
-          graphics.position.set(worldX, worldY);
-          app.stage.addChild(graphics);
-        }
-      }
-    }
+  const loadAssets = async () => {
+    try {
+      // Load tile assets (15% of progress)
+      await loadTileAssets((progress) => {
+        setLoadingProgress(progress * 0.15);
+      });
 
-    // Draw buildings (on top of terrain)
-    BUILDINGS.forEach((building) => {
-      const container = drawBuilding(app, building);
-      buildingsRef.current.set(building.id, container);
-    });
-  }, []);
+      // Load buildings (25% of progress)
+      await loadBuildingAssets((progress) => {
+        setLoadingProgress(0.15 + progress * 0.25);
+      });
 
-  // Draw a single building (sprite or procedural fallback)
-  const drawBuilding = (app: PIXI.Application, config: BuildingConfig): PIXI.Container => {
-    const container = new PIXI.Container();
-    container.position.set(config.x, config.y);
+      // Load character sprite sheets (45% of progress)
+      await loadCharacterSheetAssets((progress) => {
+        setLoadingProgress(0.4 + progress * 0.45);
+      });
 
-    // Try to use sprite if available
-    const texture = getBuildingTexture(config.id);
-    if (texture && areBuildingAssetsLoaded()) {
-      // Render as sprite
-      const sprite = createScaledBuildingSprite(texture, config.width, config.height);
-      container.addChild(sprite);
-    } else {
-      // Fallback to procedural rendering
-      drawProceduralBuilding(container, config);
-    }
+      // Load legacy character portraits as fallback (15% of progress)
+      await loadCharacterAssets((progress) => {
+        setLoadingProgress(0.85 + progress * 0.15);
+      });
 
-    // Label (always add below building)
-    const label = new PIXI.Text({
-      text: config.label,
-      style: {
-        fontFamily: "Arial",
-        fontSize: 12,
-        fill: 0xffffff,
-        align: "center",
-        fontWeight: "bold",
-        dropShadow: {
-          color: 0x000000,
-          blur: 2,
-          distance: 1,
-        },
-      },
-    });
-    label.anchor.set(0.5, 0);
-    label.position.set(config.width / 2, config.height + 5);
-    container.addChild(label);
+      // Set up character texture loader for the Character entity class
+      setCharacterTextureLoader({
+        getRotationTexture: getCharacterRotationTexture,
+        getWalkingFrames: getCharacterWalkingFrames,
+        areAssetsLoaded: () => areBuildingAssetsLoaded(),
+        areSheetsLoaded: areCharacterSheetsLoaded,
+      });
 
-    app.stage.addChild(container);
-    return container;
-  };
-
-  // Procedural building rendering (fallback)
-  const drawProceduralBuilding = (container: PIXI.Container, config: BuildingConfig): void => {
-    // Building body
-    const body = new PIXI.Graphics();
-    body.roundRect(0, 0, config.width, config.height, 8);
-    body.fill(config.color);
-    body.stroke({ width: 2, color: 0x333333 });
-    container.addChild(body);
-
-    // Roof (simple triangle)
-    const roof = new PIXI.Graphics();
-    roof.moveTo(config.width / 2, -20);
-    roof.lineTo(-10, 0);
-    roof.lineTo(config.width + 10, 0);
-    roof.closePath();
-    roof.fill(darkenColor(config.color, 0.3));
-    container.addChild(roof);
-
-    // Door
-    const door = new PIXI.Graphics();
-    door.roundRect(config.width / 2 - 15, config.height - 40, 30, 40, 4);
-    door.fill(0x8b4513);
-    container.addChild(door);
-
-    // Windows
-    const windowWidth = 25;
-    const windowHeight = 30;
-    const windowY = 30;
-
-    for (let i = 0; i < 2; i++) {
-      const win = new PIXI.Graphics();
-      const winX = i === 0 ? 20 : config.width - 45;
-      win.roundRect(winX, windowY, windowWidth, windowHeight, 2);
-      win.fill(0xadd8e6);
-      win.stroke({ width: 1, color: 0x333333 });
-      container.addChild(win);
+    } catch (error) {
+      console.error("Failed to load assets, using fallback:", error);
     }
   };
 
-  // Create all characters using AnimatedCharacter class
-  const createAllCharacters = (app: PIXI.Application): void => {
-    for (const definition of CHARACTER_DEFINITIONS) {
-      // Create animated character
-      const character = new AnimatedCharacter(definition, app.ticker);
+  // ============================================
+  // SCENE BUILDING
+  // ============================================
 
-      // Position at starting building
-      const building = BUILDINGS.find((b) => b.id === definition.startingBuilding);
-      if (building) {
-        const entrance = getBuildingEntrance(building);
-        character.teleportTo(entrance.x, entrance.y + 20);
+  const buildScene = useCallback((
+    app: PIXI.Application,
+    camera: IsometricCamera,
+    tileMap: IsometricTileMap,
+    entityManager: EntityManager
+  ) => {
+    // Inject tile textures into tileMap
+    const tileTypes: TileType[] = ["grass", "road", "sidewalk", "road_marking"];
+    for (const type of tileTypes) {
+      const texture = getTileTexture(type);
+      if (texture) {
+        tileMap.setTileTexture(type, texture);
       }
+    }
+    tileMap.setAssetsLoaded(true);
 
-      // Add to stage
-      app.stage.addChild(character.container);
+    // Build terrain (static layer)
+    tileMap.build();
+    app.stage.addChild(tileMap.container);
 
-      // Store reference with bubble tracking
-      const charWithBubble: CharacterWithBubble = {
-        character,
-        bubble: null,
+    // Add entity container (sortable layer)
+    app.stage.addChild(entityManager.container);
+
+    // Create buildings
+    for (const config of BUILDINGS) {
+      if (config.gridX === undefined || config.gridY === undefined) continue;
+
+      const buildingConfig: BuildingConfig = {
+        id: config.id,
+        name: config.name,
+        gridX: config.gridX,
+        gridY: config.gridY,
+        type: config.type,
+        industry: config.industry,
+        width: config.width,
+        height: config.height,
+        color: config.color,
+        label: config.label,
+        spritePath: config.spritePath,
       };
 
-      charactersRef.current.set(definition.id, charWithBubble);
-    }
-  };
+      const building = new Building(camera, buildingConfig);
 
-  // Show thought/speech bubble
-  const showBubble = (characterId: string, message: string) => {
+      // Set texture if available
+      const texture = getBuildingTexture(config.id);
+      if (texture && areBuildingAssetsLoaded()) {
+        building.setTexture(texture);
+      }
+
+      building.build();
+      entityManager.add(building);
+      buildingsRef.current.set(config.id, building);
+    }
+
+    // Create characters
+    for (const definition of CHARACTER_DEFINITIONS) {
+      const building = BUILDINGS.find((b) => b.id === definition.startingBuilding);
+      if (!building || building.gridX === undefined || building.gridY === undefined) continue;
+
+      const charConfig: CharacterConfig = {
+        id: definition.id,
+        name: definition.name,
+        gridX: building.gridX,
+        gridY: building.gridY + 2, // Position in front of building
+        themeColor: definition.themeColor,
+        spritePath: definition.spritePath,
+      };
+
+      const character = new Character(camera, charConfig, app.ticker);
+      character.build();
+      entityManager.add(character);
+
+      charactersRef.current.set(definition.id, {
+        character,
+        bubble: null,
+      });
+    }
+  }, []);
+
+  // ============================================
+  // BUBBLE MANAGEMENT
+  // ============================================
+
+  const showBubble = useCallback((characterId: string, message: string) => {
     const charData = charactersRef.current.get(characterId);
-    if (!charData || !appRef.current) return;
+    if (!charData) return;
 
     // Remove existing bubble
     if (charData.bubble) {
@@ -255,11 +262,8 @@ export function TownCanvas() {
     }
 
     const bubble = new PIXI.Container();
-
-    // Truncate message
     const displayMessage = message.length > 60 ? message.substring(0, 57) + "..." : message;
 
-    // Bubble text
     const text = new PIXI.Text({
       text: displayMessage,
       style: {
@@ -272,7 +276,6 @@ export function TownCanvas() {
     });
     text.anchor.set(0.5, 0.5);
 
-    // Bubble background
     const padding = 8;
     const bg = new PIXI.Graphics();
     bg.roundRect(
@@ -297,40 +300,37 @@ export function TownCanvas() {
 
     charData.character.container.addChild(bubble);
     charData.bubble = bubble;
-  };
+  }, []);
 
-  // Hide bubble
-  const hideBubble = (characterId: string) => {
+  const hideBubble = useCallback((characterId: string) => {
     const charData = charactersRef.current.get(characterId);
     if (charData?.bubble) {
       charData.character.container.removeChild(charData.bubble);
       charData.bubble = null;
     }
-  };
+  }, []);
 
-  // Move character to building using AnimatedCharacter's moveTo
-  const moveCharacterTo = (characterId: string, buildingName: string) => {
+  // ============================================
+  // CHARACTER MOVEMENT
+  // ============================================
+
+  const moveCharacterTo = useCallback((characterId: string, buildingName: string) => {
     const charData = charactersRef.current.get(characterId);
     const building = getBuildingByName(buildingName);
+    const camera = cameraRef.current;
 
-    if (!charData || !building || !appRef.current) return;
+    if (!charData || !building || !camera) return;
 
-    const entrance = getBuildingEntrance(building);
-    const targetY = entrance.y + 20;
+    if (building.gridX !== undefined && building.gridY !== undefined) {
+      // Move to grid position in front of building
+      charData.character.moveToGrid(building.gridX, building.gridY + 2);
+    }
+  }, []);
 
-    // Use AnimatedCharacter's built-in movement animation
-    charData.character.moveTo(entrance.x, targetY);
-  };
+  // ============================================
+  // AGENT STATE SYNC
+  // ============================================
 
-  // Update terrain colors based on time of day
-  // Note: With tile-based rendering, we'd need to update all tile colors
-  // For now, this is a placeholder - full night mode would require re-rendering tiles
-  useEffect(() => {
-    // Night mode for tiles not yet implemented
-    // Would need to re-render all tiles with nightColor instead of color
-  }, [currentPhase]);
-
-  // Update character positions, animations, and bubbles based on agent state
   useEffect(() => {
     agents.forEach((agent, id) => {
       const charData = charactersRef.current.get(id);
@@ -339,7 +339,6 @@ export function TownCanvas() {
       // Map agent status to animation state
       if (agent.status === "moving" && agent.targetLocation) {
         moveCharacterTo(id, agent.targetLocation);
-        // Animation state is set by moveTo automatically
       } else if (agent.status === "thinking") {
         charData.character.state = "thinking";
       } else if (agent.status === "speaking") {
@@ -348,14 +347,18 @@ export function TownCanvas() {
         charData.character.state = "idle";
       }
 
-      // Handle messages (speech/thought bubbles)
+      // Handle messages
       if (agent.currentMessage) {
         showBubble(id, agent.currentMessage);
       } else {
         hideBubble(id);
       }
     });
-  }, [agents]);
+  }, [agents, moveCharacterTo, showBubble, hideBubble]);
+
+  // ============================================
+  // RENDER
+  // ============================================
 
   return (
     <div className="relative">
@@ -364,7 +367,6 @@ export function TownCanvas() {
         className="rounded-lg overflow-hidden shadow-2xl border border-slate-700"
         style={{ width: CANVAS_WIDTH, height: CANVAS_HEIGHT }}
       />
-      {/* Loading overlay */}
       {isLoading && (
         <div
           className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/80 rounded-lg"
@@ -384,12 +386,4 @@ export function TownCanvas() {
       )}
     </div>
   );
-}
-
-// Helper function to darken a color
-function darkenColor(color: number, factor: number): number {
-  const r = ((color >> 16) & 0xff) * (1 - factor);
-  const g = ((color >> 8) & 0xff) * (1 - factor);
-  const b = (color & 0xff) * (1 - factor);
-  return (Math.floor(r) << 16) | (Math.floor(g) << 8) | Math.floor(b);
 }

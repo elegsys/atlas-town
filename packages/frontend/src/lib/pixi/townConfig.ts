@@ -8,13 +8,19 @@ export interface BuildingConfig {
   name: string;
   type: "business" | "office" | "landmark";
   industry?: string;
+  /** Legacy pixel X position (for top-down view) */
   x: number;
+  /** Legacy pixel Y position (for top-down view) */
   y: number;
   width: number;
   height: number;
   color: number;
   label: string;
   spritePath?: string; // Path to sprite asset (relative to public/)
+  /** Isometric grid X position */
+  gridX?: number;
+  /** Isometric grid Y position */
+  gridY?: number;
 }
 
 // Character definitions
@@ -30,9 +36,19 @@ export interface CharacterConfig {
 export const CANVAS_WIDTH = 1200;
 export const CANVAS_HEIGHT = 700;
 
-// Town layout - buildings positioned along a main street
+/**
+ * Town layout - ALL buildings on NORTH side of main street.
+ *
+ * STAGGERED MODE: Grid 28×36
+ * Road runs horizontally at gridY = 17-19 (center Y = 18)
+ * North sidewalk at gridY = 16
+ *
+ * All buildings at gridY = 13 (above road)
+ * Spread horizontally from gridX = 2 to 17 (evenly spaced)
+ */
 export const BUILDINGS: BuildingConfig[] = [
-  // Main Street businesses (top row)
+  // === ALL BUILDINGS ON NORTH SIDE (gridY = 13) ===
+  // Spread horizontally along the road (gridX 7-22 to stay visible on 1200px canvas)
   {
     id: "craigs_landscaping",
     name: "Craig's Landscaping",
@@ -45,32 +61,8 @@ export const BUILDINGS: BuildingConfig[] = [
     color: 0x228b22, // Forest green
     label: "Craig's\nLandscaping",
     spritePath: "/sprites/buildings/craigs_landscaping.png",
-  },
-  {
-    id: "tonys_pizzeria",
-    name: "Tony's Pizzeria",
-    type: "business",
-    industry: "restaurant",
-    x: 280,
-    y: 80,
-    width: 180,
-    height: 140,
-    color: 0xdc143c, // Crimson
-    label: "Tony's\nPizzeria",
-    spritePath: "/sprites/buildings/tonys_pizzeria.png",
-  },
-  {
-    id: "nexus_tech",
-    name: "Nexus Tech",
-    type: "business",
-    industry: "technology",
-    x: 510,
-    y: 80,
-    width: 180,
-    height: 140,
-    color: 0x4169e1, // Royal blue
-    label: "Nexus Tech\nConsulting",
-    spritePath: "/sprites/buildings/nexus_tech.png",
+    gridX: 7,
+    gridY: 13,
   },
   {
     id: "main_street_dental",
@@ -84,6 +76,37 @@ export const BUILDINGS: BuildingConfig[] = [
     color: 0x87ceeb, // Sky blue
     label: "Main Street\nDental",
     spritePath: "/sprites/buildings/main_street_dental.png",
+    gridX: 10,
+    gridY: 13,
+  },
+  {
+    id: "tonys_pizzeria",
+    name: "Tony's Pizzeria",
+    type: "business",
+    industry: "restaurant",
+    x: 280,
+    y: 80,
+    width: 180,
+    height: 140,
+    color: 0xdc143c, // Crimson
+    label: "Tony's\nPizzeria",
+    spritePath: "/sprites/buildings/tonys_pizzeria.png",
+    gridX: 13,
+    gridY: 13,
+  },
+  {
+    id: "office",
+    name: "Accounting Office",
+    type: "office",
+    x: 500,
+    y: 480,
+    width: 200,
+    height: 120,
+    color: 0x708090, // Slate gray
+    label: "Sarah's\nAccounting",
+    spritePath: "/sprites/buildings/sarahs_office.png",
+    gridX: 16,
+    gridY: 13,
   },
   {
     id: "harbor_realty",
@@ -97,19 +120,23 @@ export const BUILDINGS: BuildingConfig[] = [
     color: 0xdaa520, // Goldenrod
     label: "Harbor\nRealty",
     spritePath: "/sprites/buildings/harbor_realty.png",
+    gridX: 19,
+    gridY: 13,
   },
-  // Sarah's office (bottom center)
   {
-    id: "office",
-    name: "Accounting Office",
-    type: "office",
-    x: 500,
-    y: 480,
-    width: 200,
-    height: 120,
-    color: 0x708090, // Slate gray
-    label: "Sarah's\nAccounting",
-    spritePath: "/sprites/buildings/sarahs_office.png",
+    id: "nexus_tech",
+    name: "Nexus Tech",
+    type: "business",
+    industry: "technology",
+    x: 510,
+    y: 80,
+    width: 180,
+    height: 140,
+    color: 0x4169e1, // Royal blue
+    label: "Nexus Tech\nConsulting",
+    spritePath: "/sprites/buildings/nexus_tech.png",
+    gridX: 22,
+    gridY: 13,
   },
 ];
 

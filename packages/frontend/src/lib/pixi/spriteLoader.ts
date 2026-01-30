@@ -7,12 +7,15 @@ import { Assets, Texture, Sprite } from "pixi.js";
 import {
   CHARACTER_SPRITE_PATHS,
   CHARACTER_DEFINITIONS,
-  ALL_DIRECTIONS,
+  DIRECTIONS_4,
+  DIRECTIONS_8,
   WALKING_FRAME_COUNT,
   FacingDirection,
-  getRotationSpritePath,
-  getWalkingFramePaths,
+  FacingDirection8,
+  DIRECTION_8_TO_4,
+  SPRITE_SHEET_BASE,
 } from "./characterConfig";
+import { ISOMETRIC_MODE } from "./isometric";
 
 // Sprite paths for each building (relative to public/)
 const BUILDING_SPRITE_PATHS: Record<string, string> = {
@@ -295,33 +298,61 @@ function walkingFrameAlias(characterId: string, direction: FacingDirection, fram
 
 /**
  * Register all character sprite sheet assets with the PixiJS Assets system.
+ * Uses legacy 4-dir sprites as the primary source since isometric walking animations are incomplete.
  */
 function registerCharacterSheetAssets(): void {
   const assets: Record<string, string> = {};
 
   for (const def of CHARACTER_DEFINITIONS) {
     const characterId = def.id;
+    // Use legacy folder for walking animations (more complete)
+    const legacyFolder = def.spriteSheet.folderName;
+    const isoFolder = def.spriteSheet.isoFolderName;
 
-    // Register rotation (idle) sprites for all 4 directions
-    for (const direction of ALL_DIRECTIONS) {
-      const path = getRotationSpritePath(characterId, direction);
-      if (path) {
+    // Register rotation sprites from isometric folder (all 8 directions exist)
+    if (ISOMETRIC_MODE && isoFolder) {
+      for (const direction of DIRECTIONS_8) {
+        const path = `${SPRITE_SHEET_BASE}/${isoFolder}/rotations/${direction}.png`;
+        const alias = rotationAlias(characterId, direction);
+        assets[alias] = path;
+      }
+    } else {
+      // Legacy mode - only 4 directions
+      for (const direction of DIRECTIONS_4) {
+        const path = `${SPRITE_SHEET_BASE}/${legacyFolder}/rotations/${direction}.png`;
         const alias = rotationAlias(characterId, direction);
         assets[alias] = path;
       }
     }
 
-    // Register walking frame sprites
-    for (const direction of ALL_DIRECTIONS) {
-      // Handle missing directions for some characters
-      const fallbacks = MISSING_WALKING_FALLBACKS[characterId];
-      const actualDirection = fallbacks?.[direction] ?? direction;
+    // Register walking animations from LEGACY folder (4 directions, more reliable)
+    // Handle missing walking directions for some characters
+    const fallbacks = MISSING_WALKING_FALLBACKS[characterId];
 
-      const paths = getWalkingFramePaths(characterId, actualDirection);
-      if (paths) {
+    for (const direction of DIRECTIONS_4) {
+      const actualDirection = fallbacks?.[direction] ?? direction;
+      const basePath = `${SPRITE_SHEET_BASE}/${legacyFolder}/animations/walking-4-frames/${actualDirection}`;
+
+      for (let i = 0; i < WALKING_FRAME_COUNT; i++) {
+        const alias = walkingFrameAlias(characterId, direction, i);
+        assets[alias] = `${basePath}/frame_00${i}.png`;
+      }
+    }
+
+    // For 8-direction mode, map diagonal directions to nearest cardinal for walking
+    if (ISOMETRIC_MODE) {
+      for (const direction of DIRECTIONS_8) {
+        // Skip cardinal directions (already registered)
+        if ((DIRECTIONS_4 as readonly string[]).includes(direction)) continue;
+
+        // Map diagonal to nearest cardinal direction for walking animations
+        const fallbackDir = DIRECTION_8_TO_4[direction as FacingDirection8];
+        const actualFallback = fallbacks?.[fallbackDir] ?? fallbackDir;
+        const basePath = `${SPRITE_SHEET_BASE}/${legacyFolder}/animations/walking-4-frames/${actualFallback}`;
+
         for (let i = 0; i < WALKING_FRAME_COUNT; i++) {
           const alias = walkingFrameAlias(characterId, direction, i);
-          assets[alias] = paths[i];
+          assets[alias] = `${basePath}/frame_00${i}.png`;
         }
       }
     }

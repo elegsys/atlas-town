@@ -9,13 +9,17 @@ import { Container, Sprite, Text, Graphics, Ticker, Texture } from "pixi.js";
 import {
   CharacterAnimationState,
   FacingDirection,
+  FacingDirection8,
   CharacterDefinition,
   ANIMATION_CONFIG,
   CHARACTER_DISPLAY_WIDTH,
   CHARACTER_DISPLAY_HEIGHT,
-  ALL_DIRECTIONS,
+  DIRECTIONS_4,
+  DIRECTIONS_8,
   WALKING_FRAME_COUNT,
+  DIRECTION_8_TO_4,
 } from "./characterConfig";
+import { ISOMETRIC_MODE, getDirectionFromDelta, IsoDirection } from "./isometric";
 import {
   getCharacterTexture,
   areCharacterAssetsLoaded,
@@ -182,19 +186,40 @@ export class AnimatedCharacter {
   private loadSpriteSheetTextures(): boolean {
     const characterId = this.definition.id;
 
+    // Determine which directions to load based on mode
+    const directionsToLoad = ISOMETRIC_MODE ? DIRECTIONS_8 : DIRECTIONS_4;
+
     // Load rotation textures
-    for (const direction of ALL_DIRECTIONS) {
+    for (const direction of directionsToLoad) {
       const texture = getCharacterRotationTexture(characterId, direction);
       if (texture) {
         this.rotationTextures.set(direction, texture);
+      } else if (ISOMETRIC_MODE) {
+        // Try fallback to 4-direction version for diagonal directions
+        const fallbackDir = DIRECTION_8_TO_4[direction as FacingDirection8];
+        if (fallbackDir !== direction) {
+          const fallbackTexture = getCharacterRotationTexture(characterId, fallbackDir);
+          if (fallbackTexture) {
+            this.rotationTextures.set(direction, fallbackTexture);
+          }
+        }
       }
     }
 
     // Load walking frames
-    for (const direction of ALL_DIRECTIONS) {
+    for (const direction of directionsToLoad) {
       const frames = getCharacterWalkingFrames(characterId, direction);
       if (frames && frames.length === WALKING_FRAME_COUNT) {
         this.walkingFrames.set(direction, frames);
+      } else if (ISOMETRIC_MODE) {
+        // Try fallback to 4-direction version for diagonal directions
+        const fallbackDir = DIRECTION_8_TO_4[direction as FacingDirection8];
+        if (fallbackDir !== direction) {
+          const fallbackFrames = getCharacterWalkingFrames(characterId, fallbackDir);
+          if (fallbackFrames && fallbackFrames.length === WALKING_FRAME_COUNT) {
+            this.walkingFrames.set(direction, fallbackFrames);
+          }
+        }
       }
     }
 
@@ -359,8 +384,17 @@ export class AnimatedCharacter {
       return this._direction;
     }
 
-    // Use dominant axis to determine direction
-    // In isometric/top-down games: positive Y is "south" (down), negative Y is "north" (up)
+    if (ISOMETRIC_MODE) {
+      // Use 8-direction calculation for isometric mode
+      const isoDir = getDirectionFromDelta(dx, dy);
+      if (isoDir) {
+        return isoDir as FacingDirection;
+      }
+      return this._direction;
+    }
+
+    // Legacy 4-direction: use dominant axis
+    // In top-down games: positive Y is "south" (down), negative Y is "north" (up)
     if (Math.abs(dx) > Math.abs(dy)) {
       return dx > 0 ? "east" : "west";
     } else {
