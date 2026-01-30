@@ -127,14 +127,14 @@ const AGENT_NAME_TO_ID: Record<string, string> = {
   "sarah": "sarah",
   "Craig Miller": "craig",
   "craig": "craig",
-  "Tony Romano": "tony",
+  "Tony Russo": "tony",
   "tony": "tony",
   "Maya Patel": "maya",
   "maya": "maya",
-  "Dr. David Chen": "chen",
-  "David Chen": "chen",
+  "Dr. Emily Chen": "chen",
+  "Emily Chen": "chen",
   "chen": "chen",
-  "Marcus Thompson": "marcus",
+  "Marcus Johnson": "marcus",
   "marcus": "marcus",
 };
 
@@ -214,7 +214,7 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
       "tony",
       {
         id: "tony",
-        name: "Tony Romano",
+        name: "Tony Russo",
         type: "owner",
         status: "idle",
         currentLocation: "tonys_pizzeria",
@@ -240,7 +240,7 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
       "chen",
       {
         id: "chen",
-        name: "Dr. David Chen",
+        name: "Dr. Emily Chen",
         type: "owner",
         status: "idle",
         currentLocation: "main_street_dental",
@@ -253,7 +253,7 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
       "marcus",
       {
         id: "marcus",
-        name: "Marcus Thompson",
+        name: "Marcus Johnson",
         type: "owner",
         status: "idle",
         currentLocation: "harbor_realty",

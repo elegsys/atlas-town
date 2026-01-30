@@ -126,7 +126,7 @@ export const CHARACTER_DEFINITIONS: CharacterDefinition[] = [
   },
   {
     id: "tony",
-    name: "Tony Romano",
+    name: "Tony Russo",
     spritePath: "/sprites/characters/tony_romano.png",
     spriteSheet: {
       sheetBase: SPRITE_SHEET_BASE,
@@ -150,7 +150,7 @@ export const CHARACTER_DEFINITIONS: CharacterDefinition[] = [
   },
   {
     id: "chen",
-    name: "Dr. David Chen",
+    name: "Dr. Emily Chen",
     spritePath: "/sprites/characters/david_chen.png",
     spriteSheet: {
       sheetBase: SPRITE_SHEET_BASE,
@@ -162,7 +162,7 @@ export const CHARACTER_DEFINITIONS: CharacterDefinition[] = [
   },
   {
     id: "marcus",
-    name: "Marcus Thompson",
+    name: "Marcus Johnson",
     spritePath: "/sprites/characters/marcus_thompson.png",
     spriteSheet: {
       sheetBase: SPRITE_SHEET_BASE,
