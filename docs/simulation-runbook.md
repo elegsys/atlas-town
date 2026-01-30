@@ -2,6 +2,36 @@
 
 Use this when you need a clean, repeatable simulation run with reliable logs.
 
+## Quick Start (Recommended)
+
+Run everything with one command from the project root:
+
+```bash
+# Fresh start: reset DB, reseed, and run all services
+./scripts/run-all.sh --reset --fast --days=1
+
+# Just run services (no DB reset)
+./scripts/run-all.sh --fast --days=1
+
+# Run without simulation (just API + frontend for testing)
+./scripts/run-all.sh --no-sim
+```
+
+This starts:
+- **Atlas API** on http://localhost:8000
+- **Frontend** on http://localhost:3000
+- **Simulation** with WebSocket on ws://localhost:8765
+
+All logs are color-coded and prefixed: `[API]`, `[FE]`, `[SIM]`
+
+Press `Ctrl+C` to stop all processes.
+
+---
+
+## Manual Setup (Alternative)
+
+Use the sections below if you need more control over individual components.
+
 ## Prerequisites
 
 - Atlas API running locally (default `http://localhost:8000`).

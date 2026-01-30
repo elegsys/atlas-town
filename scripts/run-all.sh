@@ -1,11 +1,13 @@
 #!/bin/bash
 #
 # Run Atlas API, Frontend, and Simulation together
-# Usage: ./scripts/run-all.sh [--fast] [--days=N]
+# Usage: ./scripts/run-all.sh [OPTIONS]
 #
 # Options:
+#   --reset     Reset database and reseed data before starting
 #   --fast      Run simulation in fast mode (no LLM calls)
 #   --days=N    Number of simulation days (default: 1)
+#   --no-sim    Don't start the simulation (just API + frontend)
 #
 # Press Ctrl+C to stop all processes
 
@@ -16,18 +18,41 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
 NC='\033[0m' # No Color
+BOLD='\033[1m'
 
 # Parse arguments
 SIM_MODE=""
 SIM_DAYS="1"
+DO_RESET=false
+NO_SIM=false
+
 for arg in "$@"; do
   case $arg in
+    --reset)
+      DO_RESET=true
+      ;;
     --fast)
       SIM_MODE="--mode=fast"
       ;;
     --days=*)
       SIM_DAYS="${arg#*=}"
+      ;;
+    --no-sim)
+      NO_SIM=true
+      ;;
+    --help|-h)
+      echo "Usage: ./scripts/run-all.sh [OPTIONS]"
+      echo ""
+      echo "Options:"
+      echo "  --reset     Reset database and reseed data before starting"
+      echo "  --fast      Run simulation in fast mode (no LLM calls)"
+      echo "  --days=N    Number of simulation days (default: 1)"
+      echo "  --no-sim    Don't start the simulation (just API + frontend)"
+      echo "  --help      Show this help message"
+      exit 0
       ;;
   esac
 done
@@ -52,11 +77,12 @@ FRONTEND_PID=""
 SIM_PID=""
 
 cleanup() {
-  echo -e "\n${YELLOW}Shutting down all processes...${NC}"
+  echo -e "\n${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  echo -e "${YELLOW}Shutting down all processes...${NC}"
 
-  [ -n "$SIM_PID" ] && kill $SIM_PID 2>/dev/null && echo -e "${BLUE}Stopped simulation${NC}"
-  [ -n "$FRONTEND_PID" ] && kill $FRONTEND_PID 2>/dev/null && echo -e "${GREEN}Stopped frontend${NC}"
-  [ -n "$ATLAS_PID" ] && kill $ATLAS_PID 2>/dev/null && echo -e "${RED}Stopped Atlas API${NC}"
+  [ -n "$SIM_PID" ] && kill $SIM_PID 2>/dev/null && echo -e "${BLUE}[SIM]${NC}  Stopped simulation"
+  [ -n "$FRONTEND_PID" ] && kill $FRONTEND_PID 2>/dev/null && echo -e "${GREEN}[FE]${NC}   Stopped frontend"
+  [ -n "$ATLAS_PID" ] && kill $ATLAS_PID 2>/dev/null && echo -e "${RED}[API]${NC}  Stopped Atlas API"
 
   # Kill any child processes
   jobs -p | xargs -r kill 2>/dev/null
@@ -67,67 +93,111 @@ cleanup() {
 
 trap cleanup SIGINT SIGTERM
 
-echo -e "${YELLOW}========================================${NC}"
-echo -e "${YELLOW}  Starting Atlas Town Development      ${NC}"
-echo -e "${YELLOW}========================================${NC}"
+# Header
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${CYAN}${BOLD}  🏘️  Atlas Town Development Environment${NC}"
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
+
+# Step 0: Reset database if requested
+if [ "$DO_RESET" = true ]; then
+  echo -e "${MAGENTA}${BOLD}[RESET] Resetting database and reseeding data...${NC}"
+  echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+  # Run Atlas DB setup
+  echo -e "${MAGENTA}[RESET]${NC} Running Atlas database setup..."
+  (
+    cd "$ATLAS_ROOT"
+    ./scripts/setup-db.sh --skip-seed 2>&1 | sed "s/^/${MAGENTA}[RESET]${NC} /"
+  )
+
+  echo -e "${MAGENTA}[RESET]${NC} Database reset complete."
+  echo ""
+fi
 
 # Generate encryption key once
 export TAX_ID_ENCRYPTION_KEY="$(python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
 
-# Start Atlas API
-echo -e "${RED}[1/3] Starting Atlas API on port 8000...${NC}"
+# Step 1: Start Atlas API
+echo -e "${RED}${BOLD}[1/3] Starting Atlas API on port 8000...${NC}"
 (
   cd "$ATLAS_ROOT/backend"
   source venv/bin/activate 2>/dev/null || true
-  uvicorn app.main:app --host 0.0.0.0 --port 8000 2>&1 | sed "s/^/[API] /"
+  uvicorn app.main:app --host 0.0.0.0 --port 8000 2>&1 | while IFS= read -r line; do
+    echo -e "${RED}[API]${NC}  $line"
+  done
 ) &
 ATLAS_PID=$!
 
 # Wait for API to be ready
-echo -e "${RED}[API] Waiting for API to be ready...${NC}"
+echo -e "${RED}[API]${NC}  Waiting for API to be ready..."
 for i in {1..30}; do
   if curl -s http://localhost:8000/docs > /dev/null 2>&1; then
-    echo -e "${RED}[API] Ready!${NC}"
+    echo -e "${RED}[API]${NC}  ${GREEN}Ready!${NC}"
     break
   fi
   sleep 1
   if [ $i -eq 30 ]; then
-    echo -e "${RED}[API] Failed to start after 30s${NC}"
+    echo -e "${RED}[API]${NC}  Failed to start after 30s"
     cleanup
   fi
 done
 
-# Start Frontend
-echo -e "${GREEN}[2/3] Starting Frontend on port 3000...${NC}"
+# Step 1b: Reseed simulation data if reset was requested
+if [ "$DO_RESET" = true ]; then
+  echo -e "${MAGENTA}[RESET]${NC} Seeding simulation data..."
+  (
+    cd "$PROJECT_ROOT/packages/simulation"
+    ATLAS_API_URL=http://localhost:8000 uv run python scripts/seed_data.py 2>&1 | sed "s/^/${MAGENTA}[SEED]${NC} /"
+  )
+  echo -e "${MAGENTA}[RESET]${NC} ${GREEN}Simulation data seeded!${NC}"
+  echo ""
+fi
+
+# Step 2: Start Frontend
+echo -e "${GREEN}${BOLD}[2/3] Starting Frontend on port 3000...${NC}"
 (
   cd "$PROJECT_ROOT/packages/frontend"
-  pnpm dev 2>&1 | sed "s/^/[FE]  /"
+  pnpm dev 2>&1 | while IFS= read -r line; do
+    echo -e "${GREEN}[FE]${NC}   $line"
+  done
 ) &
 FRONTEND_PID=$!
 
 # Wait for frontend to compile
 sleep 3
 
-# Start Simulation (delayed to ensure API is ready)
-echo -e "${BLUE}[3/3] Starting Simulation (mode=${SIM_MODE:-normal}, days=$SIM_DAYS)...${NC}"
-sleep 2
-(
-  cd "$PROJECT_ROOT/packages/simulation"
-  ATLAS_API_URL=http://localhost:8000 uv run python -m atlas_town.orchestrator $SIM_MODE --days=$SIM_DAYS 2>&1 | sed "s/^/[SIM] /"
-) &
-SIM_PID=$!
+# Step 3: Start Simulation (unless --no-sim)
+if [ "$NO_SIM" = false ]; then
+  echo -e "${BLUE}${BOLD}[3/3] Starting Simulation (mode=${SIM_MODE:-llm}, days=$SIM_DAYS)...${NC}"
+  sleep 2
+  (
+    cd "$PROJECT_ROOT/packages/simulation"
+    ATLAS_API_URL=http://localhost:8000 uv run python -m atlas_town.orchestrator $SIM_MODE --days=$SIM_DAYS 2>&1 | while IFS= read -r line; do
+      echo -e "${BLUE}[SIM]${NC}  $line"
+    done
+  ) &
+  SIM_PID=$!
+else
+  echo -e "${YELLOW}[3/3] Skipping simulation (--no-sim)${NC}"
+fi
 
+# Summary
 echo ""
-echo -e "${YELLOW}========================================${NC}"
-echo -e "${YELLOW}  All services running!                ${NC}"
-echo -e "${YELLOW}========================================${NC}"
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${CYAN}${BOLD}  All services running!${NC}"
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
-echo -e "  ${RED}Atlas API:${NC}    http://localhost:8000/docs"
-echo -e "  ${GREEN}Frontend:${NC}     http://localhost:3000"
-echo -e "  ${BLUE}Simulation:${NC}   Running ${SIM_MODE:-with LLMs} for $SIM_DAYS day(s)"
+echo -e "  ${RED}[API]${NC}  Atlas API:    ${BOLD}http://localhost:8000/docs${NC}"
+echo -e "  ${GREEN}[FE]${NC}   Frontend:     ${BOLD}http://localhost:3000${NC}"
+if [ "$NO_SIM" = false ]; then
+  echo -e "  ${BLUE}[SIM]${NC}  Simulation:   Running ${SIM_MODE:-with LLMs} for $SIM_DAYS day(s)"
+  echo -e "  ${BLUE}[SIM]${NC}  WebSocket:    ${BOLD}ws://localhost:8765${NC}"
+fi
 echo ""
 echo -e "${YELLOW}Press Ctrl+C to stop all processes${NC}"
+echo ""
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
 # Wait for any process to exit
