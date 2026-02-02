@@ -129,8 +129,14 @@ class Orchestrator:
         event_publisher: EventPublisher | None = None,
         start_websocket: bool = True,
         mode: SimulationMode = SimulationMode.LLM,
+        total_simulation_days: int = 30,
     ):
         settings = get_settings()
+
+        # Total days for calculating simulation date range
+        # Simulation dates end near today and go backwards:
+        # base_date = today - total_days, so day 1 = (today - total_days + 1)
+        self._total_simulation_days = total_simulation_days
 
         # Simulation mode
         self._mode = mode
@@ -387,11 +393,7 @@ class Orchestrator:
                 )
                 continue
 
-            name = (
-                org_data.get("name")
-                or info.get("organization_name")
-                or owner_key
-            )
+            name = org_data.get("name") or info.get("organization_name") or owner_key
             industry = org_data.get("industry", "general")
 
             ctx = OrganizationContext(
@@ -496,9 +498,7 @@ class Orchestrator:
         if customer_name:
             normalized = Orchestrator._normalize_customer_name(customer_name)
             for customer in customers:
-                name = str(
-                    customer.get("display_name") or customer.get("name", "")
-                ).strip().lower()
+                name = str(customer.get("display_name") or customer.get("name", "")).strip().lower()
                 if name == normalized or name in normalized or normalized in name:
                     try:
                         return UUID(customer["id"])
@@ -516,10 +516,7 @@ class Orchestrator:
 
         normalized = self._normalize_vendor_name(vendor_name)
         for vendor in vendors:
-            existing_name = (
-                vendor.get("display_name")
-                or vendor.get("name", "")
-            )
+            existing_name = vendor.get("display_name") or vendor.get("name", "")
             if normalized == self._normalize_vendor_name(str(existing_name)):
                 return
 
@@ -567,10 +564,7 @@ class Orchestrator:
 
         normalized = self._normalize_customer_name(customer_name)
         for customer in customers:
-            existing_name = (
-                customer.get("display_name")
-                or customer.get("name", "")
-            )
+            existing_name = customer.get("display_name") or customer.get("name", "")
             if normalized == self._normalize_customer_name(str(existing_name)):
                 return
 
@@ -712,9 +706,7 @@ class Orchestrator:
         for org_id, ctx in self._organizations.items():
             profiles = VENDOR_ARCHETYPES.get(ctx.industry, [])
             vendor_names = [
-                profile.name
-                for profile in profiles
-                if profile.vendor_type == VendorType.SERVICE
+                profile.name for profile in profiles if profile.vendor_type == VendorType.SERVICE
             ]
             if not vendor_names:
                 continue
@@ -761,24 +753,12 @@ class Orchestrator:
 
     def _register_phase_handlers(self) -> None:
         """Register handlers for each simulation phase."""
-        self._scheduler.register_phase_handler(
-            DayPhase.EARLY_MORNING, self._handle_early_morning
-        )
-        self._scheduler.register_phase_handler(
-            DayPhase.MORNING, self._handle_morning
-        )
-        self._scheduler.register_phase_handler(
-            DayPhase.LUNCH, self._handle_lunch
-        )
-        self._scheduler.register_phase_handler(
-            DayPhase.AFTERNOON, self._handle_afternoon
-        )
-        self._scheduler.register_phase_handler(
-            DayPhase.EVENING, self._handle_evening
-        )
-        self._scheduler.register_phase_handler(
-            DayPhase.NIGHT, self._handle_night
-        )
+        self._scheduler.register_phase_handler(DayPhase.EARLY_MORNING, self._handle_early_morning)
+        self._scheduler.register_phase_handler(DayPhase.MORNING, self._handle_morning)
+        self._scheduler.register_phase_handler(DayPhase.LUNCH, self._handle_lunch)
+        self._scheduler.register_phase_handler(DayPhase.AFTERNOON, self._handle_afternoon)
+        self._scheduler.register_phase_handler(DayPhase.EVENING, self._handle_evening)
+        self._scheduler.register_phase_handler(DayPhase.NIGHT, self._handle_night)
 
     # === Properties ===
 
@@ -876,26 +856,19 @@ class Orchestrator:
         3. name containing "revenue" (fallback)
         """
         # Strategy 1: By account_type (most reliable if available)
-        account = next(
-            (a for a in accounts if a.get("account_type") == "revenue"),
-            None
-        )
+        account = next((a for a in accounts if a.get("account_type") == "revenue"), None)
         if account:
             return account
 
         # Strategy 2: By account_number (US GAAP: 4xxx = Revenue)
         account = next(
-            (a for a in accounts if str(a.get("account_number", "")).startswith("4")),
-            None
+            (a for a in accounts if str(a.get("account_number", "")).startswith("4")), None
         )
         if account:
             return account
 
         # Strategy 3: By name containing "revenue" (last resort)
-        account = next(
-            (a for a in accounts if "revenue" in a.get("name", "").lower()),
-            None
-        )
+        account = next((a for a in accounts if "revenue" in a.get("name", "").lower()), None)
         return account
 
     def _find_expense_account(
@@ -1000,8 +973,16 @@ class Orchestrator:
         return None
 
     def _get_simulation_date(self) -> date:
-        """Get the current simulation date based on day number."""
-        base_date = date.today() - timedelta(days=30)  # Start 30 days ago
+        """Get the current simulation date based on day number.
+
+        For past-oriented simulation (QA seed data), dates are calculated as:
+        - base_date = today - total_simulation_days
+        - Day 1 = base_date, Day N = base_date + (N-1)
+        - Final day (day = total_simulation_days) = today - 1
+
+        This ensures all simulated transactions occur in the past.
+        """
+        base_date = date.today() - timedelta(days=self._total_simulation_days)
         return base_date + timedelta(days=self._scheduler.current_time.day - 1)
 
     def _maybe_publish_vendor_price_increases(self, sim_date: date) -> None:
@@ -1011,9 +992,7 @@ class Orchestrator:
         if not self._inflation.is_anniversary(sim_date):
             return
 
-        rate_pct = (self._inflation.annual_rate * Decimal("100")).quantize(
-            Decimal("0.1")
-        )
+        rate_pct = (self._inflation.annual_rate * Decimal("100")).quantize(Decimal("0.1"))
         multiplier = float(self._inflation.annual_increase_multiplier())
 
         for org_id, ctx in self._organizations.items():
@@ -1087,11 +1066,7 @@ class Orchestrator:
         if not metadata:
             return None
         keys = ("b2b_pair_id", "counterparty_org_id", "counterparty_doc_id")
-        event_meta = {
-            key: metadata.get(key)
-            for key in keys
-            if metadata.get(key) is not None
-        }
+        event_meta = {key: metadata.get(key) for key in keys if metadata.get(key) is not None}
         return event_meta or None
 
     @staticmethod
@@ -1140,9 +1115,7 @@ class Orchestrator:
         if vendor_name:
             normalized = vendor_name.strip().lower()
             for vendor in vendors:
-                name = str(
-                    vendor.get("display_name") or vendor.get("name", "")
-                ).strip().lower()
+                name = str(vendor.get("display_name") or vendor.get("name", "")).strip().lower()
                 if name == normalized:
                     try:
                         return UUID(vendor["id"])
@@ -1208,9 +1181,7 @@ class Orchestrator:
             return None
 
         try:
-            estimates = await self._api_client.list_quarterly_estimates(
-                tax_year_id=tax_year_id
-            )
+            estimates = await self._api_client.list_quarterly_estimates(tax_year_id=tax_year_id)
         except AtlasAPIError as exc:
             self._logger.warning(
                 "quarterly_estimate_list_failed",
@@ -1282,12 +1253,14 @@ class Orchestrator:
             invoice_data: dict[str, Any] = {
                 "customer_id": str(tx.customer_id),
                 "invoice_date": sim_date.isoformat(),
-                "lines": [{
-                    "description": tx.description,
-                    "quantity": "1",
-                    "unit_price": str(tx.amount),
-                    "revenue_account_id": revenue_account["id"],
-                }],
+                "lines": [
+                    {
+                        "description": tx.description,
+                        "quantity": "1",
+                        "unit_price": str(tx.amount),
+                        "revenue_account_id": revenue_account["id"],
+                    }
+                ],
             }
             if due_date:
                 invoice_data["due_date"] = due_date.isoformat()
@@ -1305,11 +1278,7 @@ class Orchestrator:
             result = await self._api_client.create_invoice(invoice_data)
 
             # Publish event
-            counterparty = (
-                tx.description.split(" - ")[0]
-                if " - " in tx.description
-                else "Customer"
-            )
+            counterparty = tx.description.split(" - ")[0] if " - " in tx.description else "Customer"
             event_metadata = self._extract_event_metadata(tx.metadata if tx.metadata else None)
             self._event_publisher.publish(
                 transaction_created(
@@ -1382,12 +1351,14 @@ class Orchestrator:
                     f"BILL-{sim_date.strftime('%Y%m%d')}-"
                     f"{random.randint(100, 999)}{self._run_suffix()}"
                 )[:30],
-                "lines": [{
-                    "description": tx.description,
-                    "quantity": "1",
-                    "unit_price": str(tx.amount),
-                    "expense_account_id": expense_account["id"],
-                }],
+                "lines": [
+                    {
+                        "description": tx.description,
+                        "quantity": "1",
+                        "unit_price": str(tx.amount),
+                        "expense_account_id": expense_account["id"],
+                    }
+                ],
             }
             if notes:
                 bill_data["notes"] = notes
@@ -1399,11 +1370,7 @@ class Orchestrator:
             result = await self._api_client.create_bill(bill_data)
 
             # Publish event
-            counterparty = (
-                tx.description.split(" - ")[0]
-                if " - " in tx.description
-                else "Vendor"
-            )
+            counterparty = tx.description.split(" - ")[0] if " - " in tx.description else "Vendor"
             event_metadata = self._extract_event_metadata(tx.metadata if tx.metadata else None)
             self._event_publisher.publish(
                 transaction_created(
@@ -1430,12 +1397,11 @@ class Orchestrator:
             accounts = await self._api_client.list_accounts(limit=200)
 
             # Find AR account
-            ar_accounts = [
-                a for a in accounts if a.get("account_type") == "accounts_receivable"
-            ]
+            ar_accounts = [a for a in accounts if a.get("account_type") == "accounts_receivable"]
             if not ar_accounts:
                 ar_accounts = [
-                    a for a in accounts
+                    a
+                    for a in accounts
                     if a.get("account_type") == "asset"
                     and "receivable" in a.get("name", "").lower()
                 ]
@@ -1445,7 +1411,8 @@ class Orchestrator:
             bank_accounts = [a for a in accounts if a.get("account_type") == "bank"]
             if not bank_accounts:
                 bank_accounts = [
-                    a for a in accounts
+                    a
+                    for a in accounts
                     if a.get("account_type") == "asset"
                     and (
                         "cash" in a.get("name", "").lower()
@@ -1495,9 +1462,7 @@ class Orchestrator:
             "payment_date": self._get_simulation_date().isoformat(),
             "payment_method": "check",
             "deposit_account_id": deposit_account_id,
-            "reference_number": (
-                f"PMT-{random.randint(10000, 99999)}{self._run_suffix()}"
-            )[:100],
+            "reference_number": (f"PMT-{random.randint(10000, 99999)}{self._run_suffix()}")[:100],
         }
 
         try:
@@ -1539,11 +1504,7 @@ class Orchestrator:
                 )
 
         # Publish event
-        counterparty = (
-            tx.description.split(" - ")[0]
-            if " - " in tx.description
-            else "Customer"
-        )
+        counterparty = tx.description.split(" - ")[0] if " - " in tx.description else "Customer"
         event_metadata = self._extract_event_metadata(tx.metadata if tx.metadata else None)
         self._event_publisher.publish(
             transaction_created(
@@ -1560,9 +1521,7 @@ class Orchestrator:
         self._logger.info("payment_received", org=ctx.name, amount=str(tx.amount))
         return result
 
-    async def _get_cash_position(
-        self, org_id: UUID
-    ) -> tuple[Decimal, list[dict[str, Any]]]:
+    async def _get_cash_position(self, org_id: UUID) -> tuple[Decimal, list[dict[str, Any]]]:
         if not self._api_client:
             return Decimal("0"), []
         accounts = await self._api_client.list_accounts(limit=200)
@@ -1580,9 +1539,7 @@ class Orchestrator:
         total = Decimal("0")
         for account in bank_accounts:
             try:
-                balance_info = await self._api_client.get_account_balance(
-                    UUID(str(account["id"]))
-                )
+                balance_info = await self._api_client.get_account_balance(UUID(str(account["id"])))
             except Exception:
                 continue
             balance = self._extract_decimal(balance_info.get("balance"))
@@ -1649,9 +1606,7 @@ class Orchestrator:
         bill_payments = await self._fetch_all_paginated(self._api_client.list_payments_made)
 
         imported_payments = self._bank_feed_imported_payments.setdefault(org_id, set())
-        imported_bill_payments = self._bank_feed_imported_bill_payments.setdefault(
-            org_id, set()
-        )
+        imported_bill_payments = self._bank_feed_imported_bill_payments.setdefault(org_id, set())
 
         created = 0
         failed = 0
@@ -1752,10 +1707,7 @@ class Orchestrator:
             sample_unmatched = recon_summary.get("sample_unmatched", [])
             sample_note = ""
             if sample_unmatched:
-                sample_note = (
-                    "Sample unmatched transactions (for context): "
-                    f"{sample_unmatched}\n"
-                )
+                sample_note = f"Sample unmatched transactions (for context): {sample_unmatched}\n"
             task = (
                 f"Weekly bank reconciliation for {ctx.name} "
                 f"(week {iso_week} of {iso_year}, through {period_end.isoformat()}). "
@@ -2022,9 +1974,7 @@ class Orchestrator:
         if vendor_id:
             try:
                 vendor = await self._api_client.get_vendor(UUID(str(vendor_id)))
-                vendor_name = str(
-                    vendor.get("display_name") or vendor.get("name") or ""
-                )
+                vendor_name = str(vendor.get("display_name") or vendor.get("name") or "")
             except Exception:
                 vendor_name = ""
 
@@ -2111,11 +2061,7 @@ class Orchestrator:
             )
             return None
 
-        counterparty = (
-            tx.description.split(" - ")[0]
-            if " - " in tx.description
-            else "Vendor"
-        )
+        counterparty = tx.description.split(" - ")[0] if " - " in tx.description else "Vendor"
         event_metadata = self._extract_event_metadata(tx.metadata)
         self._event_publisher.publish(
             transaction_created(
@@ -2333,8 +2279,11 @@ class Orchestrator:
         for client_config in multi_currency_config.clients:
             # Create deterministic seed for this client + date
             seed_parts = [
-                self._run_id, "intl", ctx.owner_key,
-                client_config.name, sim_date.isoformat(),
+                self._run_id,
+                "intl",
+                ctx.owner_key,
+                client_config.name,
+                sim_date.isoformat(),
             ]
             seed_str = ":".join(str(p) for p in seed_parts)
             seed = int(hashlib.sha256(seed_str.encode()).hexdigest()[:8], 16)
@@ -2345,9 +2294,9 @@ class Orchestrator:
                 continue
 
             # Generate invoice amount (in foreign currency)
-            foreign_amount = Decimal(str(
-                rng.uniform(float(client_config.min_amount), float(client_config.max_amount))
-            )).quantize(Decimal("0.01"))
+            foreign_amount = Decimal(
+                str(rng.uniform(float(client_config.min_amount), float(client_config.max_amount)))
+            ).quantize(Decimal("0.01"))
 
             # Get exchange rate for the invoice date
             usd_amount = workflow._exchange_rate_simulator.convert_to_usd(
@@ -2373,10 +2322,12 @@ class Orchestrator:
             )
             if not customer:
                 try:
-                    customer = await self._api_client.create_customer({
-                        "display_name": client_config.name,
-                        "email": f"{client_config.name.lower().replace(' ', '.')}@example.com",
-                    })
+                    customer = await self._api_client.create_customer(
+                        {
+                            "display_name": client_config.name,
+                            "email": f"{client_config.name.lower().replace(' ', '.')}@example.com",
+                        }
+                    )
                 except AtlasAPIError as exc:
                     self._logger.warning(
                         "intl_customer_create_failed",
@@ -2396,9 +2347,9 @@ class Orchestrator:
                 revenue_accounts[0] if revenue_accounts else None,
             )
             ar_accounts = [
-                a for a in accounts
-                if a.get("account_type") == "asset"
-                and "receivable" in a.get("name", "").lower()
+                a
+                for a in accounts
+                if a.get("account_type") == "asset" and "receivable" in a.get("name", "").lower()
             ]
             ar_account = ar_accounts[0] if ar_accounts else None
 
@@ -2515,9 +2466,7 @@ class Orchestrator:
         results: list[dict[str, Any]] = []
 
         for pair in planned_pairs:
-            created = await self._execute_b2b_pair(
-                pair, sim_date, customers_by_key, vendors_by_key
-            )
+            created = await self._execute_b2b_pair(pair, sim_date, customers_by_key, vendors_by_key)
             if created:
                 results.append(
                     {
@@ -2538,9 +2487,7 @@ class Orchestrator:
         if not self._api_client:
             return None
 
-        description = (
-            f"Quarterly estimated tax payment Q{action.quarter} {action.tax_year}"
-        )
+        description = f"Quarterly estimated tax payment Q{action.quarter} {action.tax_year}"
         try:
             bills = await self._api_client.list_bills(status="pending")
         except AtlasAPIError as exc:
@@ -2630,9 +2577,7 @@ class Orchestrator:
         except (ValueError, TypeError):
             amount = action.estimated_tax
 
-        description = (
-            f"Quarterly estimated tax payment Q{action.quarter} {action.tax_year}"
-        )
+        description = f"Quarterly estimated tax payment Q{action.quarter} {action.tax_year}"
         notes = None
         if isinstance(estimate_id, str):
             notes = f"quarterly_estimate_id={estimate_id}"
@@ -2681,9 +2626,7 @@ class Orchestrator:
         estimate_id = record.get("estimate_id")
 
         try:
-            estimates = await self._api_client.list_quarterly_estimates(
-                tax_year_id=tax_year_id
-            )
+            estimates = await self._api_client.list_quarterly_estimates(tax_year_id=tax_year_id)
         except AtlasAPIError as exc:
             self._logger.warning(
                 "quarterly_estimate_list_failed",
@@ -2811,9 +2754,7 @@ class Orchestrator:
             )
             return False
 
-        self._tx_generator.mark_quarterly_tax_paid(
-            ctx.owner_key, action.tax_year, action.quarter
-        )
+        self._tx_generator.mark_quarterly_tax_paid(ctx.owner_key, action.tax_year, action.quarter)
         return True
 
     # === Task Execution ===
@@ -2868,9 +2809,7 @@ class Orchestrator:
         day = self._scheduler.current_time.day
         sim_date = self._get_simulation_date()
 
-        self._event_publisher.publish(
-            phase_started(day, phase.value, "Business prep and planning")
-        )
+        self._event_publisher.publish(phase_started(day, phase.value, "Business prep and planning"))
 
         # Sarah reviews her schedule
         if self._accountant:
@@ -2920,9 +2859,7 @@ class Orchestrator:
 
                 for action in quarterly_actions:
                     if action.action == "create":
-                        if await self._create_quarterly_tax_bill(
-                            ctx, sim_date, vendors, action
-                        ):
+                        if await self._create_quarterly_tax_bill(ctx, sim_date, vendors, action):
                             quarterly_created += 1
                     elif action.action == "pay" and await self._pay_quarterly_tax_bill(
                         ctx, sim_date, vendors, action
@@ -3042,9 +2979,7 @@ class Orchestrator:
         day = self._scheduler.current_time.day
         sim_date = self._get_simulation_date()
 
-        self._event_publisher.publish(
-            phase_started(day, phase.value, "Morning business activity")
-        )
+        self._event_publisher.publish(phase_started(day, phase.value, "Morning business activity"))
 
         for org_id, ctx in self._organizations.items():
             await self.switch_organization(org_id)
@@ -3103,11 +3038,13 @@ class Orchestrator:
                         **inventory_summary,
                     )
 
-                results.append({
-                    "org": ctx.name,
-                    "invoices_created": invoices_created,
-                    "transaction_count": len(transactions),
-                })
+                results.append(
+                    {
+                        "org": ctx.name,
+                        "invoices_created": invoices_created,
+                        "transaction_count": len(transactions),
+                    }
+                )
 
             except Exception as e:
                 self._logger.error("morning_task_error", org=ctx.name, error=str(e))
@@ -3123,9 +3060,7 @@ class Orchestrator:
         results: list[Any] = []
         day = self._scheduler.current_time.day
 
-        self._event_publisher.publish(
-            phase_started(day, phase.value, "Mid-day break")
-        )
+        self._event_publisher.publish(phase_started(day, phase.value, "Mid-day break"))
 
         # Light activity during lunch
         if self._accountant:
@@ -3147,37 +3082,35 @@ class Orchestrator:
         day = self._scheduler.current_time.day
         sim_date = self._get_simulation_date()
 
-        self._event_publisher.publish(
-            phase_started(day, phase.value, "Peak afternoon activity")
-        )
+        self._event_publisher.publish(phase_started(day, phase.value, "Peak afternoon activity"))
 
         for org_id, ctx in self._organizations.items():
             await self.switch_organization(org_id)
 
             try:
                 # Get customers, vendors, and pending invoices
-                customers = (
-                    await self._api_client.list_customers() if self._api_client else []
-                )
-                vendors = (
-                    await self._api_client.list_vendors() if self._api_client else []
-                )
+                customers = await self._api_client.list_customers() if self._api_client else []
+                vendors = await self._api_client.list_vendors() if self._api_client else []
                 if self._api_client:
                     pending_sent = await self._api_client.list_invoices(status="sent")
                     pending_overdue = await self._api_client.list_invoices(status="overdue")
                     pending_partial = await self._api_client.list_invoices(status="partial")
-                    pending_invoices = list({
-                        str(inv.get("id")): inv
-                        for inv in pending_sent + pending_overdue + pending_partial
-                        if inv.get("id")
-                    }.values())
+                    pending_invoices = list(
+                        {
+                            str(inv.get("id")): inv
+                            for inv in pending_sent + pending_overdue + pending_partial
+                            if inv.get("id")
+                        }.values()
+                    )
                     pending_approved_bills = await self._api_client.list_bills(status="approved")
                     pending_partial_bills = await self._api_client.list_bills(status="partial")
-                    pending_bills = list({
-                        str(bill.get("id")): bill
-                        for bill in pending_approved_bills + pending_partial_bills
-                        if bill.get("id")
-                    }.values())
+                    pending_bills = list(
+                        {
+                            str(bill.get("id")): bill
+                            for bill in pending_approved_bills + pending_partial_bills
+                            if bill.get("id")
+                        }.values()
+                    )
                 else:
                     pending_invoices = []
                     pending_bills = []
@@ -3187,9 +3120,7 @@ class Orchestrator:
                 reserve_target = Decimal("0")
                 if cash_policy:
                     cash_position, _ = await self._get_cash_position(org_id)
-                    reserve_target = self._tx_generator.get_reserve_target(
-                        ctx.owner_key, sim_date
-                    )
+                    reserve_target = self._tx_generator.get_reserve_target(ctx.owner_key, sim_date)
                     cash_position = await self._maybe_draw_loc(
                         ctx, sim_date, cash_position, reserve_target, cash_policy
                     )
@@ -3245,11 +3176,7 @@ class Orchestrator:
                 if bills_created > 0 or payments_received > 0 or bills_paid > 0:
                     self._event_publisher.publish(
                         agent_speaking(
-                            agent_id=(
-                                self._accountant.id
-                                if self._accountant
-                                else UUID(int=0)
-                            ),
+                            agent_id=(self._accountant.id if self._accountant else UUID(int=0)),
                             agent_name="Sarah Chen",
                             message=(
                                 f"{ctx.name}: Recorded {bills_created} bill(s), "
@@ -3260,12 +3187,14 @@ class Orchestrator:
                         )
                     )
 
-                results.append({
-                    "org": ctx.name,
-                    "bills_created": bills_created,
-                    "payments_received": payments_received,
-                    "bills_paid": bills_paid,
-                })
+                results.append(
+                    {
+                        "org": ctx.name,
+                        "bills_created": bills_created,
+                        "payments_received": payments_received,
+                        "bills_paid": bills_paid,
+                    }
+                )
 
             except Exception as e:
                 self._logger.error("afternoon_task_error", org=ctx.name, error=str(e))
@@ -3383,8 +3312,7 @@ class Orchestrator:
                 sample_note = ""
                 if sample_unmatched:
                     sample_note = (
-                        "Sample unmatched transactions (for context): "
-                        f"{sample_unmatched}\n"
+                        f"Sample unmatched transactions (for context): {sample_unmatched}\n"
                     )
                 task = (
                     f"Bank reconciliation for {ctx.name} "
@@ -3665,9 +3593,7 @@ Please provide specific recommendations for addressing each issue."""
         # End of day accounting task (LLM reasoning)
         collection_note = ""
         if collection_issues:
-            collection_note = (
-                "Collection workflow summary: " + "; ".join(collection_issues) + "\n"
-            )
+            collection_note = "Collection workflow summary: " + "; ".join(collection_issues) + "\n"
         task = f"""End of day for {ctx.name}. Please:
         1. Run a trial balance to ensure books are balanced
         2. Provide a quick summary of today's activity
@@ -3727,17 +3653,18 @@ Please provide specific recommendations for addressing each issue."""
                             agent_id=self._accountant.id if self._accountant else UUID(int=0),
                             agent_name="Sarah Chen",
                             message=(
-                                f"Recorded {invoices_created} late-night sale(s) "
-                                f"for {ctx.name}."
+                                f"Recorded {invoices_created} late-night sale(s) for {ctx.name}."
                             ),
                             org_id=org_id,
                         )
                     )
 
-                results.append({
-                    "org": ctx.name,
-                    "late_night_sales": invoices_created,
-                })
+                results.append(
+                    {
+                        "org": ctx.name,
+                        "late_night_sales": invoices_created,
+                    }
+                )
 
             except Exception as e:
                 self._logger.error("night_transaction_error", org=ctx.name, error=str(e))
@@ -3767,18 +3694,14 @@ Please provide specific recommendations for addressing each issue."""
         try:
             results = await self._scheduler.run_day()
 
-            self._event_publisher.publish(
-                day_completed(day, {"phase_count": len(results)})
-            )
+            self._event_publisher.publish(day_completed(day, {"phase_count": len(results)}))
             self._logger.info("daily_cycle_completed", day=day)
 
             return results
 
         except Exception as e:
             self._logger.exception("daily_cycle_error", error=str(e))
-            self._event_publisher.publish(
-                error_event("Daily cycle failed", {"error": str(e)})
-            )
+            self._event_publisher.publish(error_event("Daily cycle failed", {"error": str(e)}))
             raise
 
     async def run_simulation(
@@ -3798,9 +3721,7 @@ Please provide specific recommendations for addressing each issue."""
         if speed:
             self._scheduler.speed = speed
 
-        self._event_publisher.publish(
-            simulation_started(self._scheduler.speed, max_days)
-        )
+        self._event_publisher.publish(simulation_started(self._scheduler.speed, max_days))
 
         self._logger.info(
             "simulation_starting",
@@ -3813,9 +3734,7 @@ Please provide specific recommendations for addressing each issue."""
 
         finally:
             days_run = self._scheduler.current_time.day - 1
-            self._event_publisher.publish(
-                simulation_stopped(days_run, "completed")
-            )
+            self._event_publisher.publish(simulation_stopped(days_run, "completed"))
             self._logger.info("simulation_ended", days_run=days_run)
 
     def pause(self) -> None:
@@ -3937,11 +3856,11 @@ Examples:
     )
 
     try:
-        async with Orchestrator(mode=mode) as orchestrator:
+        async with Orchestrator(mode=mode, total_simulation_days=args.days) as orchestrator:
             if task:
                 # Run a single task (always LLM)
                 response = await orchestrator.run_single_task(task)
-                print(f"\n{'='*60}")
+                print(f"\n{'=' * 60}")
                 print("Sarah's Response:")
                 print("=" * 60)
                 print(response)

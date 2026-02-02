@@ -51,3 +51,6 @@ packages/simulation/business_credentials.json
 # Sprite sheet source files (ZIPs) and metadata
 assets/sprites/characters/sheets/
 packages/frontend/public/sprites/characters/sheets/*/metadata.json
+
+# Exports (seed data dumps)
+exports/

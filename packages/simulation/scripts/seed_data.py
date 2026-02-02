@@ -109,8 +109,16 @@ CUSTOMERS = {
             "discount_days": 15,
             "net_days": 45,
         },
-        {"display_name": "Johnson Family", "email": "mike.johnson@email.com", "payment_terms": "due_on_receipt"},
-        {"display_name": "Sunrise Senior Living", "email": "facilities@sunrisesenior.com", "payment_terms": "net_30"},
+        {
+            "display_name": "Johnson Family",
+            "email": "mike.johnson@email.com",
+            "payment_terms": "due_on_receipt",
+        },
+        {
+            "display_name": "Sunrise Senior Living",
+            "email": "facilities@sunrisesenior.com",
+            "payment_terms": "net_30",
+        },
         {
             "display_name": "Atlas Town Municipality",
             "email": "parks@atlastown.gov",
@@ -119,14 +127,38 @@ CUSTOMERS = {
             "discount_days": 10,
             "net_days": 60,
         },
-        {"display_name": "Tony's Pizzeria", "email": "tony@tonyspizza.com", "payment_terms": "net_15"},
-        {"display_name": "Harbor Realty", "email": "marcus@harborrealty.com", "payment_terms": "net_15"},
+        {
+            "display_name": "Tony's Pizzeria",
+            "email": "tony@tonyspizza.com",
+            "payment_terms": "net_15",
+        },
+        {
+            "display_name": "Harbor Realty",
+            "email": "marcus@harborrealty.com",
+            "payment_terms": "net_15",
+        },
     ],
     "tony": [
-        {"display_name": "Atlas Elementary School", "email": "cafeteria@atlaselem.edu", "payment_terms": "net_30"},
-        {"display_name": "Friday Night Football", "email": "events@fnfl.org", "payment_terms": "net_15"},
-        {"display_name": "Birthday Party Catering", "email": "catering@tonyspizza.com", "payment_terms": "due_on_receipt"},
-        {"display_name": "Office Lunch Orders", "email": "corporate@tonyspizza.com", "payment_terms": "due_on_receipt"},
+        {
+            "display_name": "Atlas Elementary School",
+            "email": "cafeteria@atlaselem.edu",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Friday Night Football",
+            "email": "events@fnfl.org",
+            "payment_terms": "net_15",
+        },
+        {
+            "display_name": "Birthday Party Catering",
+            "email": "catering@tonyspizza.com",
+            "payment_terms": "due_on_receipt",
+        },
+        {
+            "display_name": "Office Lunch Orders",
+            "email": "corporate@tonyspizza.com",
+            "payment_terms": "due_on_receipt",
+        },
         {
             "display_name": "Nexus Tech",
             "email": "office@nexustech.io",
@@ -145,9 +177,21 @@ CUSTOMERS = {
             "discount_days": 10,
             "net_days": 30,
         },
-        {"display_name": "Tony's Pizzeria", "email": "tony@tonyspizza.com", "payment_terms": "net_30"},
-        {"display_name": "Main Street Dental", "email": "office@mainstreetdental.com", "payment_terms": "net_30"},
-        {"display_name": "Harbor Realty", "email": "marcus@harborrealty.com", "payment_terms": "net_30"},
+        {
+            "display_name": "Tony's Pizzeria",
+            "email": "tony@tonyspizza.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Main Street Dental",
+            "email": "office@mainstreetdental.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Harbor Realty",
+            "email": "marcus@harborrealty.com",
+            "payment_terms": "net_30",
+        },
         {
             "display_name": "Atlas Fitness Center",
             "email": "manager@atlasfitness.com",
@@ -156,24 +200,80 @@ CUSTOMERS = {
             "discount_days": 15,
             "net_days": 45,
         },
-        {"display_name": "Bloom Flower Shop", "email": "orders@bloomflowers.com", "payment_terms": "net_30"},
-        {"display_name": "Coastal Insurance", "email": "it@coastalinsurance.com", "payment_terms": "net_60"},
+        {
+            "display_name": "Bloom Flower Shop",
+            "email": "orders@bloomflowers.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Coastal Insurance",
+            "email": "it@coastalinsurance.com",
+            "payment_terms": "net_60",
+        },
     ],
     "chen": [
-        {"display_name": "Smith Family", "email": "smith.family@email.com", "payment_terms": "due_on_receipt"},
-        {"display_name": "Garcia Family", "email": "garcia.family@email.com", "payment_terms": "due_on_receipt"},
-        {"display_name": "Williams, Robert", "email": "rwilliams@email.com", "payment_terms": "due_on_receipt"},
-        {"display_name": "Thompson, Sarah", "email": "sthompson@email.com", "payment_terms": "due_on_receipt"},
-        {"display_name": "BlueCross Insurance", "email": "claims@bluecross.com", "payment_terms": "net_60"},
-        {"display_name": "Delta Dental PPO", "email": "claims@deltadental.com", "payment_terms": "net_60"},
-        {"display_name": "Atlas Town Employees", "email": "benefits@atlastown.gov", "payment_terms": "net_30"},
+        {
+            "display_name": "Smith Family",
+            "email": "smith.family@email.com",
+            "payment_terms": "due_on_receipt",
+        },
+        {
+            "display_name": "Garcia Family",
+            "email": "garcia.family@email.com",
+            "payment_terms": "due_on_receipt",
+        },
+        {
+            "display_name": "Williams, Robert",
+            "email": "rwilliams@email.com",
+            "payment_terms": "due_on_receipt",
+        },
+        {
+            "display_name": "Thompson, Sarah",
+            "email": "sthompson@email.com",
+            "payment_terms": "due_on_receipt",
+        },
+        {
+            "display_name": "BlueCross Insurance",
+            "email": "claims@bluecross.com",
+            "payment_terms": "net_60",
+        },
+        {
+            "display_name": "Delta Dental PPO",
+            "email": "claims@deltadental.com",
+            "payment_terms": "net_60",
+        },
+        {
+            "display_name": "Atlas Town Employees",
+            "email": "benefits@atlastown.gov",
+            "payment_terms": "net_30",
+        },
     ],
     "marcus": [
-        {"display_name": "First-Time Buyers", "email": "ftb@harborrealty.com", "payment_terms": "due_on_receipt"},
-        {"display_name": "Estate of Johnson", "email": "legal@johnsonestate.com", "payment_terms": "net_30"},
-        {"display_name": "Relocation Services", "email": "agents@relocateservices.com", "payment_terms": "net_30"},
-        {"display_name": "Atlas Development Corp", "email": "sales@atlasdevcorp.com", "payment_terms": "net_15"},
-        {"display_name": "Private Seller Mitchell", "email": "jmitchell@email.com", "payment_terms": "due_on_receipt"},
+        {
+            "display_name": "First-Time Buyers",
+            "email": "ftb@harborrealty.com",
+            "payment_terms": "due_on_receipt",
+        },
+        {
+            "display_name": "Estate of Johnson",
+            "email": "legal@johnsonestate.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Relocation Services",
+            "email": "agents@relocateservices.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Atlas Development Corp",
+            "email": "sales@atlasdevcorp.com",
+            "payment_terms": "net_15",
+        },
+        {
+            "display_name": "Private Seller Mitchell",
+            "email": "jmitchell@email.com",
+            "payment_terms": "due_on_receipt",
+        },
     ],
 }
 
@@ -183,74 +283,310 @@ CUSTOMERS = {
 
 VENDORS = {
     "craig": [
-        {"display_name": "Green Valley Nursery", "email": "orders@greenvalley.com", "payment_terms": "net_30"},
-        {"display_name": "Atlas Equipment Rental", "email": "rental@atlasequip.com", "payment_terms": "net_15"},
-        {"display_name": "Shell Gas Station", "email": "fleet@shellgas.com", "payment_terms": "due_on_receipt"},
-        {"display_name": "Home Depot Pro", "email": "pro@homedepotpro.com", "payment_terms": "net_30"},
-        {"display_name": "Irrigation Supply Co", "email": "sales@irrigationsupply.com", "payment_terms": "net_30"},
-        {"display_name": "Workers Comp Insurance", "email": "billing@workerscomp.com", "payment_terms": "net_30"},
-        {"display_name": "Equipment Yard Lease", "email": "billing@equipmentyardlease.com", "payment_terms": "net_30"},
-        {"display_name": "City Utilities", "email": "billing@cityutilities.com", "payment_terms": "net_30"},
-        {"display_name": "Jobber Software", "email": "billing@jobber.com", "payment_terms": "net_30"},
-        {"display_name": "Smith Insurance Agency", "email": "billing@smithinsurance.com", "payment_terms": "net_30"},
-        {"display_name": "Atlas Community Bank", "email": "billing@atlascommunitybank.com", "payment_terms": "net_30"},
-        {"display_name": "Atlas Payroll Services", "email": "payroll@atlaspayroll.com", "payment_terms": "net_15"},
-        {"display_name": "IRS Payroll Taxes", "email": "payroll@irs.gov", "payment_terms": "net_15"},
+        {
+            "display_name": "Green Valley Nursery",
+            "email": "orders@greenvalley.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Atlas Equipment Rental",
+            "email": "rental@atlasequip.com",
+            "payment_terms": "net_15",
+        },
+        {
+            "display_name": "Shell Gas Station",
+            "email": "fleet@shellgas.com",
+            "payment_terms": "due_on_receipt",
+        },
+        {
+            "display_name": "Home Depot Pro",
+            "email": "pro@homedepotpro.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Irrigation Supply Co",
+            "email": "sales@irrigationsupply.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Workers Comp Insurance",
+            "email": "billing@workerscomp.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Equipment Yard Lease",
+            "email": "billing@equipmentyardlease.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "City Utilities",
+            "email": "billing@cityutilities.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Jobber Software",
+            "email": "billing@jobber.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Smith Insurance Agency",
+            "email": "billing@smithinsurance.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Atlas Community Bank",
+            "email": "billing@atlascommunitybank.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Atlas Payroll Services",
+            "email": "payroll@atlaspayroll.com",
+            "payment_terms": "net_15",
+        },
+        {
+            "display_name": "IRS Payroll Taxes",
+            "email": "payroll@irs.gov",
+            "payment_terms": "net_15",
+        },
     ],
     "tony": [
-        {"display_name": "Sysco Food Services", "email": "orders@syscofood.com", "payment_terms": "net_15"},
-        {"display_name": "Roma Cheese Imports", "email": "sales@romacheese.com", "payment_terms": "net_30"},
-        {"display_name": "Coca-Cola Bottling", "email": "delivery@cocacolabottling.com", "payment_terms": "net_15"},
-        {"display_name": "Restaurant Depot", "email": "orders@restaurantdepot.com", "payment_terms": "due_on_receipt"},
-        {"display_name": "Atlas Gas Electric", "email": "business@atlasge.com", "payment_terms": "net_30"},
-        {"display_name": "Downtown Properties LLC", "email": "billing@downtownproperties.com", "payment_terms": "net_30"},
-        {"display_name": "City Utilities", "email": "billing@cityutilities.com", "payment_terms": "net_30"},
-        {"display_name": "POS Systems Inc", "email": "support@possystems.com", "payment_terms": "net_30"},
-        {"display_name": "Atlas Community Bank", "email": "billing@atlascommunitybank.com", "payment_terms": "net_30"},
-        {"display_name": "Atlas Payroll Services", "email": "payroll@atlaspayroll.com", "payment_terms": "net_15"},
-        {"display_name": "IRS Payroll Taxes", "email": "payroll@irs.gov", "payment_terms": "net_15"},
+        {
+            "display_name": "Sysco Food Services",
+            "email": "orders@syscofood.com",
+            "payment_terms": "net_15",
+        },
+        {
+            "display_name": "Roma Cheese Imports",
+            "email": "sales@romacheese.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Coca-Cola Bottling",
+            "email": "delivery@cocacolabottling.com",
+            "payment_terms": "net_15",
+        },
+        {
+            "display_name": "Restaurant Depot",
+            "email": "orders@restaurantdepot.com",
+            "payment_terms": "due_on_receipt",
+        },
+        {
+            "display_name": "Atlas Gas Electric",
+            "email": "business@atlasge.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Downtown Properties LLC",
+            "email": "billing@downtownproperties.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "City Utilities",
+            "email": "billing@cityutilities.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "POS Systems Inc",
+            "email": "support@possystems.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Atlas Community Bank",
+            "email": "billing@atlascommunitybank.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Atlas Payroll Services",
+            "email": "payroll@atlaspayroll.com",
+            "payment_terms": "net_15",
+        },
+        {
+            "display_name": "IRS Payroll Taxes",
+            "email": "payroll@irs.gov",
+            "payment_terms": "net_15",
+        },
     ],
     "maya": [
-        {"display_name": "Amazon Web Services", "email": "billing@awscloud.com", "payment_terms": "due_on_receipt"},
-        {"display_name": "Microsoft 365", "email": "billing@microsoft365.com", "payment_terms": "due_on_receipt"},
-        {"display_name": "Slack Technologies", "email": "billing@slacktech.com", "payment_terms": "due_on_receipt"},
-        {"display_name": "GitHub Enterprise", "email": "billing@githubenterprise.com", "payment_terms": "due_on_receipt"},
-        {"display_name": "WeWork Office Space", "email": "billing@weworkspace.com", "payment_terms": "net_30"},
-        {"display_name": "Coworking Space LLC", "email": "billing@coworkingspace.com", "payment_terms": "net_30"},
-        {"display_name": "City Utilities", "email": "billing@cityutilities.com", "payment_terms": "net_30"},
-        {"display_name": "JetBrains Software", "email": "billing@jetbrains.com", "payment_terms": "net_30"},
-        {"display_name": "E&O Insurance", "email": "billing@eoinsurance.com", "payment_terms": "net_30"},
-        {"display_name": "Atlas Community Bank", "email": "billing@atlascommunitybank.com", "payment_terms": "net_30"},
-        {"display_name": "Nexus Payroll Services", "email": "payroll@nexuspayroll.com", "payment_terms": "net_15"},
-        {"display_name": "IRS Payroll Taxes", "email": "payroll@irs.gov", "payment_terms": "net_15"},
+        {
+            "display_name": "Amazon Web Services",
+            "email": "billing@awscloud.com",
+            "payment_terms": "due_on_receipt",
+        },
+        {
+            "display_name": "Microsoft 365",
+            "email": "billing@microsoft365.com",
+            "payment_terms": "due_on_receipt",
+        },
+        {
+            "display_name": "Slack Technologies",
+            "email": "billing@slacktech.com",
+            "payment_terms": "due_on_receipt",
+        },
+        {
+            "display_name": "GitHub Enterprise",
+            "email": "billing@githubenterprise.com",
+            "payment_terms": "due_on_receipt",
+        },
+        {
+            "display_name": "WeWork Office Space",
+            "email": "billing@weworkspace.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Coworking Space LLC",
+            "email": "billing@coworkingspace.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "City Utilities",
+            "email": "billing@cityutilities.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "JetBrains Software",
+            "email": "billing@jetbrains.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "E&O Insurance",
+            "email": "billing@eoinsurance.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Atlas Community Bank",
+            "email": "billing@atlascommunitybank.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Nexus Payroll Services",
+            "email": "payroll@nexuspayroll.com",
+            "payment_terms": "net_15",
+        },
+        {
+            "display_name": "IRS Payroll Taxes",
+            "email": "payroll@irs.gov",
+            "payment_terms": "net_15",
+        },
     ],
     "chen": [
-        {"display_name": "Henry Schein Dental", "email": "orders@henryschein.com", "payment_terms": "net_30"},
-        {"display_name": "Patterson Dental", "email": "orders@pattersondental.com", "payment_terms": "net_30"},
-        {"display_name": "Atlas Dental Lab", "email": "orders@atlasdentallab.com", "payment_terms": "net_15"},
-        {"display_name": "Sterilization Services", "email": "service@sterilize.com", "payment_terms": "net_30"},
-        {"display_name": "Medical Waste Solutions", "email": "pickup@medwaste.com", "payment_terms": "net_30"},
-        {"display_name": "Medical Plaza Properties", "email": "billing@medicalplaza.com", "payment_terms": "net_30"},
-        {"display_name": "City Utilities", "email": "billing@cityutilities.com", "payment_terms": "net_30"},
-        {"display_name": "Practice Management Software", "email": "billing@practicemanagement.com", "payment_terms": "net_30"},
-        {"display_name": "Medical Equipment Leasing", "email": "billing@medicalequipmentleasing.com", "payment_terms": "net_30"},
-        {"display_name": "Dental Malpractice Ins", "email": "billing@dentalmalpractice.com", "payment_terms": "net_30"},
-        {"display_name": "Atlas Community Bank", "email": "billing@atlascommunitybank.com", "payment_terms": "net_30"},
-        {"display_name": "Dental Payroll Co", "email": "payroll@dentalpayroll.com", "payment_terms": "net_15"},
-        {"display_name": "IRS Payroll Taxes", "email": "payroll@irs.gov", "payment_terms": "net_15"},
+        {
+            "display_name": "Henry Schein Dental",
+            "email": "orders@henryschein.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Patterson Dental",
+            "email": "orders@pattersondental.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Atlas Dental Lab",
+            "email": "orders@atlasdentallab.com",
+            "payment_terms": "net_15",
+        },
+        {
+            "display_name": "Sterilization Services",
+            "email": "service@sterilize.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Medical Waste Solutions",
+            "email": "pickup@medwaste.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Medical Plaza Properties",
+            "email": "billing@medicalplaza.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "City Utilities",
+            "email": "billing@cityutilities.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Practice Management Software",
+            "email": "billing@practicemanagement.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Medical Equipment Leasing",
+            "email": "billing@medicalequipmentleasing.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Dental Malpractice Ins",
+            "email": "billing@dentalmalpractice.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Atlas Community Bank",
+            "email": "billing@atlascommunitybank.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Dental Payroll Co",
+            "email": "payroll@dentalpayroll.com",
+            "payment_terms": "net_15",
+        },
+        {
+            "display_name": "IRS Payroll Taxes",
+            "email": "payroll@irs.gov",
+            "payment_terms": "net_15",
+        },
     ],
     "marcus": [
-        {"display_name": "MLS Listing Service", "email": "billing@mlslisting.com", "payment_terms": "due_on_receipt"},
-        {"display_name": "MLS Subscription Service", "email": "billing@mlssubscription.com", "payment_terms": "net_30"},
-        {"display_name": "Zillow Premier Agent", "email": "billing@zillowpremier.com", "payment_terms": "due_on_receipt"},
+        {
+            "display_name": "MLS Listing Service",
+            "email": "billing@mlslisting.com",
+            "payment_terms": "due_on_receipt",
+        },
+        {
+            "display_name": "MLS Subscription Service",
+            "email": "billing@mlssubscription.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Zillow Premier Agent",
+            "email": "billing@zillowpremier.com",
+            "payment_terms": "due_on_receipt",
+        },
         {"display_name": "Signs Now", "email": "orders@signsnow.com", "payment_terms": "net_15"},
-        {"display_name": "Professional Photos", "email": "booking@prophotos.com", "payment_terms": "due_on_receipt"},
-        {"display_name": "Atlas Title Company", "email": "closings@atlastitle.com", "payment_terms": "net_30"},
-        {"display_name": "Office Space Partners", "email": "billing@officespacepartners.com", "payment_terms": "net_30"},
-        {"display_name": "E&O Insurance Brokers", "email": "billing@eobrokers.com", "payment_terms": "net_30"},
-        {"display_name": "Atlas Community Bank", "email": "billing@atlascommunitybank.com", "payment_terms": "net_30"},
-        {"display_name": "Harbor Payroll Services", "email": "payroll@harborpayroll.com", "payment_terms": "net_15"},
-        {"display_name": "IRS Payroll Taxes", "email": "payroll@irs.gov", "payment_terms": "net_15"},
+        {
+            "display_name": "Professional Photos",
+            "email": "booking@prophotos.com",
+            "payment_terms": "due_on_receipt",
+        },
+        {
+            "display_name": "Atlas Title Company",
+            "email": "closings@atlastitle.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Office Space Partners",
+            "email": "billing@officespacepartners.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "E&O Insurance Brokers",
+            "email": "billing@eobrokers.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Atlas Community Bank",
+            "email": "billing@atlascommunitybank.com",
+            "payment_terms": "net_30",
+        },
+        {
+            "display_name": "Harbor Payroll Services",
+            "email": "payroll@harborpayroll.com",
+            "payment_terms": "net_15",
+        },
+        {
+            "display_name": "IRS Payroll Taxes",
+            "email": "payroll@irs.gov",
+            "payment_terms": "net_15",
+        },
     ],
 }
 
@@ -483,14 +819,21 @@ async def create_opening_balances(
             continue
 
         # Determine debit/credit based on account type
-        is_credit_account = balance_key in ["accounts_payable", "vehicle_loan", "equipment_loan", "owner_equity"]
+        is_credit_account = balance_key in [
+            "accounts_payable",
+            "vehicle_loan",
+            "equipment_loan",
+            "owner_equity",
+        ]
 
-        lines.append({
-            "account_id": str(account_id),
-            "entry_type": "credit" if is_credit_account else "debit",
-            "amount": str(amount),
-            "description": f"Opening balance - {balance_key.replace('_', ' ').title()}",
-        })
+        lines.append(
+            {
+                "account_id": str(account_id),
+                "entry_type": "credit" if is_credit_account else "debit",
+                "amount": str(amount),
+                "description": f"Opening balance - {balance_key.replace('_', ' ').title()}",
+            }
+        )
 
     if lines:
         try:
@@ -625,19 +968,19 @@ async def create_sample_transactions(
 
     # Find revenue account (required for invoices)
     revenue_account_id = (
-        account_map.get("service revenue") or
-        account_map.get("sales revenue") or
-        account_map.get("4100") or  # Service Revenue
-        account_map.get("4000")  # Sales Revenue
+        account_map.get("service revenue")
+        or account_map.get("sales revenue")
+        or account_map.get("4100")  # Service Revenue
+        or account_map.get("4000")  # Sales Revenue
     )
 
     # Find expense account (required for bills)
     expense_account_id = (
-        account_map.get("supplies expense") or
-        account_map.get("cost of goods sold") or
-        account_map.get("office supplies") or
-        account_map.get("5100") or  # Cost of Goods Sold
-        account_map.get("5200")  # Operating Expenses
+        account_map.get("supplies expense")
+        or account_map.get("cost of goods sold")
+        or account_map.get("office supplies")
+        or account_map.get("5100")  # Cost of Goods Sold
+        or account_map.get("5200")  # Operating Expenses
     )
 
     if not revenue_account_id:
@@ -677,12 +1020,14 @@ async def create_sample_transactions(
                     "customer_id": customers[i]["id"],
                     "invoice_date": (date.today() - timedelta(days=15 - i * 5)).isoformat(),
                     "due_date": (date.today() + timedelta(days=15 + i * 5)).isoformat(),
-                    "lines": [{
-                        "description": inv["desc"],
-                        "quantity": "1",
-                        "unit_price": inv["amount"],
-                        "revenue_account_id": str(revenue_account_id),
-                    }],
+                    "lines": [
+                        {
+                            "description": inv["desc"],
+                            "quantity": "1",
+                            "unit_price": inv["amount"],
+                            "revenue_account_id": str(revenue_account_id),
+                        }
+                    ],
                 }
                 await client.create_invoice(invoice_data)
                 print(f"    ✓ Invoice: {inv['desc'][:40]}...")
@@ -707,13 +1052,15 @@ async def create_sample_transactions(
                     "vendor_id": vendors[i]["id"],
                     "bill_date": (date.today() - timedelta(days=10)).isoformat(),
                     "due_date": (date.today() + timedelta(days=20)).isoformat(),
-                    "vendor_bill_number": f"BILL-{business_key.upper()}-00{i+1}",
-                    "lines": [{
-                        "description": bill["desc"],
-                        "quantity": "1",
-                        "unit_price": bill["amount"],
-                        "expense_account_id": str(expense_account_id),
-                    }],
+                    "vendor_bill_number": f"BILL-{business_key.upper()}-00{i + 1}",
+                    "lines": [
+                        {
+                            "description": bill["desc"],
+                            "quantity": "1",
+                            "unit_price": bill["amount"],
+                            "expense_account_id": str(expense_account_id),
+                        }
+                    ],
                 }
                 await client.create_bill(bill_data)
                 print(f"    ✓ Bill: {bill['desc'][:40]}...")
@@ -731,9 +1078,9 @@ async def seed_organization(client: AtlasAPIClient, org: dict, business_key: str
     org_id = UUID(org["id"])
     org_name = org["name"]
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Seeding: {org_name}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     # Switch to this organization
     await client.switch_organization(org_id)
@@ -857,9 +1204,44 @@ async def main():
         finally:
             await client.close()
 
+    # Set unlimited transactions for simulation
+    print("\n" + "-" * 60)
+    print("Step 3: Setting Unlimited Transactions")
+    print("-" * 60)
+
+    # Update organizations to have unlimited transactions (-1)
+    # This bypasses the subscription limit for simulation purposes
+    import subprocess
+
+    org_ids = [str(creds["organization"]["id"]) for creds in business_credentials.values()]
+    org_ids_sql = ", ".join(f"'{oid}'" for oid in org_ids)
+    sql_cmd = (
+        f"UPDATE organizations SET max_transactions_per_month = -1 WHERE id IN ({org_ids_sql});"
+    )
+    result = subprocess.run(
+        [
+            "docker",
+            "exec",
+            "atlas-postgres",
+            "psql",
+            "-U",
+            "postgres",
+            "-d",
+            "atlas_dev",
+            "-c",
+            sql_cmd,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        print("  ✓ Set unlimited transactions for all organizations")
+    else:
+        print(f"  ⚠ Could not set unlimited transactions: {result.stderr}")
+
     # Save credentials for simulation use
     print("\n" + "-" * 60)
-    print("Step 3: Saving Simulation Configuration")
+    print("Step 4: Saving Simulation Configuration")
     print("-" * 60)
 
     # Update .env with first business credentials (for backward compatibility)
@@ -869,9 +1251,9 @@ async def main():
 
     # Remove old simulation credentials
     env_lines = [
-        line for line in env_lines
-        if not line.startswith("ATLAS_USERNAME=")
-        and not line.startswith("ATLAS_PASSWORD=")
+        line
+        for line in env_lines
+        if not line.startswith("ATLAS_USERNAME=") and not line.startswith("ATLAS_PASSWORD=")
     ]
 
     # Add new credentials
@@ -882,10 +1264,11 @@ async def main():
 
     # Write back
     env_file.write_text("\n".join(env_lines) + "\n")
-    print(f"  ✓ Updated .env with simulation credentials")
+    print("  ✓ Updated .env with simulation credentials")
 
     # Also save all business credentials to a JSON file for multi-org simulation
     import json
+
     creds_file = Path(__file__).parent.parent / "business_credentials.json"
     creds_data = {
         key: {
@@ -897,7 +1280,7 @@ async def main():
         for key, creds in business_credentials.items()
     }
     creds_file.write_text(json.dumps(creds_data, indent=2))
-    print(f"  ✓ Saved business credentials to business_credentials.json")
+    print("  ✓ Saved business credentials to business_credentials.json")
 
     print("\n" + "=" * 60)
     print("SEEDING COMPLETE!")
