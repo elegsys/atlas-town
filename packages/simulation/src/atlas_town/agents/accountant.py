@@ -142,12 +142,14 @@ class AccountantAgent(BaseAgent):
         """Format conversation history for the LLM client."""
         messages = []
         for msg in self._conversation_history:
-            messages.append({
-                "role": msg.role,
-                "content": msg.content,
-                "tool_calls": msg.tool_calls,
-                "tool_call_id": msg.tool_call_id,
-            })
+            messages.append(
+                {
+                    "role": msg.role,
+                    "content": msg.content,
+                    "tool_calls": msg.tool_calls,
+                    "tool_call_id": msg.tool_call_id,
+                }
+            )
         return messages
 
     async def _generate_response(self) -> AgentAction:
@@ -302,7 +304,7 @@ class AccountantAgent(BaseAgent):
 
 {self._format_items(items)}
 
-Notes: {notes if notes else 'None'}
+Notes: {notes if notes else "None"}
 
 After creating the invoice, please send it to the customer."""
 

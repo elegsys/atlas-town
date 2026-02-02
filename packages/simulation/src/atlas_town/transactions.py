@@ -38,6 +38,7 @@ logger = structlog.get_logger(__name__)
 
 class TransactionType(str, Enum):
     """Types of transactions that can be generated."""
+
     INVOICE = "invoice"
     BILL = "bill"
     PAYMENT_RECEIVED = "payment_received"
@@ -48,6 +49,7 @@ class TransactionType(str, Enum):
 @dataclass
 class TransactionPattern:
     """Defines a transaction pattern for a business type."""
+
     transaction_type: TransactionType
     description_template: str
     min_amount: Decimal
@@ -67,6 +69,7 @@ class TransactionPattern:
 @dataclass
 class GeneratedTransaction:
     """A transaction ready to be created via the API."""
+
     transaction_type: TransactionType
     description: str
     amount: Decimal
@@ -103,9 +106,8 @@ class RecurringTransactionSpec:
             return False
 
         if self.anniversary_date:
-            months_delta = (
-                (current_date.year - self.anniversary_date.year) * 12
-                + (current_date.month - self.anniversary_date.month)
+            months_delta = (current_date.year - self.anniversary_date.year) * 12 + (
+                current_date.month - self.anniversary_date.month
             )
             if months_delta < 0:
                 return False
@@ -125,14 +127,10 @@ class RecurringTransactionScheduler:
         self._last_generated: dict[tuple[str, str], date] = {}
         self._logger = logger.bind(component="recurring_scheduler")
 
-    def _find_vendor_id(
-        self, vendor_name: str, vendors: list[dict[str, Any]]
-    ) -> UUID | None:
+    def _find_vendor_id(self, vendor_name: str, vendors: list[dict[str, Any]]) -> UUID | None:
         normalized = vendor_name.strip().lower()
         for vendor in vendors:
-            name = str(
-                vendor.get("display_name") or vendor.get("name", "")
-            ).strip().lower()
+            name = str(vendor.get("display_name") or vendor.get("name", "")).strip().lower()
             if name == normalized:
                 try:
                     return UUID(vendor["id"])
@@ -283,9 +281,7 @@ class FinancingScheduler:
         equipment_financing_by_business: dict[str, list[EquipmentFinancingSpec]],
         rng: random.Random | None = None,
     ) -> None:
-        self._term_loans_by_business: dict[str, list[LoanSpec]] = (
-            term_loans_by_business
-        )
+        self._term_loans_by_business: dict[str, list[LoanSpec]] = term_loans_by_business
         self._locs_by_business: dict[str, list[LineOfCreditSpec]] = locs_by_business
         self._equipment_by_business: dict[str, list[EquipmentFinancingSpec]] = (
             equipment_financing_by_business
@@ -303,14 +299,10 @@ class FinancingScheduler:
         self._logger = logger.bind(component="financing_scheduler")
 
     @staticmethod
-    def _find_vendor_id(
-        vendor_name: str, vendors: list[dict[str, Any]]
-    ) -> UUID | None:
+    def _find_vendor_id(vendor_name: str, vendors: list[dict[str, Any]]) -> UUID | None:
         normalized = vendor_name.strip().lower()
         for vendor in vendors:
-            name = str(
-                vendor.get("display_name") or vendor.get("name", "")
-            ).strip().lower()
+            name = str(vendor.get("display_name") or vendor.get("name", "")).strip().lower()
             if name == normalized:
                 try:
                     return UUID(vendor["id"])
@@ -343,17 +335,13 @@ class FinancingScheduler:
         due_day = self._effective_day(spec.payment_day, current_date)
         return current_date.day == due_day
 
-    def _equipment_payment_due(
-        self, spec: EquipmentFinancingSpec, current_date: date
-    ) -> bool:
+    def _equipment_payment_due(self, spec: EquipmentFinancingSpec, current_date: date) -> bool:
         if spec.start_date and current_date < spec.start_date:
             return False
         due_day = self._effective_day(spec.payment_day, current_date)
         return current_date.day == due_day
 
-    def _bill_period_for_loc(
-        self, billing_day: int, current_date: date
-    ) -> tuple[int, int]:
+    def _bill_period_for_loc(self, billing_day: int, current_date: date) -> tuple[int, int]:
         last_day = calendar.monthrange(current_date.year, current_date.month)[1]
         if billing_day >= last_day:
             return current_date.year, current_date.month
@@ -392,8 +380,7 @@ class FinancingScheduler:
                 daily_interest = balance * rate / Decimal("365")
                 bucket = (business_key, spec.name, day.year, day.month)
                 self._loc_accrued_interest[bucket] = (
-                    self._loc_accrued_interest.get(bucket, Decimal("0"))
-                    + daily_interest
+                    self._loc_accrued_interest.get(bucket, Decimal("0")) + daily_interest
                 )
             day += timedelta(days=1)
 
@@ -408,14 +395,10 @@ class FinancingScheduler:
                 return spec.balance
         return Decimal("0")
 
-    def set_loc_balance(
-        self, business_key: str, name: str, balance: Decimal
-    ) -> None:
+    def set_loc_balance(self, business_key: str, name: str, balance: Decimal) -> None:
         self._loc_current_balance[(business_key, name)] = balance
 
-    def _equipment_decision(
-        self, business_key: str, spec: EquipmentFinancingSpec
-    ) -> str:
+    def _equipment_decision(self, business_key: str, spec: EquipmentFinancingSpec) -> str:
         key = (business_key, spec.name)
         existing = self._equipment_decisions.get(key)
         if existing:
@@ -442,26 +425,21 @@ class FinancingScheduler:
         principal_threshold = spec.decision_principal_threshold or Decimal("50000")
         decision = (
             "lease"
-            if spec.annual_rate >= rate_threshold
-            or spec.principal >= principal_threshold
+            if spec.annual_rate >= rate_threshold or spec.principal >= principal_threshold
             else "purchase"
         )
         self._equipment_decisions[key] = decision
         return decision
 
     @staticmethod
-    def _amortized_payment(
-        principal: Decimal, annual_rate: Decimal, term_months: int
-    ) -> Decimal:
+    def _amortized_payment(principal: Decimal, annual_rate: Decimal, term_months: int) -> Decimal:
         if term_months <= 0:
             return Decimal("0")
         if annual_rate <= 0:
             return (principal / Decimal(term_months)).quantize(Decimal("0.01"))
         monthly_rate = annual_rate / Decimal("12")
         numerator = principal * monthly_rate
-        denominator = Decimal("1") - (Decimal("1") + monthly_rate) ** Decimal(
-            -term_months
-        )
+        denominator = Decimal("1") - (Decimal("1") + monthly_rate) ** Decimal(-term_months)
         if denominator == 0:
             return Decimal("0")
         return (numerator / denominator).quantize(Decimal("0.01"))
@@ -497,9 +475,7 @@ class FinancingScheduler:
             rate = self._rate_for_date(
                 loan_spec.annual_rate, loan_spec.rate_adjustments, current_date
             )
-            interest = (loan_spec.principal * rate / Decimal("12")).quantize(
-                Decimal("0.01")
-            )
+            interest = (loan_spec.principal * rate / Decimal("12")).quantize(Decimal("0.01"))
             if interest <= 0:
                 continue
             results.append(
@@ -595,9 +571,7 @@ class FinancingScheduler:
                 if payment <= 0:
                     continue
                 monthly_rate = rate / Decimal("12")
-                interest = (state.remaining_balance * monthly_rate).quantize(
-                    Decimal("0.01")
-                )
+                interest = (state.remaining_balance * monthly_rate).quantize(Decimal("0.01"))
                 principal_component = (payment - interest).quantize(Decimal("0.01"))
                 if principal_component < 0:
                     principal_component = Decimal("0.00")
@@ -629,9 +603,9 @@ class FinancingScheduler:
                         },
                     )
                 )
-                state.remaining_balance = (
-                    state.remaining_balance - principal_component
-                ).quantize(Decimal("0.01"))
+                state.remaining_balance = (state.remaining_balance - principal_component).quantize(
+                    Decimal("0.01")
+                )
                 state.remaining_terms -= 1
                 self._equipment_payment_generated.add(key)
                 continue
@@ -649,9 +623,7 @@ class FinancingScheduler:
             rate = self._rate_for_date(
                 equipment_spec.annual_rate, equipment_spec.rate_adjustments, current_date
             )
-            interest = (equipment_spec.principal * rate / Decimal("12")).quantize(
-                Decimal("0.01")
-            )
+            interest = (equipment_spec.principal * rate / Decimal("12")).quantize(Decimal("0.01"))
             if interest <= 0:
                 continue
             results.append(
@@ -676,9 +648,7 @@ class FinancingScheduler:
             billing_day = self._effective_day(loc_spec.billing_day, current_date)
             if current_date.day != billing_day:
                 continue
-            bill_year, bill_month = self._bill_period_for_loc(
-                billing_day, current_date
-            )
+            bill_year, bill_month = self._bill_period_for_loc(billing_day, current_date)
             bill_key = (business_key, loc_spec.name, bill_year, bill_month)
             if bill_key in self._loc_interest_billed:
                 continue
@@ -851,14 +821,10 @@ class InventoryScheduler:
         )
 
     @staticmethod
-    def _find_vendor_id(
-        vendor_name: str, vendors: list[dict[str, Any]]
-    ) -> UUID | None:
+    def _find_vendor_id(vendor_name: str, vendors: list[dict[str, Any]]) -> UUID | None:
         normalized = vendor_name.strip().lower()
         for vendor in vendors:
-            name = str(
-                vendor.get("display_name") or vendor.get("name", "")
-            ).strip().lower()
+            name = str(vendor.get("display_name") or vendor.get("name", "")).strip().lower()
             if name == normalized:
                 try:
                     return UUID(vendor["id"])
@@ -902,9 +868,7 @@ class InventoryScheduler:
                 )
                 continue
 
-            amount = (item.unit_cost * Decimal(item.reorder_quantity)).quantize(
-                Decimal("0.01")
-            )
+            amount = (item.unit_cost * Decimal(item.reorder_quantity)).quantize(Decimal("0.01"))
 
             results.append(
                 GeneratedTransaction(
@@ -1117,9 +1081,7 @@ class PayrollGenerator:
             return "monthly"
         return "semi-weekly"
 
-    def _schedule_tax_deposit(
-        self, business_key: str, pay_date: date, tax_amount: Decimal
-    ) -> None:
+    def _schedule_tax_deposit(self, business_key: str, pay_date: date, tax_amount: Decimal) -> None:
         if tax_amount <= 0:
             return
         tax_year, quarter = self._quarter_for_date(pay_date)
@@ -1155,9 +1117,7 @@ class PayrollGenerator:
         if vendor_name:
             normalized = vendor_name.strip().lower()
             for vendor in vendors:
-                name = str(
-                    vendor.get("display_name") or vendor.get("name", "")
-                ).strip().lower()
+                name = str(vendor.get("display_name") or vendor.get("name", "")).strip().lower()
                 if name == normalized:
                     try:
                         return UUID(vendor["id"])
@@ -1177,9 +1137,7 @@ class PayrollGenerator:
 
         matches: list[dict[str, Any]] = []
         for vendor in vendors:
-            name = str(
-                vendor.get("display_name") or vendor.get("name", "")
-            ).strip().lower()
+            name = str(vendor.get("display_name") or vendor.get("name", "")).strip().lower()
             if name in eligible_names:
                 matches.append(vendor)
         return matches
@@ -1218,9 +1176,7 @@ class PayrollGenerator:
                     )
 
                 if vendor_id:
-                    role_summary = ", ".join(
-                        f"{emp.count} {emp.role}" for emp in employees
-                    )
+                    role_summary = ", ".join(f"{emp.count} {emp.role}" for emp in employees)
                     transactions.append(
                         GeneratedTransaction(
                             transaction_type=TransactionType.BILL,
@@ -1245,12 +1201,10 @@ class PayrollGenerator:
                 futa_key = (business_key, tax_year, quarter)
                 year_key = (business_key, tax_year)
                 self._futa_liability_by_quarter[futa_key] = (
-                    self._futa_liability_by_quarter.get(futa_key, Decimal("0"))
-                    + futa_tax
+                    self._futa_liability_by_quarter.get(futa_key, Decimal("0")) + futa_tax
                 )
                 self._futa_liability_by_year[year_key] = (
-                    self._futa_liability_by_year.get(year_key, Decimal("0"))
-                    + futa_tax
+                    self._futa_liability_by_year.get(year_key, Decimal("0")) + futa_tax
                 )
 
         # Tax deposit due today
@@ -1303,10 +1257,9 @@ class PayrollGenerator:
                     )
                 )
 
-            remaining = (
-                self._quarter_tax_liability.get(key, Decimal("0"))
-                - self._quarter_tax_deposited.get(key, Decimal("0"))
-            )
+            remaining = self._quarter_tax_liability.get(
+                key, Decimal("0")
+            ) - self._quarter_tax_deposited.get(key, Decimal("0"))
             if remaining > 0:
                 tax_vendor_id = self._find_vendor_id(config.tax_authority, vendors)
                 if tax_vendor_id:
@@ -1334,10 +1287,9 @@ class PayrollGenerator:
         for tax_year, quarter in self._form_941_due_quarters_for_date(current_date):
             futa_key = (business_key, tax_year, quarter)
             year_key = (business_key, tax_year)
-            remaining = (
-                self._futa_liability_by_year.get(year_key, Decimal("0"))
-                - self._futa_deposited_by_year.get(year_key, Decimal("0"))
-            )
+            remaining = self._futa_liability_by_year.get(
+                year_key, Decimal("0")
+            ) - self._futa_deposited_by_year.get(year_key, Decimal("0"))
             if remaining <= 0:
                 continue
             if remaining < self._FUTA_DEPOSIT_THRESHOLD and quarter != 4:
@@ -1362,8 +1314,7 @@ class PayrollGenerator:
                     )
                 )
                 self._futa_deposited_by_year[year_key] = (
-                    self._futa_deposited_by_year.get(year_key, Decimal("0"))
-                    + remaining
+                    self._futa_deposited_by_year.get(year_key, Decimal("0")) + remaining
                 )
                 self._futa_deposit_recorded.add(futa_key)
 
@@ -1425,16 +1376,12 @@ class PayrollGenerator:
                     if filing_key in self._form_1099_filed:
                         continue
                     filing_vendor_id = provider_id or vendor_id
-                    vendor_name = (
-                        vendor.get("display_name") or vendor.get("name", "")
-                    )
+                    vendor_name = vendor.get("display_name") or vendor.get("name", "")
                     if filing_vendor_id:
                         transactions.append(
                             GeneratedTransaction(
                                 transaction_type=TransactionType.BILL,
-                                description=(
-                                    f"1099-NEC processing - {vendor_name} {tax_year}"
-                                ),
+                                description=(f"1099-NEC processing - {vendor_name} {tax_year}"),
                                 amount=Decimal("7.50"),
                                 vendor_id=filing_vendor_id,
                                 metadata={
@@ -1494,12 +1441,8 @@ class QuarterlyTaxScheduler:
 
     @staticmethod
     def _quarter_amounts(config: QuarterlyTaxConfig) -> tuple[Decimal, Decimal]:
-        quarter_income = (config.estimated_annual_income / Decimal("4")).quantize(
-            Decimal("0.01")
-        )
-        quarter_tax = (quarter_income * config.estimated_tax_rate).quantize(
-            Decimal("0.01")
-        )
+        quarter_income = (config.estimated_annual_income / Decimal("4")).quantize(Decimal("0.01"))
+        quarter_tax = (quarter_income * config.estimated_tax_rate).quantize(Decimal("0.01"))
         return quarter_income, quarter_tax
 
     def mark_created(self, business_key: str, tax_year: int, quarter: int) -> None:
@@ -1572,46 +1515,53 @@ BUSINESS_PATTERNS: dict[str, list[TransactionPattern]] = {
         TransactionPattern(
             TransactionType.INVOICE,
             "Lawn maintenance - {location}",
-            Decimal("75.00"), Decimal("250.00"),
+            Decimal("75.00"),
+            Decimal("250.00"),
             probability=0.7,
             weekday_only=True,
         ),
         TransactionPattern(
             TransactionType.INVOICE,
             "Landscaping project - {project_type}",
-            Decimal("500.00"), Decimal("3500.00"),
+            Decimal("500.00"),
+            Decimal("3500.00"),
             probability=0.3,
             weekday_only=True,
         ),
         TransactionPattern(
             TransactionType.BILL,
             "Plant supplies - {supplier}",
-            Decimal("150.00"), Decimal("800.00"),
+            Decimal("150.00"),
+            Decimal("800.00"),
             probability=0.4,
         ),
         TransactionPattern(
             TransactionType.BILL,
             "Equipment rental",
-            Decimal("100.00"), Decimal("400.00"),
+            Decimal("100.00"),
+            Decimal("400.00"),
             probability=0.2,
             weekday_only=True,
         ),
         TransactionPattern(
             TransactionType.BILL,
             "Fuel for vehicles",
-            Decimal("80.00"), Decimal("200.00"),
+            Decimal("80.00"),
+            Decimal("200.00"),
             probability=0.5,
         ),
         TransactionPattern(
             TransactionType.PAYMENT_RECEIVED,
             "Payment from {customer}",
-            Decimal("0"), Decimal("0"),  # Will match existing invoices
+            Decimal("0"),
+            Decimal("0"),  # Will match existing invoices
             probability=0.4,
         ),
         TransactionPattern(
             TransactionType.BILL_PAYMENT,
             "Vendor payment",
-            Decimal("0"), Decimal("0"),
+            Decimal("0"),
+            Decimal("0"),
             probability=0.3,
         ),
     ],
@@ -1621,7 +1571,8 @@ BUSINESS_PATTERNS: dict[str, list[TransactionPattern]] = {
         TransactionPattern(
             TransactionType.CASH_SALE,
             "Lunch service - pizza sales",
-            Decimal("400.00"), Decimal("1200.00"),
+            Decimal("400.00"),
+            Decimal("1200.00"),
             probability=0.7,
             phase_multipliers={"morning": 0.3, "lunch": 1.5, "afternoon": 0.8},
             active_hours=(11, 14),  # 11 AM - 2 PM
@@ -1630,7 +1581,8 @@ BUSINESS_PATTERNS: dict[str, list[TransactionPattern]] = {
         TransactionPattern(
             TransactionType.CASH_SALE,
             "Dinner service - pizza sales",
-            Decimal("1200.00"), Decimal("3500.00"),
+            Decimal("1200.00"),
+            Decimal("3500.00"),
             probability=0.95,
             weekend_boost=1.4,
             phase_multipliers={"evening": 2.5},  # Peak dinner rush
@@ -1640,7 +1592,8 @@ BUSINESS_PATTERNS: dict[str, list[TransactionPattern]] = {
         TransactionPattern(
             TransactionType.CASH_SALE,
             "Late night - pizza sales",
-            Decimal("600.00"), Decimal("1800.00"),
+            Decimal("600.00"),
+            Decimal("1800.00"),
             probability=0.6,
             weekend_boost=1.8,  # Busier weekend nights
             phase_multipliers={"night": 1.5},
@@ -1650,32 +1603,37 @@ BUSINESS_PATTERNS: dict[str, list[TransactionPattern]] = {
         TransactionPattern(
             TransactionType.INVOICE,
             "Catering order - {event_type}",
-            Decimal("200.00"), Decimal("1200.00"),
+            Decimal("200.00"),
+            Decimal("1200.00"),
             probability=0.4,
         ),
         # Bills (unchanged - not time-sensitive)
         TransactionPattern(
             TransactionType.BILL,
             "Food supplies - {supplier}",
-            Decimal("400.00"), Decimal("1500.00"),
+            Decimal("400.00"),
+            Decimal("1500.00"),
             probability=0.6,
         ),
         TransactionPattern(
             TransactionType.BILL,
             "Beverage inventory",
-            Decimal("150.00"), Decimal("500.00"),
+            Decimal("150.00"),
+            Decimal("500.00"),
             probability=0.3,
         ),
         TransactionPattern(
             TransactionType.PAYMENT_RECEIVED,
             "Payment from {customer}",
-            Decimal("0"), Decimal("0"),
+            Decimal("0"),
+            Decimal("0"),
             probability=0.5,
         ),
         TransactionPattern(
             TransactionType.BILL_PAYMENT,
             "Vendor payment",
-            Decimal("0"), Decimal("0"),
+            Decimal("0"),
+            Decimal("0"),
             probability=0.35,
         ),
     ],
@@ -1684,45 +1642,52 @@ BUSINESS_PATTERNS: dict[str, list[TransactionPattern]] = {
         TransactionPattern(
             TransactionType.INVOICE,
             "IT consulting - {hours} hours",
-            Decimal("800.00"), Decimal("4800.00"),
+            Decimal("800.00"),
+            Decimal("4800.00"),
             probability=0.5,
             weekday_only=True,
         ),
         TransactionPattern(
             TransactionType.INVOICE,
             "Website development - {client}",
-            Decimal("2000.00"), Decimal("8000.00"),
+            Decimal("2000.00"),
+            Decimal("8000.00"),
             probability=0.2,
             weekday_only=True,
         ),
         TransactionPattern(
             TransactionType.INVOICE,
             "Monthly retainer - {client}",
-            Decimal("1500.00"), Decimal("5000.00"),
+            Decimal("1500.00"),
+            Decimal("5000.00"),
             probability=0.15,  # Monthly
         ),
         TransactionPattern(
             TransactionType.BILL,
             "Cloud services - AWS/Azure",
-            Decimal("100.00"), Decimal("500.00"),
+            Decimal("100.00"),
+            Decimal("500.00"),
             probability=0.1,  # Monthly
         ),
         TransactionPattern(
             TransactionType.BILL,
             "Software subscription",
-            Decimal("50.00"), Decimal("300.00"),
+            Decimal("50.00"),
+            Decimal("300.00"),
             probability=0.1,
         ),
         TransactionPattern(
             TransactionType.PAYMENT_RECEIVED,
             "Payment from {customer}",
-            Decimal("0"), Decimal("0"),
+            Decimal("0"),
+            Decimal("0"),
             probability=0.3,
         ),
         TransactionPattern(
             TransactionType.BILL_PAYMENT,
             "Vendor payment",
-            Decimal("0"), Decimal("0"),
+            Decimal("0"),
+            Decimal("0"),
             probability=0.25,
         ),
     ],
@@ -1731,45 +1696,52 @@ BUSINESS_PATTERNS: dict[str, list[TransactionPattern]] = {
         TransactionPattern(
             TransactionType.INVOICE,
             "Dental cleaning and exam - {patient}",
-            Decimal("150.00"), Decimal("350.00"),
+            Decimal("150.00"),
+            Decimal("350.00"),
             probability=0.8,
             weekday_only=True,
         ),
         TransactionPattern(
             TransactionType.INVOICE,
             "Dental procedure - {procedure}",
-            Decimal("300.00"), Decimal("2500.00"),
+            Decimal("300.00"),
+            Decimal("2500.00"),
             probability=0.4,
             weekday_only=True,
         ),
         TransactionPattern(
             TransactionType.BILL,
             "Dental supplies - {supplier}",
-            Decimal("200.00"), Decimal("1200.00"),
+            Decimal("200.00"),
+            Decimal("1200.00"),
             probability=0.3,
         ),
         TransactionPattern(
             TransactionType.BILL,
             "Lab services - {lab}",
-            Decimal("100.00"), Decimal("600.00"),
+            Decimal("100.00"),
+            Decimal("600.00"),
             probability=0.2,
         ),
         TransactionPattern(
             TransactionType.PAYMENT_RECEIVED,
             "Insurance payment - {payer}",
-            Decimal("0"), Decimal("0"),
+            Decimal("0"),
+            Decimal("0"),
             probability=0.6,
         ),
         TransactionPattern(
             TransactionType.PAYMENT_RECEIVED,
             "Patient payment - {patient}",
-            Decimal("0"), Decimal("0"),
+            Decimal("0"),
+            Decimal("0"),
             probability=0.4,
         ),
         TransactionPattern(
             TransactionType.BILL_PAYMENT,
             "Vendor payment",
-            Decimal("0"), Decimal("0"),
+            Decimal("0"),
+            Decimal("0"),
             probability=0.3,
         ),
     ],
@@ -1778,43 +1750,50 @@ BUSINESS_PATTERNS: dict[str, list[TransactionPattern]] = {
         TransactionPattern(
             TransactionType.INVOICE,
             "Commission - {property_address}",
-            Decimal("5000.00"), Decimal("25000.00"),
+            Decimal("5000.00"),
+            Decimal("25000.00"),
             probability=0.15,  # Closings are infrequent
         ),
         TransactionPattern(
             TransactionType.INVOICE,
             "Referral fee",
-            Decimal("500.00"), Decimal("2000.00"),
+            Decimal("500.00"),
+            Decimal("2000.00"),
             probability=0.1,
         ),
         TransactionPattern(
             TransactionType.BILL,
             "MLS subscription",
-            Decimal("299.00"), Decimal("299.00"),
+            Decimal("299.00"),
+            Decimal("299.00"),
             probability=0.03,  # Monthly
         ),
         TransactionPattern(
             TransactionType.BILL,
             "Marketing materials",
-            Decimal("200.00"), Decimal("1500.00"),
+            Decimal("200.00"),
+            Decimal("1500.00"),
             probability=0.2,
         ),
         TransactionPattern(
             TransactionType.BILL,
             "Professional photography",
-            Decimal("150.00"), Decimal("400.00"),
+            Decimal("150.00"),
+            Decimal("400.00"),
             probability=0.25,
         ),
         TransactionPattern(
             TransactionType.PAYMENT_RECEIVED,
             "Commission payment",
-            Decimal("0"), Decimal("0"),
+            Decimal("0"),
+            Decimal("0"),
             probability=0.2,
         ),
         TransactionPattern(
             TransactionType.BILL_PAYMENT,
             "Vendor payment",
-            Decimal("0"), Decimal("0"),
+            Decimal("0"),
+            Decimal("0"),
             probability=0.25,
         ),
     ],
@@ -1830,32 +1809,59 @@ BUSINESS_PATTERNS: dict[str, list[TransactionPattern]] = {
 BUSINESS_SEASONALITY: dict[str, dict[int, float]] = {
     "craig": {
         # Peak: April-September (landscaping high season)
-        4: 1.5, 5: 1.8, 6: 2.0, 7: 2.0, 8: 1.8, 9: 1.5,
+        4: 1.5,
+        5: 1.8,
+        6: 2.0,
+        7: 2.0,
+        8: 1.8,
+        9: 1.5,
         # Shoulder: March, October, November
-        3: 1.0, 10: 0.8, 11: 0.6,
+        3: 1.0,
+        10: 0.8,
+        11: 0.6,
         # Slow: December-February (winter dormancy)
-        12: 0.3, 1: 0.2, 2: 0.25,
+        12: 0.3,
+        1: 0.2,
+        2: 0.25,
     },
     "tony": {
         # Low seasonality - slight holiday boost
-        11: 1.1, 12: 1.15, 2: 1.1,  # Thanksgiving, Christmas, Valentine's
+        11: 1.1,
+        12: 1.15,
+        2: 1.1,  # Thanksgiving, Christmas, Valentine's
     },
     "maya": {
         # Q4 budget spending, Q1 new initiatives
-        1: 1.5, 2: 1.4, 10: 1.6, 11: 1.8,
+        1: 1.5,
+        2: 1.4,
+        10: 1.6,
+        11: 1.8,
         12: 0.7,  # Holiday freeze
     },
     "chen": {
         # Summer breaks (families scheduling), year-end insurance rush
-        6: 1.5, 7: 1.6, 11: 1.7, 12: 1.8,
-        1: 0.5, 2: 0.6,  # Post-holiday slow
+        6: 1.5,
+        7: 1.6,
+        11: 1.7,
+        12: 1.8,
+        1: 0.5,
+        2: 0.6,  # Post-holiday slow
     },
     "marcus": {
         # Spring/summer home-buying season
-        4: 1.4, 5: 1.8, 6: 2.0, 7: 1.8, 8: 1.5,
-        3: 1.0, 9: 1.0, 10: 0.8,
+        4: 1.4,
+        5: 1.8,
+        6: 2.0,
+        7: 1.8,
+        8: 1.5,
+        3: 1.0,
+        9: 1.0,
+        10: 0.8,
         # Winter slowdown
-        11: 0.4, 12: 0.3, 1: 0.25, 2: 0.3,
+        11: 0.4,
+        12: 0.3,
+        1: 0.25,
+        2: 0.3,
     },
 }
 
@@ -1955,6 +1961,7 @@ def get_business_day_patterns() -> dict[str, dict[int, float]]:
 
     return merged
 
+
 # Sample data for template substitution
 TEMPLATE_DATA = {
     "location": [
@@ -2022,9 +2029,7 @@ class TransactionGenerator:
             self._load_industries(),
             inflation=self._inflation,
         )
-        self._quarterly_tax_scheduler = QuarterlyTaxScheduler(
-            self._load_tax_configs()
-        )
+        self._quarterly_tax_scheduler = QuarterlyTaxScheduler(self._load_tax_configs())
         financing = self._load_financing_configs()
         self._financing_scheduler = FinancingScheduler(
             financing["term_loans"],
@@ -2032,9 +2037,7 @@ class TransactionGenerator:
             financing["equipment_financing"],
             rng=self._rng,
         )
-        self._inventory_scheduler = InventoryScheduler(
-            self._load_inventory_configs()
-        )
+        self._inventory_scheduler = InventoryScheduler(self._load_inventory_configs())
 
     def _load_cash_flow_settings(self) -> dict[str, dict[str, Any]]:
         return load_persona_cash_flow_settings()
@@ -2145,10 +2148,9 @@ class TransactionGenerator:
     def get_line_of_credit_balance(self, business_key: str, name: str) -> Decimal:
         return self._financing_scheduler.get_loc_balance(business_key, name)
 
-    def set_line_of_credit_balance(
-        self, business_key: str, name: str, balance: Decimal
-    ) -> None:
+    def set_line_of_credit_balance(self, business_key: str, name: str, balance: Decimal) -> None:
         self._financing_scheduler.set_loc_balance(business_key, name, balance)
+
     def _load_recurring_transactions(
         self,
     ) -> dict[str, list[RecurringTransactionSpec]]:
@@ -2254,9 +2256,7 @@ class TransactionGenerator:
                 annual_income = Decimal(str(config["estimated_annual_income"]))
                 tax_rate = Decimal(str(config["estimated_tax_rate"]))
             except (KeyError, ValueError, TypeError) as exc:
-                raise ValueError(
-                    f"Tax config invalid for {business_key}: {config!r}"
-                ) from exc
+                raise ValueError(f"Tax config invalid for {business_key}: {config!r}") from exc
 
             entity_type = str(config.get("entity_type", "sole_proprietor"))
             tax_vendor = config.get("tax_vendor") or "IRS Estimated Taxes"
@@ -2754,9 +2754,7 @@ class TransactionGenerator:
         bill: dict[str, Any],
         current_date: date,
     ) -> int | None:
-        due_date = self._parse_date(bill.get("due_date")) or self._parse_date(
-            bill.get("bill_date")
-        )
+        due_date = self._parse_date(bill.get("due_date")) or self._parse_date(bill.get("bill_date"))
         if not due_date:
             return None
         return (current_date - due_date).days
@@ -2929,9 +2927,7 @@ class TransactionGenerator:
             return PaymentDecision(None, False, Decimal("0"), False)
         days_overdue = self._invoice_days_overdue(invoice, current_date)
         if self._should_partial_payment(business_key, "invoice", amount_due, days_overdue):
-            payment_amount = self._partial_payment_amount(
-                business_key, "invoice", amount_due
-            )
+            payment_amount = self._partial_payment_amount(business_key, "invoice", amount_due)
             if payment_amount <= 0:
                 return PaymentDecision(None, False, Decimal("0"), False)
             return PaymentDecision(payment_amount, False, Decimal("0"), True)
@@ -2940,9 +2936,7 @@ class TransactionGenerator:
             invoice, current_date, amount_due
         )
         if take_discount:
-            payment_amount = self._quantize_amount_like(
-                amount_due - discount_amount, amount_due
-            )
+            payment_amount = self._quantize_amount_like(amount_due - discount_amount, amount_due)
             if payment_amount <= 0:
                 return PaymentDecision(amount_due, False, Decimal("0"), False)
             return PaymentDecision(payment_amount, True, discount_amount, False)
@@ -2959,9 +2953,7 @@ class TransactionGenerator:
             return PaymentDecision(None, False, Decimal("0"), False)
         days_overdue = self._bill_days_overdue(bill, current_date)
         if self._should_partial_payment(business_key, "bill", amount_due, days_overdue):
-            payment_amount = self._partial_payment_amount(
-                business_key, "bill", amount_due
-            )
+            payment_amount = self._partial_payment_amount(business_key, "bill", amount_due)
             if payment_amount <= 0:
                 return PaymentDecision(None, False, Decimal("0"), False)
             return PaymentDecision(payment_amount, False, Decimal("0"), True)
@@ -3029,9 +3021,7 @@ class TransactionGenerator:
 
         # Apply seasonal multiplier
         if business_key:
-            seasonal_mult = self._get_seasonal_multiplier(
-                business_key, current_date.month, pattern
-            )
+            seasonal_mult = self._get_seasonal_multiplier(business_key, current_date.month, pattern)
             probability *= seasonal_mult
 
         # Apply holiday/event multiplier
@@ -3072,9 +3062,7 @@ class TransactionGenerator:
             return self._inflation.apply(pattern.min_amount, current_date)
 
         # Use triangular distribution (mode at lower end for realistic pricing)
-        amount = self._rng.triangular(
-            min_val, max_val, min_val + (max_val - min_val) * 0.3
-        )
+        amount = self._rng.triangular(min_val, max_val, min_val + (max_val - min_val) * 0.3)
         # Round to 2 decimal places, nearest 0.05 for realism
         amount = round(amount / 0.05) * 0.05
         base_amount = Decimal(str(round(amount, 2)))
@@ -3117,9 +3105,7 @@ class TransactionGenerator:
 
         if pending_pool:
             for invoice in pending_pool:
-                probability = self._payment_probability_for_invoice(
-                    invoice, current_date
-                )
+                probability = self._payment_probability_for_invoice(invoice, current_date)
                 if probability <= 0:
                     continue
                 if self._rng.random() < probability:
@@ -3127,9 +3113,7 @@ class TransactionGenerator:
 
         if pending_bill_pool:
             for bill in pending_bill_pool:
-                probability = self._payment_probability_for_bill(
-                    bill, current_date
-                )
+                probability = self._payment_probability_for_bill(bill, current_date)
                 if probability <= 0:
                     continue
                 if self._rng.random() < probability:
@@ -3164,9 +3148,7 @@ class TransactionGenerator:
             for pattern in patterns:
                 if pattern.active_hours:
                     active_hours = [
-                        hour
-                        for hour in hours
-                        if self._is_hour_active(hour, pattern.active_hours)
+                        hour for hour in hours if self._is_hour_active(hour, pattern.active_hours)
                     ]
                 else:
                     active_hours = hours
@@ -3361,9 +3343,7 @@ class TransactionGenerator:
                         if decision.is_partial:
                             metadata["is_partial"] = True
                         if amount_due is not None:
-                            remaining = (amount_due - decision.amount).quantize(
-                                Decimal("0.01")
-                            )
+                            remaining = (amount_due - decision.amount).quantize(Decimal("0.01"))
                             metadata["amount_due"] = str(amount_due)
                             metadata["remaining_balance_estimate"] = str(
                                 max(Decimal("0.00"), remaining)
@@ -3398,9 +3378,7 @@ class TransactionGenerator:
                         if decision.is_partial:
                             metadata["is_partial"] = True
                         if amount_due is not None:
-                            remaining = (amount_due - decision.amount).quantize(
-                                Decimal("0.01")
-                            )
+                            remaining = (amount_due - decision.amount).quantize(Decimal("0.01"))
                             metadata["amount_due"] = str(amount_due)
                             metadata["remaining_balance_estimate"] = str(
                                 max(Decimal("0.00"), remaining)
@@ -3444,8 +3422,7 @@ class TransactionGenerator:
                     vendor_id=vendor_id,
                     metadata=(
                         self._maybe_discount_terms()
-                        if pattern.transaction_type == TransactionType.INVOICE
-                        and customer_id
+                        if pattern.transaction_type == TransactionType.INVOICE and customer_id
                         else None
                     ),
                 )

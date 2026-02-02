@@ -227,9 +227,7 @@ class EventPublisher:
         except Exception as e:
             self._logger.error("message_handling_error", error=str(e))
 
-    async def _handle_subscribe(
-        self, client: ClientConnection, data: dict[str, Any]
-    ) -> None:
+    async def _handle_subscribe(self, client: ClientConnection, data: dict[str, Any]) -> None:
         """Handle subscription requests."""
         # Subscribe to event types
         event_types = data.get("event_types", [])
@@ -261,9 +259,7 @@ class EventPublisher:
             )
         )
 
-    async def _handle_unsubscribe(
-        self, client: ClientConnection, data: dict[str, Any]
-    ) -> None:
+    async def _handle_unsubscribe(self, client: ClientConnection, data: dict[str, Any]) -> None:
         """Handle unsubscription requests."""
         event_types = data.get("event_types", [])
         for et in event_types:
@@ -286,9 +282,7 @@ class EventPublisher:
         }
         await client.websocket.send(json.dumps(history))
 
-    def _should_send_to_client(
-        self, client: ClientConnection, event: SimulationEvent
-    ) -> bool:
+    def _should_send_to_client(self, client: ClientConnection, event: SimulationEvent) -> bool:
         """Check if an event should be sent to a specific client.
 
         If the client has no subscriptions, they receive all events.

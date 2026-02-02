@@ -46,9 +46,7 @@ class OllamaClient:
         self._client = httpx.AsyncClient(timeout=120.0)  # Local models can be slow
         self._logger = logger.bind(client="ollama", model=self._model)
 
-    def _convert_tools_to_ollama_format(
-        self, tools: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
+    def _convert_tools_to_ollama_format(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Convert our tool format to Ollama's expected format.
 
         Ollama uses OpenAI-compatible tool format:
@@ -63,14 +61,16 @@ class OllamaClient:
         """
         ollama_tools = []
         for tool in tools:
-            ollama_tools.append({
-                "type": "function",
-                "function": {
-                    "name": tool["name"],
-                    "description": tool["description"],
-                    "parameters": tool["input_schema"],
-                },
-            })
+            ollama_tools.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool["name"],
+                        "description": tool["description"],
+                        "parameters": tool["input_schema"],
+                    },
+                }
+            )
         return ollama_tools
 
     def _convert_messages_to_ollama_format(
@@ -81,10 +81,12 @@ class OllamaClient:
 
         for msg in messages:
             if msg["role"] == "user":
-                ollama_messages.append({
-                    "role": "user",
-                    "content": msg["content"],
-                })
+                ollama_messages.append(
+                    {
+                        "role": "user",
+                        "content": msg["content"],
+                    }
+                )
             elif msg["role"] == "assistant":
                 assistant_msg: dict[str, Any] = {
                     "role": "assistant",
@@ -113,11 +115,13 @@ class OllamaClient:
 
                 ollama_messages.append(assistant_msg)
             elif msg["role"] == "tool_result":
-                ollama_messages.append({
-                    "role": "tool",
-                    "tool_call_id": msg["tool_call_id"],
-                    "content": msg["content"],
-                })
+                ollama_messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": msg["tool_call_id"],
+                        "content": msg["content"],
+                    }
+                )
 
         return ollama_messages
 
@@ -140,11 +144,13 @@ class OllamaClient:
                     except json.JSONDecodeError:
                         arguments = {}
 
-                tool_calls.append({
-                    "id": tc.get("id", f"call_{len(tool_calls)}"),
-                    "name": func.get("name", ""),
-                    "arguments": arguments,
-                })
+                tool_calls.append(
+                    {
+                        "id": tc.get("id", f"call_{len(tool_calls)}"),
+                        "name": func.get("name", ""),
+                        "arguments": arguments,
+                    }
+                )
 
         # Determine stop reason
         done_reason = response_data.get("done_reason", "")

@@ -53,8 +53,7 @@ class InflationModel:
         if current_date < self.start_date:
             return False
         return (
-            current_date.month == self.start_date.month
-            and current_date.day == self.start_date.day
+            current_date.month == self.start_date.month and current_date.day == self.start_date.day
         )
 
 

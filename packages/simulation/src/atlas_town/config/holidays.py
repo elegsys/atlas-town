@@ -54,18 +54,14 @@ class HolidayRule:
     def matches(self, target_date: date) -> bool:
         """Return True if the rule matches the target date."""
         if self.rule_type == "fixed":
-            return (
-                self.month == target_date.month and self.day == target_date.day
-            )
+            return self.month == target_date.month and self.day == target_date.day
 
         if self.rule_type == "nth_weekday":
             if self.month is None or self.weekday is None or self.nth is None:
                 return False
             if target_date.month != self.month:
                 return False
-            match_day = _nth_weekday_of_month(
-                target_date.year, self.month, self.weekday, self.nth
-            )
+            match_day = _nth_weekday_of_month(target_date.year, self.month, self.weekday, self.nth)
             return match_day == target_date.day
 
         if self.rule_type == "last_weekday":
@@ -73,9 +69,7 @@ class HolidayRule:
                 return False
             if target_date.month != self.month:
                 return False
-            match_day = _last_weekday_of_month(
-                target_date.year, self.month, self.weekday
-            )
+            match_day = _last_weekday_of_month(target_date.year, self.month, self.weekday)
             return match_day == target_date.day
 
         if self.rule_type == "range":

@@ -77,7 +77,7 @@ class DailySummary:
 
         return f"""
 Daily Summary for {self.org_name} - {self.date}
-{'=' * 50}
+{"=" * 50}
 
 Revenue Activity:
   Invoices Created: {self.invoices_created} (${self.invoices_total:,.2f})
@@ -273,12 +273,12 @@ class ExchangeRateSimulator:
 
             # Daily drift: small random change
             daily_change = day_rng.gauss(0, float(volatility))
-            current_rate *= (1 + daily_change)
+            current_rate *= 1 + daily_change
 
             # Periodic events (~5% of days): larger moves
             if day_rng.random() < 0.05:
                 event_change = day_rng.gauss(0, float(volatility) * 4)
-                current_rate *= (1 + event_change)
+                current_rate *= 1 + event_change
 
             current_date += timedelta(days=1)
 
@@ -453,15 +453,11 @@ class AccountingWorkflow:
             try:
                 rate = Decimal(str(config.get("rate", "0")))
             except (ValueError, TypeError) as exc:
-                raise ValueError(
-                    f"Sales tax rate invalid for {business_key}: {config!r}"
-                ) from exc
+                raise ValueError(f"Sales tax rate invalid for {business_key}: {config!r}") from exc
 
             jurisdiction = str(config.get("jurisdiction") or "US")
             tax_type = str(config.get("tax_type") or "sales")
-            name = str(
-                config.get("name") or f"{jurisdiction} {tax_type.title()} Tax"
-            )
+            name = str(config.get("name") or f"{jurisdiction} {tax_type.title()} Tax")
             collect_on = tuple(
                 str(item).strip().lower()
                 for item in (config.get("collect_on") or [])
@@ -605,12 +601,8 @@ class AccountingWorkflow:
 
             configs[business_key] = YearEndConfig(
                 accrual_rate=_decimal_override("accrual_rate", base.accrual_rate),
-                tax_provision_rate=_decimal_override(
-                    "tax_provision_rate", base.tax_provision_rate
-                ),
-                depreciation_rate=_decimal_override(
-                    "depreciation_rate", base.depreciation_rate
-                ),
+                tax_provision_rate=_decimal_override("tax_provision_rate", base.tax_provision_rate),
+                depreciation_rate=_decimal_override("depreciation_rate", base.depreciation_rate),
                 inventory_shrink_rate=_decimal_override(
                     "inventory_shrink_rate", base.inventory_shrink_rate
                 ),
@@ -695,9 +687,7 @@ class AccountingWorkflow:
                 sku = item.get("sku")
                 name = item.get("name")
                 if not sku or not name:
-                    raise ValueError(
-                        f"Inventory item invalid for {business_key}: missing sku/name"
-                    )
+                    raise ValueError(f"Inventory item invalid for {business_key}: missing sku/name")
 
                 try:
                     unit_cost = Decimal(str(item.get("unit_cost", "0")))
@@ -807,7 +797,8 @@ class AccountingWorkflow:
             if not ar_accounts:
                 # Fallback: look for asset accounts with "receivable" in name
                 ar_accounts = [
-                    a for a in accounts
+                    a
+                    for a in accounts
                     if a.get("account_type") == "asset"
                     and "receivable" in a.get("name", "").lower()
                 ]
@@ -817,7 +808,8 @@ class AccountingWorkflow:
             ap_accounts = [a for a in accounts if a.get("account_type") == "accounts_payable"]
             if not ap_accounts:
                 ap_accounts = [
-                    a for a in accounts
+                    a
+                    for a in accounts
                     if a.get("account_type") == "liability"
                     and "payable" in a.get("name", "").lower()
                 ]
@@ -825,7 +817,8 @@ class AccountingWorkflow:
 
             # Find sales tax payable account (liability with "sales tax" or "tax payable")
             sales_tax_accounts = [
-                a for a in accounts
+                a
+                for a in accounts
                 if a.get("account_type") == "liability"
                 and (
                     "sales tax" in a.get("name", "").lower()
@@ -838,7 +831,8 @@ class AccountingWorkflow:
             bank_accounts = [a for a in accounts if a.get("account_type") == "bank"]
             if not bank_accounts:
                 bank_accounts = [
-                    a for a in accounts
+                    a
+                    for a in accounts
                     if a.get("account_type") == "asset"
                     and (
                         "cash" in a.get("name", "").lower()
@@ -857,8 +851,7 @@ class AccountingWorkflow:
                             (
                                 acct
                                 for acct in bank_accounts_feed
-                                if str(acct.get("gl_account_id"))
-                                == str(deposit_account.get("id"))
+                                if str(acct.get("gl_account_id")) == str(deposit_account.get("id"))
                             ),
                             None,
                         )
@@ -906,9 +899,7 @@ class AccountingWorkflow:
         inventory_account = self._find_account_with_fallback(
             accounts, config.inventory_keywords, "asset"
         )
-        cogs_account = self._find_account_with_fallback(
-            accounts, config.cogs_keywords, "expense"
-        )
+        cogs_account = self._find_account_with_fallback(accounts, config.cogs_keywords, "expense")
         return inventory_account, cogs_account
 
     @staticmethod
@@ -938,9 +929,7 @@ class AccountingWorkflow:
         if not config or sales_total <= 0:
             return {}
 
-        weekly_cost = sum(
-            (item.weekly_usage * item.unit_cost) for item in config.items
-        )
+        weekly_cost = sum((item.weekly_usage * item.unit_cost) for item in config.items)
         if weekly_cost <= 0 or config.policy.cogs_ratio <= 0:
             return {}
 
@@ -990,9 +979,7 @@ class AccountingWorkflow:
 
         account_info = await self._get_accounts_for_org(org_id)
         accounts = account_info.get("all_accounts", [])
-        inventory_account, cogs_account = self._resolve_inventory_accounts(
-            accounts, business_key
-        )
+        inventory_account, cogs_account = self._resolve_inventory_accounts(accounts, business_key)
         if not inventory_account or not cogs_account:
             self._logger.warning(
                 "inventory_missing_accounts",
@@ -1107,9 +1094,11 @@ class AccountingWorkflow:
                         "notes": f"Simulated sales consumption ({sales_total})",
                     },
                 )
-                total_cost = self._extract_decimal(result.get("total_cost")) if isinstance(
-                    result, dict
-                ) else None
+                total_cost = (
+                    self._extract_decimal(result.get("total_cost"))
+                    if isinstance(result, dict)
+                    else None
+                )
                 issued.append(
                     {
                         "sku": spec.sku,
@@ -1145,9 +1134,7 @@ class AccountingWorkflow:
 
         account_info = await self._get_accounts_for_org(org_id)
         accounts = account_info.get("all_accounts", [])
-        inventory_account, cogs_account = self._resolve_inventory_accounts(
-            accounts, business_key
-        )
+        inventory_account, cogs_account = self._resolve_inventory_accounts(accounts, business_key)
         if not inventory_account or not cogs_account:
             self._logger.warning(
                 "inventory_missing_accounts_for_cogs",
@@ -1378,9 +1365,7 @@ class AccountingWorkflow:
         issued = await self._issue_inventory_for_sales(
             business_key, org_id, current_date, sales_total
         )
-        replenished = await self._replenish_inventory(
-            business_key, org_id, current_date, vendors
-        )
+        replenished = await self._replenish_inventory(business_key, org_id, current_date, vendors)
         total_cogs = sum(
             [
                 self._extract_decimal(item.get("total_cost")) or Decimal("0")
@@ -1391,9 +1376,7 @@ class AccountingWorkflow:
             Decimal("0"),
         )
         if total_cogs > 0:
-            await self._ensure_cogs_journal_entry(
-                business_key, org_id, current_date, total_cogs
-            )
+            await self._ensure_cogs_journal_entry(business_key, org_id, current_date, total_cogs)
 
         return {
             "issued": len(issued),
@@ -1596,9 +1579,7 @@ class AccountingWorkflow:
                 if isinstance(value, str) and value.strip():
                     candidates.append(value)
                 elif isinstance(value, list):
-                    candidates.extend(
-                        str(item) for item in value if str(item).strip()
-                    )
+                    candidates.extend(str(item) for item in value if str(item).strip())
 
         candidates.append(tx.description)
 
@@ -1618,9 +1599,7 @@ class AccountingWorkflow:
             return self._sales_tax_rate_cache[cache_key]
 
         try:
-            rates = await self._api.list_tax_rates(
-                tax_type=config.tax_type
-            )
+            rates = await self._api.list_tax_rates(tax_type=config.tax_type)
         except AtlasAPIError as exc:
             self._logger.warning(
                 "sales_tax_rate_list_failed",
@@ -1643,8 +1622,7 @@ class AccountingWorkflow:
                 rate_value is not None
                 and rate_value == config.rate
                 and str(rate.get("tax_type", "")).lower() == config.tax_type.lower()
-                and str(rate.get("region", "")).lower()
-                == config.region.lower()
+                and str(rate.get("region", "")).lower() == config.region.lower()
             ):
                 match = rate
                 break
@@ -1714,9 +1692,7 @@ class AccountingWorkflow:
             self._sales_tax_collected.get(period_key, Decimal("0")) + amount
         )
 
-    def _mark_sales_tax_remitted(
-        self, business_key: str, metadata: dict[str, Any] | None
-    ) -> None:
+    def _mark_sales_tax_remitted(self, business_key: str, metadata: dict[str, Any] | None) -> None:
         if not metadata:
             return
         year = metadata.get("tax_period_year")
@@ -1729,14 +1705,10 @@ class AccountingWorkflow:
             return
         self._sales_tax_remitted.add(period_key)
 
-    def _find_vendor_id(
-        self, vendor_name: str, vendors: list[dict[str, Any]]
-    ) -> UUID | None:
+    def _find_vendor_id(self, vendor_name: str, vendors: list[dict[str, Any]]) -> UUID | None:
         normalized = vendor_name.strip().lower()
         for vendor in vendors:
-            name = str(
-                vendor.get("display_name") or vendor.get("name", "")
-            ).strip().lower()
+            name = str(vendor.get("display_name") or vendor.get("name", "")).strip().lower()
             if name == normalized:
                 try:
                     return UUID(str(vendor.get("id")))
@@ -1783,9 +1755,8 @@ class AccountingWorkflow:
             return None
 
         account_info = await self._get_accounts_for_org(org_id)
-        tax_account_id = (
-            account_info.get("sales_tax_payable_account_id")
-            or account_info.get("ap_account_id")
+        tax_account_id = account_info.get("sales_tax_payable_account_id") or account_info.get(
+            "ap_account_id"
         )
         if not tax_account_id:
             self._logger.warning(
@@ -1850,18 +1821,22 @@ class AccountingWorkflow:
         pending_sent = await self._fetch_all_invoices(status="sent")
         pending_overdue = await self._fetch_all_invoices(status="overdue")
         pending_partial = await self._fetch_all_invoices(status="partial")
-        pending_invoices = list({
-            str(inv.get("id")): inv
-            for inv in pending_sent + pending_overdue + pending_partial
-            if inv.get("id")
-        }.values())
+        pending_invoices = list(
+            {
+                str(inv.get("id")): inv
+                for inv in pending_sent + pending_overdue + pending_partial
+                if inv.get("id")
+            }.values()
+        )
         pending_approved_bills = await self._fetch_all_bills(status="approved")
         pending_partial_bills = await self._fetch_all_bills(status="partial")
-        pending_bills = list({
-            str(bill.get("id")): bill
-            for bill in pending_approved_bills + pending_partial_bills
-            if bill.get("id")
-        }.values())
+        pending_bills = list(
+            {
+                str(bill.get("id")): bill
+                for bill in pending_approved_bills + pending_partial_bills
+                if bill.get("id")
+            }.values()
+        )
 
         transactions = self._tx_gen.generate_daily_transactions(
             business_key=business_key,
@@ -1914,9 +1889,7 @@ class AccountingWorkflow:
         )
 
         # Step 2-5: Process transactions (deterministic)
-        results = await self._process_transactions(
-            transactions, current_date, org_id, business_key
-        )
+        results = await self._process_transactions(transactions, current_date, org_id, business_key)
 
         inventory_summary = await self.run_inventory_workflow(
             business_key=business_key,
@@ -1940,9 +1913,7 @@ class AccountingWorkflow:
         )
 
         # Step 6: Verify books are balanced
-        trial_balance = await self._api.get_trial_balance(
-            as_of_date=current_date.isoformat()
-        )
+        trial_balance = await self._api.get_trial_balance(as_of_date=current_date.isoformat())
         is_balanced = self._check_trial_balance(trial_balance)
 
         # Step 7: Identify any issues
@@ -2054,9 +2025,7 @@ class AccountingWorkflow:
         await self._api.switch_organization(org_id)
         ar_aging = await self._api.get_ar_aging()
         ap_aging = await self._api.get_ap_aging()
-        trial_balance = await self._api.get_trial_balance(
-            as_of_date=period_end.isoformat()
-        )
+        trial_balance = await self._api.get_trial_balance(as_of_date=period_end.isoformat())
 
         account_info = await self._get_accounts_for_org(org_id)
         bank_reconciliation = await self.run_bank_reconciliation(
@@ -2084,24 +2053,26 @@ class AccountingWorkflow:
                 accounts, ("accrued", "accrual", "payable"), "liability"
             )
             if expense_account_id and accrued_liability:
-                entry = await self._api.create_journal_entry({
-                    "entry_date": period_end.isoformat(),
-                    "description": f"Month-end accrual adjustment{self._run_suffix()}",
-                    "lines": [
-                        {
-                            "account_id": str(expense_account_id),
-                            "entry_type": "debit",
-                            "amount": str(accrual_amount),
-                            "description": "Accrued expenses",
-                        },
-                        {
-                            "account_id": str(accrued_liability["id"]),
-                            "entry_type": "credit",
-                            "amount": str(accrual_amount),
-                            "description": "Accrued expenses payable",
-                        },
-                    ],
-                })
+                entry = await self._api.create_journal_entry(
+                    {
+                        "entry_date": period_end.isoformat(),
+                        "description": f"Month-end accrual adjustment{self._run_suffix()}",
+                        "lines": [
+                            {
+                                "account_id": str(expense_account_id),
+                                "entry_type": "debit",
+                                "amount": str(accrual_amount),
+                                "description": "Accrued expenses",
+                            },
+                            {
+                                "account_id": str(accrued_liability["id"]),
+                                "entry_type": "credit",
+                                "amount": str(accrual_amount),
+                                "description": "Accrued expenses payable",
+                            },
+                        ],
+                    }
+                )
                 accrual_entry_id = entry.get("id")
 
         # FX revaluation for foreign AR
@@ -2222,14 +2193,16 @@ class AccountingWorkflow:
             unrealized = current_usd - original_usd
             total_unrealized += unrealized
 
-            revalued_items.append({
-                "invoice_id": str(invoice_id),
-                "currency": currency,
-                "foreign_amount": str(foreign_amount),
-                "original_usd": str(original_usd),
-                "current_usd": str(current_usd),
-                "unrealized_gain_loss": str(unrealized),
-            })
+            revalued_items.append(
+                {
+                    "invoice_id": str(invoice_id),
+                    "currency": currency,
+                    "foreign_amount": str(foreign_amount),
+                    "original_usd": str(original_usd),
+                    "current_usd": str(current_usd),
+                    "unrealized_gain_loss": str(unrealized),
+                }
+            )
 
             # Update tracking with new USD value
             tracking["usd_amount"] = current_usd
@@ -2272,11 +2245,13 @@ class AccountingWorkflow:
                 },
             ]
 
-        entry = await self._api.create_journal_entry({
-            "entry_date": period_end.isoformat(),
-            "description": f"Month-end FX revaluation{self._run_suffix()}",
-            "lines": lines,
-        })
+        entry = await self._api.create_journal_entry(
+            {
+                "entry_date": period_end.isoformat(),
+                "description": f"Month-end FX revaluation{self._run_suffix()}",
+                "lines": lines,
+            }
+        )
 
         self._logger.info(
             "fx_revaluation_complete",
@@ -2423,11 +2398,13 @@ class AccountingWorkflow:
                 },
             ]
 
-        entry = await self._api.create_journal_entry({
-            "entry_date": payment_date.isoformat(),
-            "description": f"FX gain/loss on {currency} payment{self._run_suffix()}",
-            "lines": lines,
-        })
+        entry = await self._api.create_journal_entry(
+            {
+                "entry_date": payment_date.isoformat(),
+                "description": f"FX gain/loss on {currency} payment{self._run_suffix()}",
+                "lines": lines,
+            }
+        )
 
         self._logger.info(
             "fx_gain_loss_recorded",
@@ -2507,7 +2484,8 @@ class AccountingWorkflow:
                 )
 
         unmatched = [
-            tx for tx in bank_transactions
+            tx
+            for tx in bank_transactions
             if not tx.get("match_id") and not tx.get("matched") and not tx.get("is_matched")
         ]
         reconciliation = await self._reconcile_bank_transactions(
@@ -2558,19 +2536,13 @@ class AccountingWorkflow:
             period_start.isoformat(), period_end.isoformat()
         )
         balance_sheet = await self._api.get_balance_sheet(period_end.isoformat())
-        cash_flow = await self._api.get_cash_flow(
-            period_start.isoformat(), period_end.isoformat()
-        )
-        management_reports = await self._generate_management_reports(
-            period_start, period_end
-        )
+        cash_flow = await self._api.get_cash_flow(period_start.isoformat(), period_end.isoformat())
+        management_reports = await self._generate_management_reports(period_start, period_end)
 
         tax_entry_id = None
         net_income = self._extract_net_income(profit_loss)
         if net_income is not None and net_income > Decimal("0"):
-            tax_amount = (net_income * config.tax_provision_rate).quantize(
-                Decimal("0.01")
-            )
+            tax_amount = (net_income * config.tax_provision_rate).quantize(Decimal("0.01"))
             account_info = await self._get_accounts_for_org(org_id)
             accounts = account_info.get("all_accounts", [])
             tax_expense = self._find_account_with_fallback(
@@ -2580,26 +2552,28 @@ class AccountingWorkflow:
                 accounts, config.tax_payable_keywords, "liability"
             )
             if tax_expense and tax_payable:
-                entry = await self._api.create_journal_entry({
-                    "entry_date": period_end.isoformat(),
-                    "description": (
-                        f"Quarter-end tax provision Q{quarter} {year}{self._run_suffix()}"
-                    ),
-                    "lines": [
-                        {
-                            "account_id": str(tax_expense["id"]),
-                            "entry_type": "debit",
-                            "amount": str(tax_amount),
-                            "description": "Income tax provision",
-                        },
-                        {
-                            "account_id": str(tax_payable["id"]),
-                            "entry_type": "credit",
-                            "amount": str(tax_amount),
-                            "description": "Income tax payable",
-                        },
-                    ],
-                })
+                entry = await self._api.create_journal_entry(
+                    {
+                        "entry_date": period_end.isoformat(),
+                        "description": (
+                            f"Quarter-end tax provision Q{quarter} {year}{self._run_suffix()}"
+                        ),
+                        "lines": [
+                            {
+                                "account_id": str(tax_expense["id"]),
+                                "entry_type": "debit",
+                                "amount": str(tax_amount),
+                                "description": "Income tax provision",
+                            },
+                            {
+                                "account_id": str(tax_payable["id"]),
+                                "entry_type": "credit",
+                                "amount": str(tax_amount),
+                                "description": "Income tax payable",
+                            },
+                        ],
+                    }
+                )
                 tax_entry_id = entry.get("id")
 
         return {
@@ -2628,14 +2602,13 @@ class AccountingWorkflow:
         )
 
         await self._api.switch_organization(org_id)
-        trial_balance = await self._api.get_trial_balance(
-            as_of_date=period_end.isoformat()
-        )
+        trial_balance = await self._api.get_trial_balance(as_of_date=period_end.isoformat())
         accounts = (await self._get_accounts_for_org(org_id)).get("all_accounts", [])
         tb_accounts = self._extract_trial_balance_accounts(trial_balance)
 
         fixed_assets = [
-            account for account in accounts
+            account
+            for account in accounts
             if account.get("account_type") == "asset"
             and any(
                 keyword in str(account.get("name", "")).lower()
@@ -2659,36 +2632,34 @@ class AccountingWorkflow:
                         balance = self._trial_balance_amount(entry)
                         break
                 if balance is None:
-                    balance_info = await self._api.get_account_balance(
-                        UUID(str(account["id"]))
-                    )
+                    balance_info = await self._api.get_account_balance(UUID(str(account["id"])))
                     balance = self._extract_decimal(balance_info.get("balance"))
                 if balance and balance > 0:
                     total_fixed += balance
 
         if total_fixed > 0 and accumulated_dep and depreciation_expense:
-            depreciation_amount = (total_fixed * config.depreciation_rate).quantize(
-                Decimal("0.01")
-            )
+            depreciation_amount = (total_fixed * config.depreciation_rate).quantize(Decimal("0.01"))
             if depreciation_amount > 0:
-                entry = await self._api.create_journal_entry({
-                    "entry_date": period_end.isoformat(),
-                    "description": f"Year-end depreciation{self._run_suffix()}",
-                    "lines": [
-                        {
-                            "account_id": str(depreciation_expense["id"]),
-                            "entry_type": "debit",
-                            "amount": str(depreciation_amount),
-                            "description": "Depreciation expense",
-                        },
-                        {
-                            "account_id": str(accumulated_dep["id"]),
-                            "entry_type": "credit",
-                            "amount": str(depreciation_amount),
-                            "description": "Accumulated depreciation",
-                        },
-                    ],
-                })
+                entry = await self._api.create_journal_entry(
+                    {
+                        "entry_date": period_end.isoformat(),
+                        "description": f"Year-end depreciation{self._run_suffix()}",
+                        "lines": [
+                            {
+                                "account_id": str(depreciation_expense["id"]),
+                                "entry_type": "debit",
+                                "amount": str(depreciation_amount),
+                                "description": "Depreciation expense",
+                            },
+                            {
+                                "account_id": str(accumulated_dep["id"]),
+                                "entry_type": "credit",
+                                "amount": str(depreciation_amount),
+                                "description": "Accumulated depreciation",
+                            },
+                        ],
+                    }
+                )
                 depreciation_entry_id = entry.get("id")
 
         inventory_entry_id = None
@@ -2717,24 +2688,26 @@ class AccountingWorkflow:
                         Decimal("0.01")
                     )
                     if adjustment > 0:
-                        entry = await self._api.create_journal_entry({
-                            "entry_date": period_end.isoformat(),
-                            "description": f"Inventory adjustment{self._run_suffix()}",
-                            "lines": [
-                                {
-                                    "account_id": str(cogs_account["id"]),
-                                    "entry_type": "debit",
-                                    "amount": str(adjustment),
-                                    "description": "Inventory shrink adjustment",
-                                },
-                                {
-                                    "account_id": str(inventory_account["id"]),
-                                    "entry_type": "credit",
-                                    "amount": str(adjustment),
-                                    "description": "Inventory adjustment",
-                                },
-                            ],
-                        })
+                        entry = await self._api.create_journal_entry(
+                            {
+                                "entry_date": period_end.isoformat(),
+                                "description": f"Inventory adjustment{self._run_suffix()}",
+                                "lines": [
+                                    {
+                                        "account_id": str(cogs_account["id"]),
+                                        "entry_type": "debit",
+                                        "amount": str(adjustment),
+                                        "description": "Inventory shrink adjustment",
+                                    },
+                                    {
+                                        "account_id": str(inventory_account["id"]),
+                                        "entry_type": "credit",
+                                        "amount": str(adjustment),
+                                        "description": "Inventory adjustment",
+                                    },
+                                ],
+                            }
+                        )
                         inventory_entry_id = entry.get("id")
 
         closing_entry_id = None
@@ -2812,11 +2785,13 @@ class AccountingWorkflow:
                 )
 
         if closing_lines and income_summary:
-            entry = await self._api.create_journal_entry({
-                "entry_date": period_end.isoformat(),
-                "description": f"Revenue & expense closing {period_end.year}{self._run_suffix()}",
-                "lines": closing_lines,
-            })
+            entry = await self._api.create_journal_entry(
+                {
+                    "entry_date": period_end.isoformat(),
+                    "description": f"Revenue & expense closing {period_end.year}{self._run_suffix()}",
+                    "lines": closing_lines,
+                }
+            )
             revenue_expense_close_entry_id = entry.get("id")
 
         if net_income is None:
@@ -2832,24 +2807,26 @@ class AccountingWorkflow:
                     debit_account = retained_earnings["id"]
                     credit_account = income_summary["id"]
                     amount = abs(amount)
-                entry = await self._api.create_journal_entry({
-                    "entry_date": period_end.isoformat(),
-                    "description": f"Closing entry {period_end.year}{self._run_suffix()}",
-                    "lines": [
-                        {
-                            "account_id": str(debit_account),
-                            "entry_type": "debit",
-                            "amount": str(amount),
-                            "description": "Close income summary",
-                        },
-                        {
-                            "account_id": str(credit_account),
-                            "entry_type": "credit",
-                            "amount": str(amount),
-                            "description": "Transfer to retained earnings",
-                        },
-                    ],
-                })
+                entry = await self._api.create_journal_entry(
+                    {
+                        "entry_date": period_end.isoformat(),
+                        "description": f"Closing entry {period_end.year}{self._run_suffix()}",
+                        "lines": [
+                            {
+                                "account_id": str(debit_account),
+                                "entry_type": "debit",
+                                "amount": str(amount),
+                                "description": "Close income summary",
+                            },
+                            {
+                                "account_id": str(credit_account),
+                                "entry_type": "credit",
+                                "amount": str(amount),
+                                "description": "Transfer to retained earnings",
+                            },
+                        ],
+                    }
+                )
                 closing_entry_id = entry.get("id")
 
         return {
@@ -2929,9 +2906,7 @@ class AccountingWorkflow:
                         results["invoices_created"] += 1
                         results["invoices_total"] += tx.amount + tax_amount
                         if tax_amount > 0:
-                            self._record_sales_tax_collected(
-                                business_key, current_date, tax_amount
-                            )
+                            self._record_sales_tax_collected(business_key, current_date, tax_amount)
 
                 elif tx.transaction_type == TransactionType.CASH_SALE:
                     # Cash sales: create invoice + immediate payment
@@ -2959,9 +2934,7 @@ class AccountingWorkflow:
                         results["payments_received"] += 1
                         results["payments_total"] += total_amount
                         if tax_amount > 0:
-                            self._record_sales_tax_collected(
-                                business_key, current_date, tax_amount
-                            )
+                            self._record_sales_tax_collected(business_key, current_date, tax_amount)
 
                 elif tx.transaction_type == TransactionType.BILL:
                     bill = await self._create_bill(tx, current_date, org_id, business_key)
@@ -3042,9 +3015,8 @@ class AccountingWorkflow:
         account_info = await self._get_accounts_for_org(org_id)
         revenue_account_id = account_info.get("revenue_account_id")
         ar_account_id = account_info.get("ar_account_id")
-        tax_account_id = (
-            account_info.get("sales_tax_payable_account_id")
-            or account_info.get("ap_account_id")
+        tax_account_id = account_info.get("sales_tax_payable_account_id") or account_info.get(
+            "ap_account_id"
         )
 
         if not revenue_account_id:
@@ -3151,13 +3123,9 @@ class AccountingWorkflow:
         due_date = bill_date + timedelta(days=30)  # Net 30 terms
 
         bill_number = f"BILL-{bill_date.strftime('%Y%m%d')}-{uuid4().hex[:4]}{self._run_suffix()}"
-        vendor_bill_number = (
-            f"SIMRUN-{self._run_id}"[:50] if self._run_id else None
-        )
+        vendor_bill_number = f"SIMRUN-{self._run_id}"[:50] if self._run_id else None
         accounts = account_info.get("all_accounts", [])
-        year_end_config = self._year_end_configs.get(
-            business_key, YearEndConfig.default()
-        )
+        year_end_config = self._year_end_configs.get(business_key, YearEndConfig.default())
 
         def resolve_account_id(hint: str | None) -> str | None:
             if not hint:
@@ -3292,10 +3260,7 @@ class AccountingWorkflow:
                 )
                 # Check for FX gain/loss on foreign AR payment
                 invoice_uuid = UUID(invoice_id)
-                fx_tracking_keys = [
-                    k for k in self._foreign_ar_tracking
-                    if k[0] == invoice_uuid
-                ]
+                fx_tracking_keys = [k for k in self._foreign_ar_tracking if k[0] == invoice_uuid]
                 if fx_tracking_keys and business_key:
                     tracking_key = fx_tracking_keys[0]
                     currency = tracking_key[1]
@@ -3326,12 +3291,14 @@ class AccountingWorkflow:
         payment_date: date,
     ) -> dict[str, Any] | None:
         """Pay a vendor bill - deterministic."""
-        payment = await self._api.create_bill_payment({
-            "bill_id": bill_id,
-            "amount": str(amount),
-            "payment_date": payment_date.isoformat(),
-            "payment_method": "check",
-        })
+        payment = await self._api.create_bill_payment(
+            {
+                "bill_id": bill_id,
+                "amount": str(amount),
+                "payment_date": payment_date.isoformat(),
+                "payment_method": "check",
+            }
+        )
         return payment
 
     async def _get_cash_position(self, org_id: UUID) -> tuple[Decimal, list[dict[str, Any]]]:
@@ -3381,9 +3348,7 @@ class AccountingWorkflow:
         if primary_loc.limit is None or primary_loc.limit <= Decimal("0"):
             return cash_position
 
-        current_balance = self._tx_gen.get_line_of_credit_balance(
-            business_key, primary_loc.name
-        )
+        current_balance = self._tx_gen.get_line_of_credit_balance(business_key, primary_loc.name)
         available = primary_loc.limit - current_balance
         if available <= Decimal("0"):
             return cash_position
@@ -3568,9 +3533,7 @@ class AccountingWorkflow:
         if vendor_id:
             try:
                 vendor = await self._api.get_vendor(UUID(str(vendor_id)))
-                vendor_name = str(
-                    vendor.get("display_name") or vendor.get("name") or ""
-                )
+                vendor_name = str(vendor.get("display_name") or vendor.get("name") or "")
             except Exception:
                 vendor_name = ""
 
@@ -3640,9 +3603,7 @@ class AccountingWorkflow:
                 if days_overdue is not None and days_overdue > 0:
                     overdue_invoices.append(invoice)
         if overdue_invoices:
-            total_overdue = sum(
-                Decimal(str(inv.get("balance", 0))) for inv in overdue_invoices
-            )
+            total_overdue = sum(Decimal(str(inv.get("balance", 0))) for inv in overdue_invoices)
             issues.append(
                 f"{len(overdue_invoices)} overdue invoices totaling ${total_overdue:,.2f}"
             )
@@ -3650,13 +3611,12 @@ class AccountingWorkflow:
         # Check for bills due soon
         upcoming_bills = await self._api.list_bills(status="pending")
         bills_due_soon = [
-            b for b in upcoming_bills
+            b
+            for b in upcoming_bills
             if self._is_due_within_days(b.get("due_date"), current_date, 7)
         ]
         if bills_due_soon:
-            total_due = sum(
-                Decimal(str(b.get("balance", 0))) for b in bills_due_soon
-            )
+            total_due = sum(Decimal(str(b.get("balance", 0))) for b in bills_due_soon)
             issues.append(
                 f"{len(bills_due_soon)} bills due within 7 days totaling ${total_due:,.2f}"
             )
@@ -4054,18 +4014,14 @@ class AccountingWorkflow:
                 f"{reminders} reminder(s), {calls} call(s), {final_notices} final notice(s)"
             )
         if late_fee_count:
-            issues.append(
-                f"Late fees applied: {late_fee_count} invoice(s), ${late_fees:,.2f}"
-            )
+            issues.append(f"Late fees applied: {late_fee_count} invoice(s), ${late_fees:,.2f}")
         if write_off_count:
             issues.append(
                 f"Bad debts written off: {write_off_count} invoice(s), ${write_offs:,.2f}"
             )
         return issues
 
-    async def _generate_overdue_followups(
-        self, period_end: date
-    ) -> list[dict[str, Any]]:
+    async def _generate_overdue_followups(self, period_end: date) -> list[dict[str, Any]]:
         followups: list[dict[str, Any]] = []
         overdue_invoices = await self._api.list_invoices(status="overdue")
         for inv in overdue_invoices:
@@ -4211,9 +4167,7 @@ class AccountingWorkflow:
                 summary["failed"] += 1
                 continue
             try:
-                await self._api.categorize_bank_transaction(
-                    tx_uuid, UUID(str(account_id))
-                )
+                await self._api.categorize_bank_transaction(tx_uuid, UUID(str(account_id)))
                 summary["categorized"] += 1
             except AtlasAPIError:
                 summary["failed"] += 1
@@ -4249,9 +4203,9 @@ class AccountingWorkflow:
             customer_id = str(inv.get("customer_id") or "")
             customer_name = customer_map.get(customer_id) or customer_id or "Unknown"
             customer_name = str(customer_name)
-            revenue_by_customer[customer_name] = revenue_by_customer.get(
-                customer_name, Decimal("0")
-            ) + amount
+            revenue_by_customer[customer_name] = (
+                revenue_by_customer.get(customer_name, Decimal("0")) + amount
+            )
 
         expenses_by_category: dict[str, Decimal] = {}
         for bill in bills:
@@ -4276,9 +4230,9 @@ class AccountingWorkflow:
                     or Decimal("0")
                 )
                 line_amount = (qty * unit_price).quantize(Decimal("0.01"))
-                expenses_by_category[category] = expenses_by_category.get(
-                    category, Decimal("0")
-                ) + line_amount
+                expenses_by_category[category] = (
+                    expenses_by_category.get(category, Decimal("0")) + line_amount
+                )
 
         def _top_n(values: dict[str, Decimal], count: int = 5) -> list[dict[str, Any]]:
             items = sorted(values.items(), key=lambda x: x[1], reverse=True)
@@ -4301,9 +4255,7 @@ class AccountingWorkflow:
                 or self._extract_decimal(bill.get("amount"))
                 or Decimal("0")
             )
-            top_vendors[str(vendor_name)] = top_vendors.get(
-                str(vendor_name), Decimal("0")
-            ) + amount
+            top_vendors[str(vendor_name)] = top_vendors.get(str(vendor_name), Decimal("0")) + amount
 
         return {
             "revenue_by_customer": _top_n(revenue_by_customer),
@@ -4334,9 +4286,7 @@ class AccountingWorkflow:
             self._logger.warning("budget_create_failed", year=year, error=str(exc))
         return None
 
-    async def _summarize_1099_activity(
-        self, tax_year: int
-    ) -> dict[str, Any]:
+    async def _summarize_1099_activity(self, tax_year: int) -> dict[str, Any]:
         payments_made = await self._fetch_all_payments_made()
         vendors = await self._api.list_vendors()
         vendor_map = {str(v.get("id")): v for v in vendors}
@@ -4462,15 +4412,13 @@ class AccountingWorkflow:
             all_issues.extend(s.issues)
 
         collection_rate = (
-            (total_payment_amount / total_invoice_amount * 100)
-            if total_invoice_amount
-            else 0
+            (total_payment_amount / total_invoice_amount * 100) if total_invoice_amount else 0
         )
 
         return f"""
 Monthly Report: {org_name}
 Period: {month_start} to {month_end}
-{'=' * 60}
+{"=" * 60}
 
 REVENUE SUMMARY
   Invoices Created: {total_invoices}

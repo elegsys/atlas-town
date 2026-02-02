@@ -108,9 +108,7 @@ class FlatSettings(BaseSettings):
     )
 
     # Atlas API
-    atlas_api_url: str = Field(
-        default="http://localhost:8000", validation_alias="ATLAS_API_URL"
-    )
+    atlas_api_url: str = Field(default="http://localhost:8000", validation_alias="ATLAS_API_URL")
     atlas_username: str = Field(..., validation_alias="ATLAS_USERNAME")
     atlas_password: SecretStr = Field(..., validation_alias="ATLAS_PASSWORD")
     atlas_timeout: float = Field(default=30.0, validation_alias="ATLAS_TIMEOUT")
@@ -122,9 +120,7 @@ class FlatSettings(BaseSettings):
     google_api_key: SecretStr = Field(..., validation_alias="GOOGLE_API_KEY")
 
     # Model selections (defaults to cheapest capable models - Jan 2026)
-    claude_model: str = Field(
-        default="claude-haiku-4-5", validation_alias="CLAUDE_MODEL"
-    )
+    claude_model: str = Field(default="claude-haiku-4-5", validation_alias="CLAUDE_MODEL")
     gpt_model: str = Field(default="gpt-5-nano", validation_alias="GPT_MODEL")
     gemini_model: str = Field(default="gemini-2.5-flash", validation_alias="GEMINI_MODEL")
 
@@ -141,9 +137,7 @@ class FlatSettings(BaseSettings):
     lm_studio_model: str = Field(default="", validation_alias="LM_STUDIO_MODEL")
 
     # Default LLM provider
-    llm_provider: str = Field(
-        default="claude", validation_alias="LLM_PROVIDER"
-    )
+    llm_provider: str = Field(default="claude", validation_alias="LLM_PROVIDER")
 
     # LLM parameters
     llm_max_tokens: int = Field(default=4096, validation_alias="LLM_MAX_TOKENS")
@@ -155,15 +149,11 @@ class FlatSettings(BaseSettings):
 
     # Simulation
     simulation_speed: float = Field(default=1.0, validation_alias="SIMULATION_SPEED")
-    day_duration_seconds: float = Field(
-        default=300.0, validation_alias="DAY_DURATION_SECONDS"
-    )
+    day_duration_seconds: float = Field(default=300.0, validation_alias="DAY_DURATION_SECONDS")
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = Field(
         default="INFO", validation_alias="LOG_LEVEL"
     )
-    simulation_run_id: str | None = Field(
-        default=None, validation_alias="SIMULATION_RUN_ID"
-    )
+    simulation_run_id: str | None = Field(default=None, validation_alias="SIMULATION_RUN_ID")
 
     # Economics
     inflation_annual_rate: Decimal = Field(

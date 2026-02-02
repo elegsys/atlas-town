@@ -52,9 +52,7 @@ class OpenAIClient:
         client_name = "lm_studio" if self._base_url else "openai"
         self._logger = logger.bind(client=client_name, model=self._model)
 
-    def _convert_tools_to_openai_format(
-        self, tools: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
+    def _convert_tools_to_openai_format(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Convert our tool format to OpenAI's expected format.
 
         OpenAI expects:
@@ -69,14 +67,16 @@ class OpenAIClient:
         """
         openai_tools = []
         for tool in tools:
-            openai_tools.append({
-                "type": "function",
-                "function": {
-                    "name": tool["name"],
-                    "description": tool["description"],
-                    "parameters": tool["input_schema"],
-                },
-            })
+            openai_tools.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool["name"],
+                        "description": tool["description"],
+                        "parameters": tool["input_schema"],
+                    },
+                }
+            )
         return openai_tools
 
     def _convert_messages_to_openai_format(
@@ -87,10 +87,12 @@ class OpenAIClient:
 
         for msg in messages:
             if msg["role"] == "user":
-                openai_messages.append({
-                    "role": "user",
-                    "content": msg["content"],
-                })
+                openai_messages.append(
+                    {
+                        "role": "user",
+                        "content": msg["content"],
+                    }
+                )
             elif msg["role"] == "assistant":
                 assistant_msg: dict[str, Any] = {"role": "assistant"}
 
@@ -114,17 +116,17 @@ class OpenAIClient:
 
                 openai_messages.append(assistant_msg)
             elif msg["role"] == "tool_result":
-                openai_messages.append({
-                    "role": "tool",
-                    "tool_call_id": msg["tool_call_id"],
-                    "content": msg["content"],
-                })
+                openai_messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": msg["tool_call_id"],
+                        "content": msg["content"],
+                    }
+                )
 
         return openai_messages
 
-    def _parse_response(
-        self, response: openai.types.chat.ChatCompletion
-    ) -> OpenAIResponse:
+    def _parse_response(self, response: openai.types.chat.ChatCompletion) -> OpenAIResponse:
         """Parse OpenAI response into our format."""
         message = response.choices[0].message
         content = message.content or ""
@@ -135,11 +137,13 @@ class OpenAIClient:
                 function = getattr(tc, "function", None)
                 if function is None:
                     continue
-                tool_calls.append({
-                    "id": tc.id,
-                    "name": function.name,
-                    "arguments": json.loads(function.arguments),
-                })
+                tool_calls.append(
+                    {
+                        "id": tc.id,
+                        "name": function.name,
+                        "arguments": json.loads(function.arguments),
+                    }
+                )
 
         # Map OpenAI finish reasons to our format
         finish_reason = response.choices[0].finish_reason

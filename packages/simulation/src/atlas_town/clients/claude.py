@@ -50,11 +50,13 @@ class ClaudeClient:
         """
         anthropic_tools = []
         for tool in tools:
-            anthropic_tools.append({
-                "name": tool["name"],
-                "description": tool["description"],
-                "input_schema": tool["input_schema"],
-            })
+            anthropic_tools.append(
+                {
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "input_schema": tool["input_schema"],
+                }
+            )
         return anthropic_tools
 
     def _convert_messages_to_anthropic_format(
@@ -65,45 +67,55 @@ class ClaudeClient:
 
         for msg in messages:
             if msg["role"] == "user":
-                anthropic_messages.append({
-                    "role": "user",
-                    "content": msg["content"],
-                })
+                anthropic_messages.append(
+                    {
+                        "role": "user",
+                        "content": msg["content"],
+                    }
+                )
             elif msg["role"] == "assistant":
                 # Build content blocks for assistant message
                 content_blocks = []
 
                 # Add text content if present
                 if msg.get("content"):
-                    content_blocks.append({
-                        "type": "text",
-                        "text": msg["content"],
-                    })
+                    content_blocks.append(
+                        {
+                            "type": "text",
+                            "text": msg["content"],
+                        }
+                    )
 
                 # Add tool use blocks if present
                 for tool_call in msg.get("tool_calls", []):
-                    content_blocks.append({
-                        "type": "tool_use",
-                        "id": tool_call["id"],
-                        "name": tool_call["name"],
-                        "input": tool_call["arguments"],
-                    })
-
-                anthropic_messages.append({
-                    "role": "assistant",
-                    "content": content_blocks if content_blocks else msg.get("content", ""),
-                })
-            elif msg["role"] == "tool_result":
-                anthropic_messages.append({
-                    "role": "user",
-                    "content": [
+                    content_blocks.append(
                         {
-                            "type": "tool_result",
-                            "tool_use_id": msg["tool_call_id"],
-                            "content": msg["content"],
+                            "type": "tool_use",
+                            "id": tool_call["id"],
+                            "name": tool_call["name"],
+                            "input": tool_call["arguments"],
                         }
-                    ],
-                })
+                    )
+
+                anthropic_messages.append(
+                    {
+                        "role": "assistant",
+                        "content": content_blocks if content_blocks else msg.get("content", ""),
+                    }
+                )
+            elif msg["role"] == "tool_result":
+                anthropic_messages.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": msg["tool_call_id"],
+                                "content": msg["content"],
+                            }
+                        ],
+                    }
+                )
 
         return anthropic_messages
 
@@ -116,11 +128,13 @@ class ClaudeClient:
             if block.type == "text":
                 content = block.text
             elif block.type == "tool_use":
-                tool_calls.append({
-                    "id": block.id,
-                    "name": block.name,
-                    "arguments": block.input,
-                })
+                tool_calls.append(
+                    {
+                        "id": block.id,
+                        "name": block.name,
+                        "arguments": block.input,
+                    }
+                )
 
         return ClaudeResponse(
             content=content,

@@ -115,9 +115,7 @@ class ToolExecutor:
 
     # === Customer Handlers ===
 
-    async def _list_customers(
-        self, offset: int = 0, limit: int = 100
-    ) -> list[dict[str, Any]]:
+    async def _list_customers(self, offset: int = 0, limit: int = 100) -> list[dict[str, Any]]:
         return await self.client.list_customers(offset=offset, limit=limit)
 
     async def _get_customer(self, customer_id: str) -> dict[str, Any]:
@@ -128,9 +126,7 @@ class ToolExecutor:
 
     # === Vendor Handlers ===
 
-    async def _list_vendors(
-        self, offset: int = 0, limit: int = 100
-    ) -> list[dict[str, Any]]:
+    async def _list_vendors(self, offset: int = 0, limit: int = 100) -> list[dict[str, Any]]:
         return await self.client.list_vendors(offset=offset, limit=limit)
 
     async def _get_vendor(self, vendor_id: str) -> dict[str, Any]:
@@ -177,9 +173,7 @@ class ToolExecutor:
 
     # === Payment Handlers ===
 
-    async def _list_payments(
-        self, offset: int = 0, limit: int = 100
-    ) -> list[dict[str, Any]]:
+    async def _list_payments(self, offset: int = 0, limit: int = 100) -> list[dict[str, Any]]:
         return await self.client.list_payments(offset=offset, limit=limit)
 
     async def _create_payment(self, **data: Any) -> dict[str, Any]:
@@ -205,9 +199,7 @@ class ToolExecutor:
 
     # === Account Handlers ===
 
-    async def _list_accounts(
-        self, offset: int = 0, limit: int = 100
-    ) -> list[dict[str, Any]]:
+    async def _list_accounts(self, offset: int = 0, limit: int = 100) -> list[dict[str, Any]]:
         return await self.client.list_accounts(offset=offset, limit=limit)
 
     async def _get_account_balance(self, account_id: str) -> dict[str, Any]:
@@ -216,15 +208,12 @@ class ToolExecutor:
     async def _get_ar_account_id(self) -> UUID:
         """Get a default AR account ID for the current organization."""
         accounts = await self.client.list_accounts(limit=200)
-        ar_accounts = [
-            a for a in accounts if a.get("account_type") == "accounts_receivable"
-        ]
+        ar_accounts = [a for a in accounts if a.get("account_type") == "accounts_receivable"]
         if not ar_accounts:
             ar_accounts = [
                 a
                 for a in accounts
-                if a.get("account_type") == "asset"
-                and "receivable" in a.get("name", "").lower()
+                if a.get("account_type") == "asset" and "receivable" in a.get("name", "").lower()
             ]
         if not ar_accounts:
             raise ToolExecutionError(
@@ -245,22 +234,16 @@ class ToolExecutor:
 
     # === Report Handlers ===
 
-    async def _get_trial_balance(
-        self, as_of_date: str | None = None
-    ) -> dict[str, Any]:
+    async def _get_trial_balance(self, as_of_date: str | None = None) -> dict[str, Any]:
         return await self.client.get_trial_balance(as_of_date)
 
-    async def _get_profit_loss(
-        self, period_start: str, period_end: str
-    ) -> dict[str, Any]:
+    async def _get_profit_loss(self, period_start: str, period_end: str) -> dict[str, Any]:
         return await self.client.get_profit_loss(period_start, period_end)
 
     async def _get_balance_sheet(self, as_of_date: str) -> dict[str, Any]:
         return await self.client.get_balance_sheet(as_of_date)
 
-    async def _get_cash_flow(
-        self, period_start: str, period_end: str
-    ) -> dict[str, Any]:
+    async def _get_cash_flow(self, period_start: str, period_end: str) -> dict[str, Any]:
         return await self.client.get_cash_flow(period_start, period_end)
 
     async def _get_ar_aging(self) -> dict[str, Any]:
@@ -271,9 +254,7 @@ class ToolExecutor:
 
     # === Bank Transaction Handlers ===
 
-    async def _list_bank_accounts(
-        self, include_inactive: bool = False
-    ) -> list[dict[str, Any]]:
+    async def _list_bank_accounts(self, include_inactive: bool = False) -> list[dict[str, Any]]:
         return await self.client.list_bank_accounts(include_inactive=include_inactive)
 
     async def _create_bank_transaction(self, **data: Any) -> dict[str, Any]:
@@ -296,9 +277,7 @@ class ToolExecutor:
     async def _categorize_bank_transaction(
         self, transaction_id: str, account_id: str
     ) -> dict[str, Any]:
-        return await self.client.categorize_bank_transaction(
-            UUID(transaction_id), UUID(account_id)
-        )
+        return await self.client.categorize_bank_transaction(UUID(transaction_id), UUID(account_id))
 
     async def _match_bank_transaction(
         self, transaction_id: str, match_id: str, match_type: str

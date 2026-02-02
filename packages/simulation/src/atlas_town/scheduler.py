@@ -18,12 +18,12 @@ logger = structlog.get_logger(__name__)
 class DayPhase(str, Enum):
     """Phases of a simulated business day."""
 
-    EARLY_MORNING = "early_morning"   # 6:00 - 8:00: Prep, planning
-    MORNING = "morning"               # 8:00 - 12:00: Business opens, activity
-    LUNCH = "lunch"                   # 12:00 - 13:00: Mid-day lull
-    AFTERNOON = "afternoon"           # 13:00 - 17:00: Peak business
-    EVENING = "evening"               # 17:00 - 20:00: Wind down, accounting
-    NIGHT = "night"                   # 20:00 - 6:00: Closed, processing
+    EARLY_MORNING = "early_morning"  # 6:00 - 8:00: Prep, planning
+    MORNING = "morning"  # 8:00 - 12:00: Business opens, activity
+    LUNCH = "lunch"  # 12:00 - 13:00: Mid-day lull
+    AFTERNOON = "afternoon"  # 13:00 - 17:00: Peak business
+    EVENING = "evening"  # 17:00 - 20:00: Wind down, accounting
+    NIGHT = "night"  # 20:00 - 6:00: Closed, processing
 
 
 # Phase time boundaries (hour of day)
@@ -214,9 +214,7 @@ class Scheduler:
         """Check if scheduler is paused."""
         return self._is_paused
 
-    def register_phase_handler(
-        self, phase: DayPhase, handler: Callable[..., Any]
-    ) -> None:
+    def register_phase_handler(self, phase: DayPhase, handler: Callable[..., Any]) -> None:
         """Register a handler to be called when entering a phase.
 
         Args:

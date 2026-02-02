@@ -51,8 +51,7 @@ GET_CUSTOMER_TOOL: dict[str, Any] = {
 CREATE_CUSTOMER_TOOL: dict[str, Any] = {
     "name": "create_customer",
     "description": (
-        "Create a new customer record. Customers are people or businesses that "
-        "owe you money."
+        "Create a new customer record. Customers are people or businesses that owe you money."
     ),
     "input_schema": {
         "type": "object",
@@ -292,8 +291,7 @@ SEND_INVOICE_TOOL: dict[str, Any] = {
 VOID_INVOICE_TOOL: dict[str, Any] = {
     "name": "void_invoice",
     "description": (
-        "Void an invoice. This reverses the journal entry and marks the invoice "
-        "as voided."
+        "Void an invoice. This reverses the journal entry and marks the invoice as voided."
     ),
     "input_schema": {
         "type": "object",
@@ -317,8 +315,7 @@ VOID_INVOICE_TOOL: dict[str, Any] = {
 LIST_BILLS_TOOL: dict[str, Any] = {
     "name": "list_bills",
     "description": (
-        "List bills for the current organization. Bills represent money YOU owe "
-        "to vendors."
+        "List bills for the current organization. Bills represent money YOU owe to vendors."
     ),
     "input_schema": {
         "type": "object",
@@ -510,8 +507,7 @@ APPLY_PAYMENT_TOOL: dict[str, Any] = {
 CREATE_BILL_PAYMENT_TOOL: dict[str, Any] = {
     "name": "create_bill_payment",
     "description": (
-        "Record a payment made to a vendor. This decreases cash and reduces "
-        "accounts payable."
+        "Record a payment made to a vendor. This decreases cash and reduces accounts payable."
     ),
     "input_schema": {
         "type": "object",
@@ -739,8 +735,7 @@ GET_CASH_FLOW_TOOL: dict[str, Any] = {
 GET_AR_AGING_TOOL: dict[str, Any] = {
     "name": "get_ar_aging",
     "description": (
-        "Get the Accounts Receivable aging report showing who owes you money "
-        "and how long overdue."
+        "Get the Accounts Receivable aging report showing who owes you money and how long overdue."
     ),
     "input_schema": {
         "type": "object",
@@ -752,8 +747,7 @@ GET_AR_AGING_TOOL: dict[str, Any] = {
 GET_AP_AGING_TOOL: dict[str, Any] = {
     "name": "get_ap_aging",
     "description": (
-        "Get the Accounts Payable aging report showing who you owe money to "
-        "and due dates."
+        "Get the Accounts Payable aging report showing who you owe money to and due dates."
     ),
     "input_schema": {
         "type": "object",
@@ -954,8 +948,7 @@ LIST_BANK_TRANSACTIONS_TOOL: dict[str, Any] = {
             "status_filter": {
                 "type": "string",
                 "description": (
-                    "Optional status filter (pending, matched, categorized, "
-                    "reconciled, excluded)"
+                    "Optional status filter (pending, matched, categorized, reconciled, excluded)"
                 ),
             },
             "offset": {"type": "integer", "default": 0},

@@ -78,8 +78,7 @@ class GeminiClient:
 
         if "properties" in schema:
             gemini_schema["properties"] = {
-                k: self._convert_json_schema_to_gemini(v)
-                for k, v in schema["properties"].items()
+                k: self._convert_json_schema_to_gemini(v) for k, v in schema["properties"].items()
             }
 
         if "required" in schema:
@@ -90,9 +89,7 @@ class GeminiClient:
 
         return gemini_schema
 
-    def _convert_tools_to_gemini_format(
-        self, tools: list[dict[str, Any]]
-    ) -> list[types.Tool]:
+    def _convert_tools_to_gemini_format(self, tools: list[dict[str, Any]]) -> list[types.Tool]:
         """Convert our tool format to Gemini's expected format."""
         function_declarations = []
 
@@ -143,9 +140,7 @@ class GeminiClient:
                         )
                     )
 
-                gemini_contents.append(
-                    types.Content(role="model", parts=parts)
-                )
+                gemini_contents.append(types.Content(role="model", parts=parts))
             elif msg["role"] == "tool_result":
                 gemini_contents.append(
                     types.Content(
@@ -177,11 +172,13 @@ class GeminiClient:
                     content = part.text
                 elif hasattr(part, "function_call") and part.function_call:
                     fc = part.function_call
-                    tool_calls.append({
-                        "id": f"call_{fc.name}_{len(tool_calls)}",
-                        "name": fc.name,
-                        "arguments": dict(fc.args) if fc.args else {},
-                    })
+                    tool_calls.append(
+                        {
+                            "id": f"call_{fc.name}_{len(tool_calls)}",
+                            "name": fc.name,
+                            "arguments": dict(fc.args) if fc.args else {},
+                        }
+                    )
 
             # Map finish reasons
             finish_reason = candidate.finish_reason
@@ -202,9 +199,7 @@ class GeminiClient:
         # Get usage metadata if available
         usage = {"input_tokens": 0, "output_tokens": 0}
         if hasattr(response, "usage_metadata") and response.usage_metadata:
-            usage["input_tokens"] = (
-                getattr(response.usage_metadata, "prompt_token_count", 0) or 0
-            )
+            usage["input_tokens"] = getattr(response.usage_metadata, "prompt_token_count", 0) or 0
             usage["output_tokens"] = (
                 getattr(response.usage_metadata, "candidates_token_count", 0) or 0
             )

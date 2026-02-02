@@ -228,7 +228,7 @@ Profile:
 - Name: {self._profile.name}
 - Typical order value: ${self._profile.average_order_value:.2f}
 - Order frequency: {self._profile.order_frequency}
-- Preferred services: {', '.join(self._profile.preferred_services)}
+- Preferred services: {", ".join(self._profile.preferred_services)}
 - Payment method: {self._profile.payment_method}
 
 Your role is to generate realistic purchase requests and behaviors.
@@ -264,7 +264,7 @@ When asked, describe what you'd like to purchase in natural language."""
 
 Consider:
 - Your typical order value is around ${self._profile.average_order_value:.2f}
-- You prefer: {', '.join(self._profile.preferred_services)}
+- You prefer: {", ".join(self._profile.preferred_services)}
 
 Describe what you want to purchase. Be specific about quantities and services."""
 
@@ -280,6 +280,7 @@ Describe what you want to purchase. Be specific about quantities and services.""
     def will_pay_on_time(self) -> bool:
         """Determine if this customer will pay on time based on reliability."""
         import random
+
         return random.random() < self._profile.payment_reliability
 
 

@@ -257,6 +257,7 @@ VEHICLES_PROMPTS = {
 
 class GenerationTask(NamedTuple):
     """A single image generation task."""
+
     key: str
     name: str
     prompt: str
@@ -306,7 +307,11 @@ async def generate_image_async(
                         image.save(str(task.output_path))
                         return (task.key, True, f"✓ {task.name}")
                     elif part.text is not None:
-                        return (task.key, False, f"✗ {task.name}: Model returned text: {part.text[:100]}")
+                        return (
+                            task.key,
+                            False,
+                            f"✗ {task.name}: Model returned text: {part.text[:100]}",
+                        )
 
             return (task.key, False, f"✗ {task.name}: No image in response")
 
@@ -348,10 +353,7 @@ async def generate_batch_async(
     semaphore = asyncio.Semaphore(concurrency)
 
     # Create all generation coroutines
-    coroutines = [
-        generate_image_async(client, task, model, semaphore)
-        for task in tasks
-    ]
+    coroutines = [generate_image_async(client, task, model, semaphore) for task in tasks]
 
     # Run all in parallel with progress updates
     results = {}
@@ -419,9 +421,9 @@ async def run_generation(
         print("No tasks to generate!")
         return {}
 
-    print(f"\n{'='*60}")
-    print(f"BATCH GENERATION")
-    print(f"{'='*60}")
+    print(f"\n{'=' * 60}")
+    print("BATCH GENERATION")
+    print(f"{'=' * 60}")
     print(f"Total assets: {len(all_tasks)}")
     print(f"Concurrency: {concurrency}")
     print(f"Model: {model}")
@@ -440,7 +442,7 @@ async def run_generation(
         all_results[cat][key] = results.get(task.key, False)
 
     print(f"\n  Total time: {total_time:.1f}s")
-    print(f"  Average per image: {total_time/len(all_tasks):.1f}s")
+    print(f"  Average per image: {total_time / len(all_tasks):.1f}s")
 
     return all_results
 
@@ -451,7 +453,16 @@ def main():
     )
     parser.add_argument(
         "--category",
-        choices=["characters", "buildings", "extra_buildings", "tiles", "icons", "decorations", "vehicles", "all"],
+        choices=[
+            "characters",
+            "buildings",
+            "extra_buildings",
+            "tiles",
+            "icons",
+            "decorations",
+            "vehicles",
+            "all",
+        ],
         default="all",
         help="Category of assets to generate",
     )

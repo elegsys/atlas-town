@@ -76,9 +76,7 @@ def load_persona_day_patterns() -> dict[str, dict[int, float]]:
                 ) from exc
 
             if mult < 0:
-                raise ValueError(
-                    f"{path.name}: negative multiplier for {day_key!r}: {mult}"
-                )
+                raise ValueError(f"{path.name}: negative multiplier for {day_key!r}: {mult}")
 
             normalized[day_index] = mult
 
@@ -114,9 +112,7 @@ def load_persona_recurring_transactions() -> dict[str, list[dict[str, Any]]]:
         normalized: list[dict[str, Any]] = []
         for idx, item in enumerate(recurring):
             if not isinstance(item, dict):
-                raise ValueError(
-                    f"{path.name}: recurring_transactions[{idx}] must be a mapping"
-                )
+                raise ValueError(f"{path.name}: recurring_transactions[{idx}] must be a mapping")
 
             name = item.get("name")
             vendor = item.get("vendor")
@@ -220,13 +216,9 @@ def load_persona_employees() -> dict[str, list[dict[str, Any]]]:
             if not role:
                 raise ValueError(f"{path.name}: employees[{idx}] missing role")
             if pay_rate is None or hours is None:
-                raise ValueError(
-                    f"{path.name}: employees[{idx}] missing pay_rate/hours_per_week"
-                )
+                raise ValueError(f"{path.name}: employees[{idx}] missing pay_rate/hours_per_week")
             if not isinstance(count, int) or count < 1:
-                raise ValueError(
-                    f"{path.name}: employees[{idx}] count must be >= 1"
-                )
+                raise ValueError(f"{path.name}: employees[{idx}] count must be >= 1")
 
             normalized.append(
                 {
@@ -268,9 +260,7 @@ def load_persona_cash_flow_settings() -> dict[str, dict[str, Any]]:
             try:
                 return Decimal(str(value))
             except (TypeError, ValueError) as exc:
-                raise ValueError(
-                    f"{path_name}: cash_flow.{label} must be numeric"
-                ) from exc
+                raise ValueError(f"{path_name}: cash_flow.{label} must be numeric") from exc
 
         for key in ("min_cash", "reserve_target", "auto_draw_threshold"):
             if key in cash_flow and cash_flow[key] is not None:
@@ -279,9 +269,7 @@ def load_persona_cash_flow_settings() -> dict[str, dict[str, Any]]:
         reserve_by_month = cash_flow.get("reserve_by_month")
         if reserve_by_month is not None:
             if not isinstance(reserve_by_month, dict):
-                raise ValueError(
-                    f"{path.name}: cash_flow.reserve_by_month must be a mapping"
-                )
+                raise ValueError(f"{path.name}: cash_flow.reserve_by_month must be a mapping")
             month_targets: dict[int, Decimal] = {}
             for raw_month, value in reserve_by_month.items():
                 try:
@@ -291,9 +279,7 @@ def load_persona_cash_flow_settings() -> dict[str, dict[str, Any]]:
                         f"{path.name}: cash_flow.reserve_by_month invalid month {raw_month!r}"
                     ) from exc
                 if not (1 <= month <= 12):
-                    raise ValueError(
-                        f"{path.name}: cash_flow.reserve_by_month month must be 1-12"
-                    )
+                    raise ValueError(f"{path.name}: cash_flow.reserve_by_month month must be 1-12")
                 month_targets[month] = _parse_decimal(
                     value, f"reserve_by_month[{month}]", path.name
                 )
@@ -302,9 +288,7 @@ def load_persona_cash_flow_settings() -> dict[str, dict[str, Any]]:
         essential_keywords = cash_flow.get("essential_vendor_keywords")
         if essential_keywords is not None:
             if not isinstance(essential_keywords, list):
-                raise ValueError(
-                    f"{path.name}: cash_flow.essential_vendor_keywords must be a list"
-                )
+                raise ValueError(f"{path.name}: cash_flow.essential_vendor_keywords must be a list")
             normalized["essential_vendor_keywords"] = [
                 str(value).strip().lower() for value in essential_keywords if str(value).strip()
             ]
@@ -463,9 +447,7 @@ def load_persona_payroll_configs() -> dict[str, dict[str, Any]]:
         payroll_by_persona[path.stem] = {
             "frequency": str(frequency),
             "pay_day": pay_day,
-            "payroll_vendor": str(payroll_vendor)
-            if payroll_vendor is not None
-            else None,
+            "payroll_vendor": str(payroll_vendor) if payroll_vendor is not None else None,
             "tax_authority": str(tax_authority) if tax_authority is not None else None,
         }
 
@@ -518,9 +500,7 @@ def load_persona_financing_configs() -> dict[str, dict[str, Any]]:
 
     financing_by_persona: dict[str, dict[str, Any]] = {}
 
-    def normalize_entries(
-        value: Any, path: Path, key: str
-    ) -> list[dict[str, Any]]:
+    def normalize_entries(value: Any, path: Path, key: str) -> list[dict[str, Any]]:
         if value is None:
             return []
         if isinstance(value, dict):
@@ -533,15 +513,11 @@ def load_persona_financing_configs() -> dict[str, dict[str, Any]]:
         normalized_entries: list[dict[str, Any]] = []
         for idx, entry in enumerate(entries):
             if not isinstance(entry, dict):
-                raise ValueError(
-                    f"{path.name}: financing.{key}[{idx}] must be a mapping"
-                )
+                raise ValueError(f"{path.name}: financing.{key}[{idx}] must be a mapping")
             normalized_entries.append(entry)
         return normalized_entries
 
-    def parse_date_value(
-        raw_value: Any, path: Path, label: str
-    ) -> date | None:
+    def parse_date_value(raw_value: Any, path: Path, label: str) -> date | None:
         if raw_value is None:
             return None
         if isinstance(raw_value, date):
@@ -553,9 +529,7 @@ def load_persona_financing_configs() -> dict[str, dict[str, Any]]:
         except ValueError as exc:
             raise ValueError(f"{path.name}: invalid {label}") from exc
 
-    def normalize_rate_adjustments(
-        raw_value: Any, path: Path, label: str
-    ) -> list[dict[str, Any]]:
+    def normalize_rate_adjustments(raw_value: Any, path: Path, label: str) -> list[dict[str, Any]]:
         if raw_value is None:
             return []
         if not isinstance(raw_value, list):
@@ -568,9 +542,7 @@ def load_persona_financing_configs() -> dict[str, dict[str, Any]]:
                 item.get("effective_date"), path, f"{label}[{idx}].effective_date"
             )
             if effective_date is None:
-                raise ValueError(
-                    f"{path.name}: {label}[{idx}] missing effective_date"
-                )
+                raise ValueError(f"{path.name}: {label}[{idx}] missing effective_date")
             if "rate" not in item:
                 raise ValueError(f"{path.name}: {label}[{idx}] missing rate")
             adjustments.append(
@@ -581,9 +553,7 @@ def load_persona_financing_configs() -> dict[str, dict[str, Any]]:
             )
         return adjustments
 
-    def normalize_balance_events(
-        raw_value: Any, path: Path, label: str
-    ) -> list[dict[str, Any]]:
+    def normalize_balance_events(raw_value: Any, path: Path, label: str) -> list[dict[str, Any]]:
         if raw_value is None:
             return []
         if not isinstance(raw_value, list):
@@ -596,9 +566,7 @@ def load_persona_financing_configs() -> dict[str, dict[str, Any]]:
                 item.get("effective_date"), path, f"{label}[{idx}].effective_date"
             )
             if effective_date is None:
-                raise ValueError(
-                    f"{path.name}: {label}[{idx}] missing effective_date"
-                )
+                raise ValueError(f"{path.name}: {label}[{idx}] missing effective_date")
             if "balance" not in item:
                 raise ValueError(f"{path.name}: {label}[{idx}] missing balance")
             events.append(
@@ -915,14 +883,10 @@ def load_persona_b2b_configs() -> dict[str, dict[str, Any]]:
         normalized: list[dict[str, Any]] = []
         for idx, item in enumerate(counterparties):
             if not isinstance(item, dict):
-                raise ValueError(
-                    f"{path.name}: b2b_config.counterparties[{idx}] must be a mapping"
-                )
+                raise ValueError(f"{path.name}: b2b_config.counterparties[{idx}] must be a mapping")
             org_key = item.get("org_key")
             if not org_key:
-                raise ValueError(
-                    f"{path.name}: b2b_config.counterparties[{idx}] missing org_key"
-                )
+                raise ValueError(f"{path.name}: b2b_config.counterparties[{idx}] missing org_key")
 
             day_of_month = item.get("day_of_month")
             if day_of_month is not None and (
@@ -995,9 +959,7 @@ def load_persona_multi_currency_configs() -> dict[str, dict[str, Any]]:
         normalized_clients: list[dict[str, Any]] = []
         for idx, client in enumerate(clients_raw):
             if not isinstance(client, dict):
-                raise ValueError(
-                    f"{path.name}: multi_currency.clients[{idx}] must be a mapping"
-                )
+                raise ValueError(f"{path.name}: multi_currency.clients[{idx}] must be a mapping")
 
             name = client.get("name")
             currency = client.get("currency")
@@ -1008,9 +970,7 @@ def load_persona_multi_currency_configs() -> dict[str, dict[str, Any]]:
 
             base_rate = client.get("base_rate")
             if base_rate is None:
-                raise ValueError(
-                    f"{path.name}: multi_currency.clients[{idx}] missing base_rate"
-                )
+                raise ValueError(f"{path.name}: multi_currency.clients[{idx}] missing base_rate")
             try:
                 base_rate_decimal = Decimal(str(base_rate))
             except (ValueError, TypeError) as exc:
@@ -1058,17 +1018,19 @@ def load_persona_multi_currency_configs() -> dict[str, dict[str, Any]]:
                     f"{path.name}: multi_currency.clients[{idx}] invalid payment_reliability"
                 ) from exc
 
-            normalized_clients.append({
-                "name": str(name),
-                "currency": str(currency).upper(),
-                "base_rate": base_rate_decimal,
-                "volatility": volatility_decimal,
-                "invoice_probability": invoice_prob_float,
-                "min_amount": min_amount_decimal,
-                "max_amount": max_amount_decimal,
-                "payment_terms_days": payment_terms_days,
-                "payment_reliability": payment_rel_float,
-            })
+            normalized_clients.append(
+                {
+                    "name": str(name),
+                    "currency": str(currency).upper(),
+                    "base_rate": base_rate_decimal,
+                    "volatility": volatility_decimal,
+                    "invoice_probability": invoice_prob_float,
+                    "min_amount": min_amount_decimal,
+                    "max_amount": max_amount_decimal,
+                    "payment_terms_days": payment_terms_days,
+                    "payment_reliability": payment_rel_float,
+                }
+            )
 
         if normalized_clients:
             multi_currency_by_persona[path.stem] = {
@@ -1080,4 +1042,3 @@ def load_persona_multi_currency_configs() -> dict[str, dict[str, Any]]:
             }
 
     return multi_currency_by_persona
-
